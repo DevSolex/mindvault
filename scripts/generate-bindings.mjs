@@ -47,4 +47,12 @@ mkdirSync(outDir, { recursive: true });
 renameSync(path.join(tmpDir, "src/index.ts"), path.join(outDir, "index.ts"));
 rmSync(tmpDir, { recursive: true, force: true });
 
+// The Stellar CLI emits its own formatting, which `pnpm format:check` (and CI)
+// then rejects. Format on generation so a regenerated binding never lands the
+// repo in a failing state.
+execSync(`pnpm exec prettier --write "${path.join(outDir, "index.ts")}"`, {
+  cwd: root,
+  stdio: "inherit",
+});
+
 console.log(`✅ Bindings written to ${path.relative(root, outDir)}/index.ts`);

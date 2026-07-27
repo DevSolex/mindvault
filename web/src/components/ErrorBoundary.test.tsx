@@ -1,7 +1,7 @@
 import React from "react";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { ErrorBoundary } from "./ErrorBoundary.js";
 
 function Bomb({ shouldThrow }: { shouldThrow: boolean }) {
@@ -10,6 +10,10 @@ function Bomb({ shouldThrow }: { shouldThrow: boolean }) {
 }
 
 describe("ErrorBoundary", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("renders children when no error occurs", () => {
     render(
       <ErrorBoundary>

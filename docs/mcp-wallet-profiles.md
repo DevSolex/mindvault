@@ -11,15 +11,15 @@ restart. Secret keys are never shown in tool output.
 
 ## Tools
 
-| Tool                      | What it does                                                                                         |
-| ------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `mindvault_setup_wallet`  | Create a wallet. Optional `profile` arg creates/switches to that named profile before creating it.   |
-| `mindvault_use_profile`   | Switch the active profile (`name` required), creating it if it does not exist.                       |
-| `mindvault_list_profiles` | List all profiles, marking the active one and showing each wallet address and registration state.    |
-| `mindvault_wallet_info`   | Show the active profile name, wallet address, USDC balance, and whether it is registered.            |
-| `mindvault_reset`         | Clear the active profile's credentials, or pass `all=true` to remove every profile and delete state. |
-| `mindvault_backup_state`  | Export an encrypted backup of `~/.mindvault/state.json` (passphrase min 8 chars). No plaintext secrets in the blob. |
-| `mindvault_restore_state` | Restore state from a `mindvault_backup_state` blob. Integrity-checked before any write.             |
+| Tool                      | What it does                                                                                                                                                                              |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mindvault_setup_wallet`  | Create a wallet. Optional `profile` arg creates/switches to that named profile before creating it.                                                                                        |
+| `mindvault_use_profile`   | Switch the active profile (`name` required), creating it if it does not exist.                                                                                                            |
+| `mindvault_list_profiles` | List all profiles, marking the active one and showing each wallet address and registration state.                                                                                         |
+| `mindvault_wallet_info`   | Show the active profile name, wallet address, USDC balance, and whether it is registered.                                                                                                 |
+| `mindvault_reset`         | Clear the active profile's credentials, or pass `all=true` to remove every profile and delete state. Requires `confirm=true` — see [Reset confirmation guard](#reset-confirmation-guard). |
+| `mindvault_backup_state`  | Export an encrypted backup of `~/.mindvault/state.json` (passphrase min 8 chars). No plaintext secrets in the blob.                                                                       |
+| `mindvault_restore_state` | Restore state from a `mindvault_backup_state` blob. Integrity-checked before any write.                                                                                                   |
 
 ## Moving environments (backup / restore)
 
@@ -43,6 +43,49 @@ mindvault_restore_state {
 ```
 
 Unit coverage: [`mcp/src/stateBackup.test.ts`](../mcp/src/stateBackup.test.ts).
+
+## Reset confirmation guard
+
+`mindvault_reset` deletes wallet secret keys and publisher API keys. They are
+unrecoverable — the wallet secret exists only in `~/.mindvault/state.json` — so
+an agent that misreads a prompt must not be able to wipe them in one call.
+
+The tool is therefore two-step. Without a truthy `confirm`, it **changes
+nothing** and returns a warning naming exactly what would be removed:
+
+```text
+mindvault_reset {}
+# → Reset NOT performed — confirmation required.
+#   This would permanently remove the active profile "publisher"
+#   (wallet secret key + publisher API key).
+#   Wallet secret keys cannot be recovered once deleted; back them up first
+#   with mindvault_backup_state.
+#   State file: ~/.mindvault/state.json
+#
+#   To proceed, call mindvault_reset again with confirm: true.
+```
+
+Passing `confirm: true` performs the reset:
+
+```text
+mindvault_reset { "confirm": true }
+# → Profile "publisher" cleared (wallet and publisher API key removed).
+
+mindvault_reset { "all": true, "confirm": true }
+# → Reset complete. All profiles removed from memory and disk.
+```
+
+Notes:
+
+- `confirm` accepts the same truthy forms as `confirmMainnet` (`true`, `1`,
+  `"true"`, `"yes"`). Anything else — including omitting it — is "not confirmed".
+- The warning is deterministic and never echoes a secret key.
+- The guard is independent of the mainnet guardrail: on mainnet a reset needs
+  both `confirmMainnet` and `confirm`.
+- Back up first with `mindvault_backup_state` if the credentials still matter.
+
+Unit coverage: [`mcp/src/resetGuard.test.ts`](../mcp/src/resetGuard.test.ts) and
+[`mcp/src/resetTool.test.ts`](../mcp/src/resetTool.test.ts).
 
 ## Example
 
@@ -93,4 +136,3 @@ The migration is covered by unit tests in
 ## Mainnet guardrails
 
 When `STELLAR_NETWORK` is `mainnet`, mutation and buy tools require `confirmMainnet: true` (or process env `MINDVAULT_ALLOW_MAINNET=1`). Profile list/switch/info tools are read-only and stay unrestricted. See [mainnet-deployment-checklist.md](./mainnet-deployment-checklist.md#mcp-mainnet-guardrails).
-

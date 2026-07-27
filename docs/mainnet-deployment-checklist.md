@@ -189,7 +189,7 @@ curl -s $BASE/agent/status | jq .agent
 
 When the MCP server runs with `STELLAR_NETWORK=mainnet` (or x402 `stellar:pubnet`), tools that **mutate state or spend funds** require an explicit confirmation. Read-only tools stay unrestricted.
 
-**Gated tools:** `mindvault_setup_wallet`, `mindvault_register`, `mindvault_publish`, `mindvault_buy`, `mindvault_register_onchain`, `mindvault_reset`.
+**Gated tools:** `mindvault_setup_wallet`, `mindvault_register`, `mindvault_publish`, `mindvault_buy`, `mindvault_register_onchain`, `mindvault_reset`, `mindvault_update_metadata`, `mindvault_set_price`, `mindvault_transfer_ownership`, `mindvault_set_listed`.
 
 **Confirm either:**
 

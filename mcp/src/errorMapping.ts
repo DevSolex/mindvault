@@ -1,0 +1,234 @@
+/**
+ * Structured error mapping for the MindVault MCP server.
+ *
+ * Failures reach an agent from four very different places — the MindVault API,
+ * the x402 payment layer, Horizon, and the Soroban registry client — and each
+ * one has its own failure vocabulary. Raw, they surface as opaque text like
+ * `Browse failed: {"error":"..."}` or an unqualified `fetch failed`, which tells
+ * an agent nothing about whether to retry, re-fund, fix its arguments, or stop.
+ *
+ * This module normalizes all of them into one shape: a category, the source that
+ * failed, and a one-line action telling the agent what to do next. The mapping
+ * is a pure function of (source, status, payload) — the same failure always
+ * produces the same text, so agent behavior is reproducible and testable.
+ *
+ * `index.ts` owns the wiring; nothing here performs I/O.
+ */
+
+/** Which subsystem produced the failure. */
+export type ErrorSource = "api" | "x402" | "horizon" | "soroban" | "registry" | "sponsored";
+
+/** Normalized failure kind, chosen so each maps to exactly one recovery action. */
+export type ErrorCategory =
+  | "network"
+  | "timeout"
+  | "payment"
+  | "validation"
+  | "auth"
+  | "not_found"
+  | "conflict"
+  | "rate_limit"
+  | "server"
+  | "contract"
+  | "unknown";
+
+export interface MappedError {
+  source: ErrorSource;
+  category: ErrorCategory;
+  /** HTTP status, when the failure came from an HTTP response. */
+  status?: number;
+  /** `<operation>: <detail>` — what failed, in the caller's vocabulary. */
+  summary: string;
+  /** One-line, imperative next step for the agent. */
+  action: string;
+}
+
+/** Human label for a source, used in the summary. */
+const SOURCE_LABEL: Record<ErrorSource, string> = {
+  api: "MindVault API",
+  x402: "x402 payment",
+  horizon: "Horizon",
+  soroban: "Soroban RPC",
+  registry: "vault-registry contract",
+  sponsored: "sponsored-account service",
+};
+
+/** The deterministic recovery step for each category. */
+const ACTION: Record<ErrorCategory, string> = {
+  network:
+    "Check network connectivity to the service and retry; idempotent reads retry automatically.",
+  timeout:
+    "The request exceeded its configured timeout. Retry, or raise MINDVAULT_HTTP_TIMEOUT_MS for a slow endpoint.",
+  payment:
+    "Payment was required or rejected. Check the wallet with mindvault_wallet_info, fund it with USDC, and retry.",
+  validation: "Correct the invalid arguments and call the tool again.",
+  auth: "Credentials are missing or not accepted. Run mindvault_register, or switch to the profile that owns this resource.",
+  not_found: "Confirm the id with mindvault_browse or mindvault_search before retrying.",
+  conflict: "The resource is already in the requested state — no action needed.",
+  rate_limit: "Rate limited. Wait for the window to pass before retrying.",
+  server: "The upstream service is failing. Retry shortly; if it persists the service is down.",
+  contract: "Verify the registry contract ID and network with mindvault_registry_info, then retry.",
+  unknown: "Retry once; if it persists, report the summary above with the tool name.",
+};
+
+/** Map an HTTP status onto a category. */
+export function categorizeStatus(status: number): ErrorCategory {
+  if (status === 402) return "payment";
+  if (status === 400 || status === 422) return "validation";
+  if (status === 401 || status === 403) return "auth";
+  if (status === 404) return "not_found";
+  if (status === 409) return "conflict";
+  if (status === 408 || status === 504) return "timeout";
+  if (status === 429) return "rate_limit";
+  if (status >= 500) return "server";
+  if (status >= 400) return "validation";
+  return "unknown";
+}
+
+/**
+ * Pull the most useful message out of a JSON error body, falling back to a
+ * compact JSON dump so no server detail is silently dropped.
+ */
+export function extractDetail(data: unknown): string {
+  if (data == null) return "no response body";
+  if (typeof data === "string") return data.trim() || "empty response body";
+  if (typeof data === "object") {
+    const obj = data as Record<string, unknown>;
+    for (const key of ["error", "message", "detail", "reason"]) {
+      const value = obj[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return "unserializable response body";
+    }
+  }
+  return String(data);
+}
+
+/** True for the transport-level failures fetch raises instead of a Response. */
+export function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const name = (error as { name?: unknown }).name;
+  const message = (error as { message?: unknown }).message;
+  if (name === "TimeoutError") return true;
+  if (name === "AbortError") return true;
+  return typeof message === "string" && /timed? ?out/i.test(message);
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return String(error);
+}
+
+/**
+ * Map a non-ok HTTP response into a structured error.
+ *
+ * `operation` is the caller-facing verb ("Browse failed", "Publish failed") and
+ * is preserved verbatim at the head of the summary so existing tool contracts
+ * and their assertions keep working.
+ */
+export function mapHttpError(input: {
+  operation: string;
+  source: ErrorSource;
+  status: number;
+  data: unknown;
+}): MappedError {
+  const category = categorizeStatus(input.status);
+  const detail = extractDetail(input.data);
+  return {
+    source: input.source,
+    category,
+    status: input.status,
+    summary: `${input.operation}: ${detail}`,
+    action: ACTION[category],
+  };
+}
+
+/**
+ * Map a thrown transport error (DNS failure, connection refused, abort/timeout)
+ * into a structured error. The original message is kept in the summary so the
+ * underlying cause is never hidden from the operator.
+ */
+export function mapTransportError(input: {
+  operation: string;
+  source: ErrorSource;
+  error: unknown;
+}): MappedError {
+  const timedOut = isTimeoutError(input.error);
+  const category: ErrorCategory = timedOut ? "timeout" : "network";
+  const detail = errorMessage(input.error);
+  return {
+    source: input.source,
+    category,
+    summary: `${input.operation}: ${detail}`,
+    action: ACTION[category],
+  };
+}
+
+/**
+ * Map a vault-registry contract failure. The registry client reports a missing
+ * resource as a contract error rather than a 404, so `notFound` gets its own
+ * actionable message instead of the generic contract advice.
+ */
+export function mapRegistryError(input: {
+  operation: string;
+  message: string;
+  notFound?: boolean;
+  /** Defaults to the contract itself; pass "soroban" for JSON-RPC level errors. */
+  source?: Extract<ErrorSource, "registry" | "soroban">;
+}): MappedError {
+  const source = input.source ?? "registry";
+  if (input.notFound) {
+    return {
+      source,
+      category: "not_found",
+      summary: `${input.operation}: ${input.message}`,
+      action:
+        "The resource is not registered on-chain. Publish it, or run mindvault_register_onchain to register an already-verified resource.",
+    };
+  }
+  return {
+    source,
+    category: "contract",
+    summary: `${input.operation}: ${input.message}`,
+    action: ACTION.contract,
+  };
+}
+
+/**
+ * Render a mapped error as the three-line text agents see:
+ *   <operation>: <detail>
+ *   Source: <service> · Category: <category>[ · HTTP <status>]
+ *   Next: <action>
+ *
+ * The middle line is what makes the error machine-classifiable: an agent can
+ * branch on the category without parsing prose.
+ */
+export function formatMappedError(error: MappedError): string {
+  const classification = [
+    `Source: ${SOURCE_LABEL[error.source]}`,
+    `Category: ${error.category}`,
+    error.status !== undefined ? `HTTP ${error.status}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return `${error.summary}\n${classification}\nNext: ${error.action}`;
+}
+
+/** A mapped error as a throwable, for the tool handlers' existing error path. */
+export function mcpError(error: MappedError): Error {
+  return new Error(formatMappedError(error));
+}
+
+/** Convenience: map a non-ok HTTP response and throw it. */
+export function throwHttpError(input: {
+  operation: string;
+  source: ErrorSource;
+  status: number;
+  data: unknown;
+}): never {
+  throw mcpError(mapHttpError(input));
+}

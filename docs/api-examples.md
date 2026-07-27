@@ -19,7 +19,7 @@ curl -s $BASE/health
 Expected response:
 
 ```json
-{"status":"ok"}
+{ "status": "ok" }
 ```
 
 ---
@@ -160,13 +160,19 @@ Expected response (array):
 
 `GET /resources` accepts optional query parameters that narrow the catalog. They can be combined; all filtering is applied **server-side** before the response is returned. (The web app's `CatalogSearch` UI and the MCP `mindvault_search` tool send these same parameters.)
 
-| Parameter            | Type                                   | Effect |
-|----------------------|----------------------------------------|--------|
-| `search`             | string                                 | Case-insensitive match against resource **title or description** |
-| `minPrice`           | number string (e.g. `0.50`)            | Only resources priced ≥ `minPrice` |
-| `maxPrice`           | number string                          | Only resources priced ≤ `maxPrice` |
-| `verificationStatus` | `verified` \| `pending` \| `rejected`  | Filter by verification status |
-| `resourceType`       | `file` \| `link`                       | Filter by resource type |
+| Parameter            | Type                                               | Effect                                                           |
+| -------------------- | -------------------------------------------------- | ---------------------------------------------------------------- |
+| `search`             | string                                             | Case-insensitive match against resource **title or description** |
+| `minPrice`           | number string (e.g. `0.50`)                        | Only resources priced ≥ `minPrice`                               |
+| `maxPrice`           | number string                                      | Only resources priced ≤ `maxPrice`                               |
+| `verificationStatus` | `verified` \| `pending` \| `rejected`              | Filter by verification status                                    |
+| `resourceType`       | `file` \| `link`                                   | Filter by resource type                                          |
+| `owner`              | string                                             | Case-insensitive match against publisher name or wallet          |
+| `sort`               | `newest` \| `price_asc` \| `price_desc` \| `title` | Sort order (default `newest`)                                    |
+| `limit`              | integer 1–100                                      | Page size (default 20)                                           |
+| `offset`             | integer ≥ 0                                        | Pagination offset                                                |
+
+The MCP `mindvault_browse` and `mindvault_search` tools forward these same parameters (MCP `query` maps to `search`). They also accept `tags` and `listed`, which are applied client-side for parity with catalog/meta and on-chain fields (the public HTTP schema rejects unknown query params).
 
 ```bash
 # Verified links priced between 0.10 and 1.00 USDC that mention "dataset"
@@ -285,7 +291,9 @@ const scheme = new ExactStellarScheme(signer);
 const client = new x402Client().register("stellar:testnet", scheme);
 const paidFetch = wrapFetchWithPayment(fetch, client);
 
-const res = await paidFetch("https://mindvault-hyr3.onrender.com/resources/swcn98besxpp6t1u8e77fqz3");
+const res = await paidFetch(
+  "https://mindvault-hyr3.onrender.com/resources/swcn98besxpp6t1u8e77fqz3",
+);
 const data = await res.json();
 // { url: "https://...", receipt: { paymentId, amount, currency, paidTo, paidAt } }
 ```
@@ -333,5 +341,5 @@ curl -s -X DELETE $BASE/resources/$RESOURCE_ID \
 Expected response:
 
 ```json
-{"message":"Resource delisted","id":"swcn98besxpp6t1u8e77fqz3"}
+{ "message": "Resource delisted", "id": "swcn98besxpp6t1u8e77fqz3" }
 ```

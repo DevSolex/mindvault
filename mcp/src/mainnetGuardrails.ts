@@ -20,6 +20,10 @@ export const MAINNET_GATED_TOOLS = [
   "mindvault_buy",
   "mindvault_register_onchain",
   "mindvault_reset",
+  "mindvault_update_metadata",
+  "mindvault_set_price",
+  "mindvault_transfer_ownership",
+  "mindvault_set_listed",
 ] as const;
 
 export type MainnetGatedTool = (typeof MAINNET_GATED_TOOLS)[number];
@@ -30,7 +34,13 @@ const GATED_SET: ReadonlySet<string> = new Set(MAINNET_GATED_TOOLS);
 export function isMainnetNetwork(network: string | undefined): boolean {
   if (!network) return false;
   const n = network.trim().toLowerCase();
-  return n === "mainnet" || n === "pubnet" || n === "public" || n === "stellar:pubnet" || n === "stellar:mainnet";
+  return (
+    n === "mainnet" ||
+    n === "pubnet" ||
+    n === "public" ||
+    n === "stellar:pubnet" ||
+    n === "stellar:mainnet"
+  );
 }
 
 /** Parse truthy confirmation from a tool arg. */
@@ -67,7 +77,7 @@ export function mainnetConfirmationRequiredError(toolName: string): Error {
       "This tool mutates state or spends funds on the public Stellar network.",
       "To proceed, pass confirmMainnet: true on this tool call,",
       "or set MINDVAULT_ALLOW_MAINNET=1 on the MCP server process.",
-      "Read-only tools (browse, search, preview, registry_lookup, tx_status, …) are unrestricted.",
+      "Read-only tools (browse, search, preview, registry_lookup, registry_list, tx_status, …) are unrestricted.",
     ].join(" "),
   );
 }

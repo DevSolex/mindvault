@@ -12,7 +12,14 @@ import {
 
 describe("isMainnetNetwork", () => {
   it("detects mainnet aliases", () => {
-    for (const v of ["mainnet", "MAINNET", "pubnet", "public", "stellar:pubnet", "stellar:mainnet"]) {
+    for (const v of [
+      "mainnet",
+      "MAINNET",
+      "pubnet",
+      "public",
+      "stellar:pubnet",
+      "stellar:mainnet",
+    ]) {
       expect(isMainnetNetwork(v)).toBe(true);
     }
   });
@@ -70,9 +77,11 @@ describe("isMainnetGatedTool", () => {
       "mindvault_registry_info",
       "mindvault_registry_lookup",
       "mindvault_tx_status",
+      "mindvault_publish_status",
       "mindvault_check_bindings",
       "mindvault_agent_status",
       "mindvault_metrics",
+      "mindvault_purchase_history",
     ]) {
       expect(isMainnetGatedTool(t)).toBe(false);
     }
@@ -81,42 +90,38 @@ describe("isMainnetGatedTool", () => {
 
 describe("assertMainnetMutationAllowed", () => {
   it("no-ops on testnet even without confirm", () => {
-    expect(() =>
-      assertMainnetMutationAllowed("testnet", "mindvault_buy", {}, {}),
-    ).not.toThrow();
+    expect(() => assertMainnetMutationAllowed("testnet", "mindvault_buy", {}, {})).not.toThrow();
   });
 
   it("no-ops for read-only tools on mainnet", () => {
-    expect(() =>
-      assertMainnetMutationAllowed("mainnet", "mindvault_browse", {}, {}),
-    ).not.toThrow();
+    expect(() => assertMainnetMutationAllowed("mainnet", "mindvault_browse", {}, {})).not.toThrow();
   });
 
   it("blocks gated tools on mainnet without confirm", () => {
-    expect(() =>
-      assertMainnetMutationAllowed("mainnet", "mindvault_buy", {}, {}),
-    ).toThrow(/Mainnet guardrail/);
-    expect(() =>
-      assertMainnetMutationAllowed("mainnet", "mindvault_publish", {}, {}),
-    ).toThrow(/confirmMainnet/);
+    expect(() => assertMainnetMutationAllowed("mainnet", "mindvault_buy", {}, {})).toThrow(
+      /Mainnet guardrail/,
+    );
+    expect(() => assertMainnetMutationAllowed("mainnet", "mindvault_publish", {}, {})).toThrow(
+      /confirmMainnet/,
+    );
   });
 
   it("allows gated tools when confirmMainnet is true", () => {
     expect(() =>
-      assertMainnetMutationAllowed(
-        "mainnet",
-        "mindvault_buy",
-        { confirmMainnet: true },
-        {},
-      ),
+      assertMainnetMutationAllowed("mainnet", "mindvault_buy", { confirmMainnet: true }, {}),
     ).not.toThrow();
   });
 
   it("allows gated tools when MINDVAULT_ALLOW_MAINNET is set", () => {
     expect(() =>
-      assertMainnetMutationAllowed("mainnet", "mindvault_register", {}, {
-        MINDVAULT_ALLOW_MAINNET: "1",
-      }),
+      assertMainnetMutationAllowed(
+        "mainnet",
+        "mindvault_register",
+        {},
+        {
+          MINDVAULT_ALLOW_MAINNET: "1",
+        },
+      ),
     ).not.toThrow();
   });
 

@@ -94,6 +94,22 @@ Publishes a link resource. The MCP server signs the x402 verification payment us
 
 > Troubleshooting: if `publish` returns an x402 verification error, the wallet is most likely under-funded. The required verification fee is small (well under $1) — re-check `mindvault_wallet_info` and re-fund if needed. For deeper x402 sign/pay debugging see [docs/x402-payment-troubleshooting.md](x402-payment-troubleshooting.md).
 
+### 5b. `mindvault_publish_status` _(optional)_
+
+Poll verification and on-chain sync after publish. Returns `verificationStatus` (`pending` | `verified` | `rejected` | `skipped`), `listed`, `onchainStatus`, and `onchainTxHash`. Pass `wait: true` to poll until verification settles (or `timeoutMs` elapses).
+
+**Input:**
+
+```json
+{
+  "resourceId": "swcn98besxpp6t1u8e77fqz3",
+  "wait": true,
+  "timeoutMs": 60000
+}
+```
+
+**Errors:** missing `resourceId` and HTTP 404s return deterministic messages so agents can retry or correct the id.
+
 ---
 
 ## Agent B — Discover and buy
@@ -110,9 +126,18 @@ Same flow as step 2 — send testnet USDC to Agent B's address. The amount needs
 
 ### 8. `mindvault_browse`
 
-Lists all resources in the catalog with their IDs, titles, prices, and access URLs.
+Lists resources in the catalog with their IDs, titles, prices, and access URLs. Accepts the same optional filters as `mindvault_search` / `GET /resources` (keyword, price range, verification status, resource type, owner, sort, pagination, tags, listed).
 
-**Input:** _(none)_
+**Input:** _(none required; filters optional)_
+
+```json
+{
+  "verificationStatus": "verified",
+  "maxPrice": "1.00",
+  "sort": "price_asc",
+  "limit": 20
+}
+```
 
 **Example output:**
 
@@ -124,7 +149,7 @@ Lists all resources in the catalog with their IDs, titles, prices, and access UR
 
 ### 9. `mindvault_search` (optional)
 
-Search the catalog by keyword plus filters. The MCP server forwards the filters to the backend, so the result set is narrowed before it reaches the agent.
+Search the catalog by keyword plus filters. Server-supported filters are forwarded to `GET /resources`; `tags` and `listed` are applied client-side for parity with catalog/meta fields.
 
 **Input:**
 
@@ -134,7 +159,13 @@ Search the catalog by keyword plus filters. The MCP server forwards the filters 
   "minPrice": "0.01",
   "maxPrice": "1.00",
   "verificationStatus": "verified",
-  "resourceType": "link"
+  "resourceType": "link",
+  "owner": "Alice",
+  "sort": "newest",
+  "limit": 20,
+  "offset": 0,
+  "tags": "forecast,weather",
+  "listed": true
 }
 ```
 
@@ -151,6 +182,8 @@ If no resource matches, the error message includes the applied filters, for exam
 ```
 No resources match query "forecast", min $0.01, max $1.00, status verified, type link.
 ```
+
+Invalid filter values (bad price range, unknown enums, etc.) return a deterministic error string without calling the API.
 
 ### 10. `mindvault_preview` (optional)
 
@@ -176,9 +209,23 @@ Pays the resource price in USDC via x402 and returns the protected content.
 
 > Troubleshooting: a `402 Payment Required` after `buy` means the payment didn't settle — usually insufficient USDC. Run `mindvault_wallet_info` to check the balance.
 
+Successful buys also append a local receipt under `~/.mindvault/purchases.json` for later inspection via `mindvault_purchase_history`.
+
 ---
 
-### 12. `mindvault_register_onchain`
+### 12. `mindvault_purchase_history`
+
+Read-only list of locally persisted purchase receipts. Optional filters:
+
+```json
+{ "resourceId": "abc123", "network": "stellar:testnet" }
+```
+
+Returns `{ count, purchases }` (newest first). Empty history returns `count: 0` with a clear message — invalid filter types raise a deterministic error.
+
+---
+
+### 13. `mindvault_register_onchain`
 
 Registers an already-published, verified resource on the vault-registry contract.
 `mindvault_publish` attempts this automatically, but if the on-chain step fails
@@ -205,6 +252,54 @@ On-chain tx: 5f3a...c9
 > Troubleshooting: a `400` means the resource isn't verified yet; a `409` means it's
 > already registered (no action needed). A submission failure leaves the resource
 > listed — ensure the agent wallet is funded for fees and retry.
+
+---
+
+### 14. `mindvault_update_metadata`
+
+Updates the on-chain metadata pointer for a registered resource in the vault-registry contract. Validates pointer format and length (max 512 chars, must start with ipfs://, ar://, http(s)://, sha256:, sha-256:, or 0x) client-side before signing.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "metadata": "ipfs://QmXoypizjW3WknFiJnKLwHCnL72vedxjQkDDP1mXWo6uco" }
+```
+
+---
+
+### 15. `mindvault_set_price`
+
+Updates the on-chain price in USDC for a registered resource in the vault-registry contract.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "price": "10.00" }
+```
+
+---
+
+### 16. `mindvault_transfer_ownership`
+
+Transfers ownership of a registered resource on the vault-registry contract to a new creator address.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "newCreator": "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH" }
+```
+
+---
+
+### 17. `mindvault_set_listed`
+
+Manages catalog availability by listing or delisting a resource on-chain.
+
+**Input:**
+
+```json
+{ "resourceId": "abc123", "listed": false }
+```
 
 ---
 

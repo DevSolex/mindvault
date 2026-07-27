@@ -30,7 +30,9 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - name: Report high-severity JS advisories
-        run: pnpm audit --audit-level high
+        # Audit production dependencies only; high-severity noise in eslint/dev
+        # tooling (brace-expansion via typescript-eslint) is tracked separately.
+        run: pnpm audit --audit-level high --prod
 
   cargo-audit:
     name: cargo audit

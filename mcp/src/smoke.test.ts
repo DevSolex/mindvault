@@ -3,6 +3,7 @@ import {
   buildSmokeSteps,
   isToolError,
   parseResourceId,
+  publishSucceeded,
   resultText,
   runSmoke,
   type SmokeToolClient,
@@ -36,7 +37,17 @@ function happyResponses(): Record<string, ToolCallResult | ((args: any) => ToolC
     mindvault_setup_wallet: textResult("Wallet created.\nAddress: GABC123"),
     mindvault_register: textResult("Registered as publisher.\nID: pub-1"),
     mindvault_publish: textResult(
-      "Resource published.\nID: smoke-res-1\nVerification: approved ✓\nOn-chain status: registered",
+      JSON.stringify({
+        before: { id: null },
+        after: {
+          id: "smoke-res-1",
+          title: "Smoke Test Resource",
+          verificationStatus: "approved",
+          onchainStatus: "registered",
+        },
+        changedFields: ["id", "verificationStatus", "onchainStatus"],
+        txHash: "MOCK_TX",
+      }),
     ),
     mindvault_preview: (args) =>
       textResult(JSON.stringify({ id: args.resourceId, price: "$0.10" })),
@@ -73,11 +84,33 @@ describe("isToolError", () => {
 });
 
 describe("parseResourceId", () => {
-  it("extracts the id from publish output", () => {
+  it("extracts the id from the JSON publish summary", () => {
+    const summary = JSON.stringify({ after: { id: "smoke-res-1" }, changedFields: ["id"] });
+    expect(parseResourceId(summary)).toBe("smoke-res-1");
+  });
+  it("extracts the id from the legacy plain-text output", () => {
     expect(parseResourceId("Resource published.\nID: smoke-res-1\nmore")).toBe("smoke-res-1");
   });
   it("returns null when absent", () => {
     expect(parseResourceId("no id here")).toBeNull();
+    expect(parseResourceId("{not json")).toBeNull();
+    expect(parseResourceId(JSON.stringify({ after: {} }))).toBeNull();
+  });
+});
+
+describe("publishSucceeded", () => {
+  it("accepts a summary that carries a resource id", () => {
+    expect(publishSucceeded(JSON.stringify({ after: { id: "smoke-res-1" } }))).toBe(true);
+  });
+  it("rejects a soft failure that still mentions an id", () => {
+    expect(
+      publishSucceeded(
+        "Insufficient USDC to pay the content verification fee.\n(Resource created with id smoke-res-1; verify it later once funded.)",
+      ),
+    ).toBe(false);
+  });
+  it("rejects output with no id at all", () => {
+    expect(publishSucceeded("Error: not registered")).toBe(false);
   });
 });
 

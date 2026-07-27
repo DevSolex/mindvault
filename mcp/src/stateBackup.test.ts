@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "fs";
+import { chmodSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import {
@@ -7,6 +7,7 @@ import {
   restoreState,
   StateBackupError,
   readPersistedState,
+  checkStatePermissions,
 } from "./stateBackup.js";
 import { STATE_VERSION, type ProfileState } from "./profiles.js";
 
@@ -94,8 +95,7 @@ describe("stateBackup", () => {
     const parts = blob.split(":");
     // flip last char of ciphertext
     const last = parts[3];
-    const flipped =
-      last.slice(0, -1) + (last.endsWith("A") ? "B" : "A");
+    const flipped = last.slice(0, -1) + (last.endsWith("A") ? "B" : "A");
     const tampered = `${parts[0]}:${parts[1]}:${parts[2]}:${flipped}`;
     let wrote = false;
     expect(() =>
@@ -116,5 +116,58 @@ describe("stateBackup", () => {
     expect(state.activeProfile).toBe("publisher");
     expect(state.profiles.publisher?.wallet?.secretKey).toBe("SSECRET");
     expect(state.profiles.buyer?.wallet?.publicKey).toBe("GBUY");
+  });
+});
+
+describe("checkStatePermissions", () => {
+  const STATE_DIR = join(homedir(), ".mindvault");
+  const STATE_FILE = join(STATE_DIR, "state.json");
+
+  beforeEach(() => {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeFileSync(STATE_FILE, JSON.stringify({ version: 1, activeProfile: "default", profiles: {} }), {
+      mode: 0o600,
+    });
+  });
+
+  afterEach(() => {
+    if (existsSync(STATE_FILE)) rmSync(STATE_FILE);
+  });
+
+  it("reports safe when mode is 0600", () => {
+    const result = checkStatePermissions();
+    expect(result.exists).toBe(true);
+    expect(result.isSafe).toBe(true);
+    expect(result.mode).toBe("0600");
+    expect(result.message).toContain("safe");
+  });
+
+  it("reports unsafe when mode is 0644 (world-readable)", () => {
+    chmodSync(STATE_FILE, 0o644);
+    const result = checkStatePermissions();
+    expect(result.exists).toBe(true);
+    expect(result.isSafe).toBe(false);
+    expect(result.mode).toBe("0644");
+    expect(result.message).toContain("UNSAFE");
+    expect(result.message).toContain("world-readable");
+    expect(result.message).toContain("chmod 0600");
+  });
+
+  it("reports unsafe when mode is 0666 (world-readable and writable)", () => {
+    chmodSync(STATE_FILE, 0o666);
+    const result = checkStatePermissions();
+    expect(result.exists).toBe(true);
+    expect(result.isSafe).toBe(false);
+    expect(result.message).toContain("UNSAFE");
+    expect(result.message).toContain("world-readable");
+    expect(result.message).toContain("world-writable");
+  });
+
+  it("reports safe when file does not exist", () => {
+    rmSync(STATE_FILE);
+    const result = checkStatePermissions();
+    expect(result.exists).toBe(false);
+    expect(result.isSafe).toBe(true);
+    expect(result.message).toContain("does not exist");
   });
 });

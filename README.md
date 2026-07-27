@@ -63,18 +63,25 @@ Available tools:
 | ---------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------- |
 | `mindvault_setup_wallet`     | Create a Stellar wallet using the sponsored account protocol          | `"Create a wallet for me"`                                      |
 | `mindvault_wallet_info`      | Check wallet address and USDC balance                                 | `"What's my wallet balance?"`                                   |
-| `mindvault_browse`           | List available resources in the vault                                 | `"Show me what resources are available"`                        |
-| `mindvault_search`           | Search the catalog by keyword, price, type, and verification status   | `"Find verified links under 1 USDC"`                            |
+| `mindvault_browse`           | List catalog resources (same filters as search)                       | `"Show verified links under 1 USDC"`                            |
+| `mindvault_search`           | Search catalog by keyword, price, type, status, owner, tags, listed   | `"Find verified links under 1 USDC"`                            |
 | `mindvault_preview`          | Get details and price for a resource                                  | `"Preview resource swcn98besxpp6t1u8e77fqz3"`                   |
 | `mindvault_register`         | Register as a publisher using the agent's wallet                      | `"Register me as Alice, alice@example.com"`                     |
 | `mindvault_publish`          | Publish a resource and pay for verification via x402                  | `"Publish 'My Dataset' for 5 USDC at https://example.com/data"` |
+| `mindvault_publish_status`   | Poll verification and on-chain sync status after publish              | `"Check publish status for swcn98besxpp6t1u8e77fqz3"`           |
 | `mindvault_buy`              | Pay USDC and access a resource via x402                               | `"Buy resource swcn98besxpp6t1u8e77fqz3"`                       |
+| `mindvault_purchase_history` | List locally persisted purchase receipts (filter by resource/network) | `"Show my purchase history for stellar:testnet"`                |
 | `mindvault_register_onchain` | Retry on-chain registration for a published, verified resource        | `"Register resource swcn98besxpp6t1u8e77fqz3 on-chain"`         |
+| `mindvault_update_metadata`  | Update on-chain metadata pointer for a resource                       | `"Update metadata for swcn98besxpp6t1u8e77fqz3 to ipfs://..."`  |
+| `mindvault_set_price`        | Update on-chain USDC price for a resource                             | `"Set price for swcn98besxpp6t1u8e77fqz3 to 10 USDC"`          |
+| `mindvault_transfer_ownership` | Transfer ownership of a registered resource to a new owner address  | `"Transfer swcn98besxpp6t1u8e77fqz3 to GA6H..."`                |
+| `mindvault_set_listed`       | Manage catalog availability by listing/delisting a resource on-chain  | `"Delist resource swcn98besxpp6t1u8e77fqz3"`                    |
 | `mindvault_agent_status`     | Check the verification agent's earnings and activity                  | `"What's the agent's status?"`                                  |
 | `mindvault_registry_info`    | Return the on-chain vault-registry contract details                   | `"Show me registry info"`                                       |
 | `mindvault_registry_lookup`  | Look up a resource directly from the on-chain vault registry by ID    | `"Look up resource swcn98besxpp6t1u8e77fqz3 on-chain"`          |
+| `mindvault_registry_list`    | Page through resources registered on-chain (Soroban `list`)           | `"List on-chain registry resources start 0 limit 20"`           |
 | `mindvault_tx_status`        | Look up a Stellar transaction status by hash                          | `"Check tx a1b2c3d4..."`                                        |
-| `mindvault_reset`            | Clear the persisted wallet and publisher API key from memory and disk | `"Reset my agent credentials"`                                  |
+| `mindvault_reset`            | Clear the persisted wallet and publisher API key; needs confirm: true | `"Reset my agent credentials"`                                  |
 
 ### Install
 
@@ -88,6 +95,8 @@ claude mcp add mindvault node /path/to/mindvault/mcp/dist/index.js
 codex mcp add mindvault -- node /path/to/mindvault/mcp/dist/index.js
 ```
 
+Copy-ready configs for Claude Code, Claude Desktop, Codex, Cursor, VS Code, and Windsurf — plus the state file path, network profiles, and security notes — are in **[docs/mcp-client-configs.md](docs/mcp-client-configs.md)**.
+
 All env vars are optional — the defaults point to the hosted testnet backend:
 
 | Variable                     | Default                                                | Description                                        |
@@ -99,6 +108,8 @@ All env vars are optional — the defaults point to the hosted testnet backend:
 | `SOROBAN_RPC_URL`            | `https://soroban-testnet.stellar.org`                  | Soroban RPC endpoint (for tx status and payments)  |
 | `MINDVAULT_METRICS`          | _(unset)_                                              | Opt-in tool-level metrics; set to `1` to enable    |
 
+Every tool validates its arguments against an explicit schema before doing any work: unknown or malformed arguments are rejected with a deterministic error instead of reaching the API as a failed request. See **[docs/mcp-tool-arguments.md](docs/mcp-tool-arguments.md)** for the per-tool contract and error shape.
+
 An agent can set up a wallet, register as a publisher, publish a resource (paying for verification), and then another agent can discover and buy that resource. The full agent-to-agent economy runs through x402.
 
 Operators who want lightweight visibility into tool usage can enable opt-in metrics (`MINDVAULT_METRICS=1`) and read them with the `mindvault_metrics` tool. See **[docs/mcp-metrics.md](docs/mcp-metrics.md)**.
@@ -106,6 +117,12 @@ Operators who want lightweight visibility into tool usage can enable opt-in metr
 For a copy-pasteable, end-to-end agent session — wallet setup → register → publish → browse → buy — see **[docs/mcp-quickstart.md](docs/mcp-quickstart.md)**. For a step-by-step demo with example outputs for every tool call, see **[docs/mcp-agent-to-agent-demo.md](docs/mcp-agent-to-agent-demo.md)**.
 
 To verify the whole flow automatically, run the smoke test (`pnpm --filter @mindvault/mcp smoke`) — it boots the MCP server and drives setup → register → publish → preview → buy against a mock backend (or testnet), exiting non-zero on any failed tool call. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md)**.
+
+For fast Vitest coverage of the MCP request surface itself (`listTools` / `callTool` over an in-memory SDK transport with mocked fetch/registry), see **[docs/mcp-integration-harness.md](docs/mcp-integration-harness.md)**.
+
+Tool failures from the API, x402, Horizon, and the vault-registry are normalized into a single structured form — a summary, a machine-readable `Source · Category · HTTP` line, and one actionable next step. See **[docs/mcp-error-reference.md](docs/mcp-error-reference.md)**.
+
+Every outbound call runs under a configurable `AbortController` deadline, so a hung backend fails fast instead of blocking the agent. Idempotent reads additionally retry transient failures with bounded, jittered backoff — payments never do, since a replay could settle twice. See **[docs/mcp-timeouts-retries.md](docs/mcp-timeouts-retries.md)**.
 
 ## Project Structure
 
@@ -182,7 +199,7 @@ The `PAYMENT-REQUIRED` header contains the price, destination wallet, network, a
 - The platform and agent operate from two separate Stellar wallets with visible on-chain activity
 - Creator earnings are tracked from actual payment settlements
 - The MCP server creates real sponsored accounts on Stellar
-- Catalog search and filtering are built: the web app's `CatalogSearch` UI and the MCP `mindvault_search` tool both filter by keyword (matched against title and description), price range, resource type, and verification status. Filters are sent to `GET /resources` and applied server-side (see [docs/api-examples.md](docs/api-examples.md#browsing-the-catalog))
+- Catalog search and filtering are built: the web app's `CatalogSearch` UI and the MCP `mindvault_browse` / `mindvault_search` tools filter by keyword (title and description), price range, resource type, verification status, owner, sort, and pagination. MCP also accepts `tags` and `listed` for client-side parity. Server-supported filters are sent to `GET /resources` (see [docs/api-examples.md](docs/api-examples.md#browsing-the-catalog))
 
 ## What Is Not Yet Built
 

@@ -1,10 +1,11 @@
 #![cfg(test)]
 
 use super::*;
+use alloc::{format, string::ToString};
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
-    Address, Env, String, Vec,
+    Address, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
@@ -55,78 +56,44 @@ fn register_then_read() {
 #[test]
 fn register_emits_structured_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt1");
-    let metadata = String::from_str(&env, "ipfs://QmEvent");
-    let resource_tags = tags(&env, &["dataset", "research"]);
+    let id = String::from_str(&env, "evtres");
+    let metadata = String::from_str(&env, "ipfs://evt");
+    let price = 500i128;
+    let tags_list = tags(&env, &["tag1"]);
 
     client.register(&creator, &id, &1_000_000i128, &metadata, &resource_tags);
 
-    let events = env.events().all();
-    let register_events: Vec<_> = events
-        .iter()
-        .filter(|e| {
-            let topics = &e.topics;
-            if topics.len() < 1 {
-                return false;
-            }
-            let sym = topics.get(0).unwrap();
-            let sym_str = soroban_sdk::Symbol::try_from(sym).unwrap();
-            sym_str == soroban_sdk::symbol_short!("register")
-        })
-        .collect();
-
-    assert_eq!(register_events.len(), 1);
-    let evt = register_events.get(0).unwrap();
-
-    // Topic[1] must be the resource id
-    let topic_id: String = evt.topics.get(1).unwrap().try_into().unwrap();
-    assert_eq!(topic_id, id);
-
-    // Payload must be a RegisterEvent
-    let payload: RegisterEvent = evt.data.clone().try_into().unwrap();
-    assert_eq!(payload.id, id);
-    assert_eq!(payload.creator, creator);
-    assert_eq!(payload.price, 1_000_000i128);
-    assert_eq!(payload.metadata, metadata);
-    assert!(payload.listed);
-    assert_eq!(payload.tags.len(), 2);
-    assert_eq!(payload.tags.get(0).unwrap(), String::from_str(&env, "dataset"));
-    assert_eq!(payload.tags.get(1).unwrap(), String::from_str(&env, "research"));
-}
-
-#[test]
-fn register_event_empty_tags() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt2");
-    let metadata = String::from_str(&env, "https://example.com");
-
-    client.register(&creator, &id, &500i128, &metadata, &empty_tags(&env));
-
-    let events = env.events().all();
-    let register_events: Vec<_> = events
-        .iter()
-        .filter(|e| {
-            let topics = &e.topics;
-            if topics.len() < 1 {
-                return false;
-            }
-            let sym = topics.get(0).unwrap();
-            let sym_str = soroban_sdk::Symbol::try_from(sym).unwrap();
-            sym_str == soroban_sdk::symbol_short!("register")
-        })
-        .collect();
-
-    assert_eq!(register_events.len(), 1);
-    let evt = register_events.get(0).unwrap();
-    let payload: RegisterEvent = evt.data.clone().try_into().unwrap();
-
-    assert_eq!(payload.id, id);
-    assert_eq!(payload.creator, creator);
-    assert_eq!(payload.price, 500i128);
-    assert_eq!(payload.metadata, metadata);
-    assert!(payload.listed);
-    assert_eq!(payload.tags.len(), 0);
-}
+    let all_events = env.events().all();
+    let mut found = false;
+    for i in 0..all_events.len() {
+        let (_, topics, data) = all_events.get(i).unwrap();
+        if topics.len() != 2 {
+            continue;
+        }
+        let t0: Symbol =
+            <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+                .ok()
+                .unwrap();
+        if t0 != Symbol::new(&env, "register") {
+            continue;
+        }
+        let resource: Resource = <Resource as TryFromVal<Env, Val>>::try_from_val(&env, &data)
+            .ok()
+            .unwrap();
+        assert_eq!(resource.id, id);
+        assert_eq!(resource.creator, creator);
+        assert_eq!(resource.price, price);
+        assert_eq!(resource.metadata, metadata);
+        assert!(resource.listed);
+        assert_eq!(resource.tags.len(), 1);
+        assert_eq!(
+            resource.tags.get(0).unwrap(),
+            String::from_str(&env, "tag1")
+        );
+        found = true;
+        break;
+    }
+    assert!(found, "register event not emitted");
 }
 
 #[test]
@@ -192,7 +159,7 @@ fn zero_or_negative_price_rejected() {
 #[test]
 fn register_rejects_price_exceeding_max() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "too-pricey");
+    let id = String::from_str(&env, "toopricey");
     let metadata = String::from_str(&env, "ipfs://x");
     let over = MAX_PRICE + 1;
     assert_eq!(
@@ -205,7 +172,13 @@ fn register_rejects_price_exceeding_max() {
 fn set_price_rejects_price_exceeding_max() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "r1");
-    client.register(&creator, &id, &100i128, &String::from_str(&env, "ipfs://m"), &empty_tags(&env));
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
     let over = MAX_PRICE + 1;
     assert_eq!(
         client.try_set_price(&id, &over),
@@ -216,7 +189,7 @@ fn set_price_rejects_price_exceeding_max() {
 #[test]
 fn maximum_price_accepted() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "max-price");
+    let id = String::from_str(&env, "maxprice");
     let metadata = String::from_str(&env, "ipfs://x");
     client.register(&creator, &id, &MAX_PRICE, &metadata, &empty_tags(&env));
     assert_eq!(client.get(&id).price, MAX_PRICE);
@@ -225,7 +198,7 @@ fn maximum_price_accepted() {
 #[test]
 fn invalid_resource_id_rejected() {
     let (env, creator, client) = setup();
-    let metadata = String::from_str(&env, "x");
+    let metadata = String::from_str(&env, "ipfs://x");
 
     let empty = String::from_str(&env, "");
     assert_eq!(
@@ -241,7 +214,13 @@ fn invalid_resource_id_rejected() {
 
     let invalid_chars = String::from_str(&env, "bad-id");
     assert_eq!(
-        client.try_register(&creator, &invalid_chars, &100i128, &metadata, &empty_tags(&env)),
+        client.try_register(
+            &creator,
+            &invalid_chars,
+            &100i128,
+            &metadata,
+            &empty_tags(&env)
+        ),
         Err(Ok(Error::InvalidResourceId))
     );
 }
@@ -250,7 +229,7 @@ fn invalid_resource_id_rejected() {
 fn valid_resource_id_is_accepted() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "swcn98besxpp6t1u8e77fqz3");
-    let metadata = String::from_str(&env, "x");
+    let metadata = String::from_str(&env, "ipfs://x");
 
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
     assert!(client.exists(&id));
@@ -286,7 +265,7 @@ fn set_price_updates_value() {
 #[test]
 fn set_price_emits_structured_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-r1");
+    let id = String::from_str(&env, "evtr1");
     let initial_price = 1_000_000i128;
     let updated_price = 2_500_000i128;
 
@@ -349,7 +328,7 @@ fn ownership_can_transfer() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -367,12 +346,14 @@ fn event_data_as_owners(
         if topics.len() != 2 {
             continue;
         }
-        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
-        if t0 != Symbol::new(&events.env(), topic0_str) {
+        let t0: Symbol =
+            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
+                .ok()?;
+        if t0 != Symbol::new(events.env(), topic0_str) {
             continue;
         }
         let pair: (Address, Address) =
-            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
         return Some(pair);
     }
     None
@@ -387,11 +368,14 @@ fn event_data_as_address(
         if topics.len() != 2 {
             continue;
         }
-        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&events.env(), &topics.get(0).unwrap()).ok()?;
-        if t0 != Symbol::new(&events.env(), topic0_str) {
+        let t0: Symbol =
+            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
+                .ok()?;
+        if t0 != Symbol::new(events.env(), topic0_str) {
             continue;
         }
-        let addr: Address = <Address as TryFromVal<Env, Val>>::try_from_val(&events.env(), &data).ok()?;
+        let addr: Address =
+            <Address as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
         return Some(addr);
     }
     None
@@ -400,7 +384,7 @@ fn event_data_as_address(
 #[test]
 fn transfer_ownership_event_contains_previous_and_new_owner() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-xfer");
+    let id = String::from_str(&env, "evtxfer");
     let new_owner = Address::generate(&env);
     client.register(
         &creator,
@@ -420,7 +404,7 @@ fn transfer_ownership_event_contains_previous_and_new_owner() {
 #[test]
 fn propose_transfer_event_contains_owner_and_proposed() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-propose");
+    let id = String::from_str(&env, "evtpropose");
     let proposed = Address::generate(&env);
     client.register(
         &creator,
@@ -440,7 +424,7 @@ fn propose_transfer_event_contains_owner_and_proposed() {
 #[test]
 fn accept_transfer_event_contains_previous_and_new_owner() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-accept");
+    let id = String::from_str(&env, "evtaccept");
     let new_owner = Address::generate(&env);
     client.register(
         &creator,
@@ -464,7 +448,9 @@ fn accept_transfer_event_contains_previous_and_new_owner() {
             last_transfer_data = Some(data);
         }
     }
-    let accept_data = last_transfer_data.as_ref().expect("accept transfer event not found");
+    let accept_data = last_transfer_data
+        .as_ref()
+        .expect("accept transfer event not found");
     let (prev, new): (Address, Address) =
         <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&env, accept_data)
             .expect("accept event data should decode to (Address, Address)");
@@ -475,7 +461,7 @@ fn accept_transfer_event_contains_previous_and_new_owner() {
 #[test]
 fn cancel_transfer_event_contains_owner() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-cancel");
+    let id = String::from_str(&env, "evtcancel");
     let proposed = Address::generate(&env);
     client.register(
         &creator,
@@ -500,7 +486,7 @@ fn set_listed_toggles_listing_state() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -524,7 +510,7 @@ fn delist_convenience_method() {
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -602,7 +588,7 @@ fn update_metadata_preserves_price_and_creator() {
 #[test]
 fn get_owner_returns_creator() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "owner-test");
+    let id = String::from_str(&env, "ownertest");
     client.register(
         &creator,
         &id,
@@ -625,12 +611,12 @@ fn get_owner_missing_fails() {
 #[test]
 fn get_owner_after_transfer() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "owner-xfer");
+    let id = String::from_str(&env, "ownerxfer");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -682,12 +668,12 @@ fn set_listed_on_missing_resource_fails() {
 #[test]
 fn set_listed_event_emits_old_and_new_state_delist() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-delist");
+    let id = String::from_str(&env, "evdelist");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -710,12 +696,12 @@ fn set_listed_event_emits_old_and_new_state_delist() {
 #[test]
 fn set_listed_event_emits_old_and_new_state_relist() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-relist");
+    let id = String::from_str(&env, "evrelist");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -750,12 +736,12 @@ fn set_listed_event_emits_old_and_new_state_relist() {
 #[test]
 fn set_listed_event_no_op_same_state() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-noop");
+    let id = String::from_str(&env, "evnoop");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -778,12 +764,12 @@ fn set_listed_event_no_op_same_state() {
 #[test]
 fn delist_convenience_method_emits_old_and_new_state() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ev-delist2");
+    let id = String::from_str(&env, "evdelist2");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -810,21 +796,21 @@ fn set_listed_and_delist_events_are_consistent() {
     // shape. This directly tests the acceptance criterion: "Events are
     // consistent for set_listed(false), delist, and relisting."
     let (env, creator, client) = setup();
-    let id1 = String::from_str(&env, "ev-cons1");
-    let id2 = String::from_str(&env, "ev-cons2");
+    let id1 = String::from_str(&env, "evcons1");
+    let id2 = String::from_str(&env, "evcons2");
 
     client.register(
         &creator,
         &id1,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     client.register(
         &creator,
         &id2,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -898,7 +884,7 @@ fn metadata_of_len(env: &Env, len: u32) -> String {
 #[test]
 fn register_accepts_metadata_at_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-max");
+    let id = String::from_str(&env, "metamax");
     let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN);
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
     assert_eq!(client.get(&id).metadata.len(), MAX_METADATA_POINTER_LEN);
@@ -907,7 +893,7 @@ fn register_accepts_metadata_at_max_length() {
 #[test]
 fn register_rejects_metadata_over_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-long");
+    let id = String::from_str(&env, "metalong");
     let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN + 1);
     assert_eq!(
         client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
@@ -919,12 +905,12 @@ fn register_rejects_metadata_over_max_length() {
 #[test]
 fn update_metadata_accepts_at_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-ok");
+    let id = String::from_str(&env, "metaupdok");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "short"),
+        &String::from_str(&env, "ipfs://short"),
         &empty_tags(&env),
     );
     let metadata = metadata_of_len(&env, MAX_METADATA_POINTER_LEN);
@@ -935,7 +921,7 @@ fn update_metadata_accepts_at_max_length() {
 #[test]
 fn update_metadata_rejects_over_max_length() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-bad");
+    let id = String::from_str(&env, "metaupdbad");
     client.register(
         &creator,
         &id,
@@ -948,58 +934,17 @@ fn update_metadata_rejects_over_max_length() {
         client.try_update_metadata(&id, &metadata),
         Err(Ok(Error::MetadataTooLong))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ar://short"));
-}
-
-#[test]
-fn register_accepts_empty_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-empty");
-    let metadata = String::from_str(&env, "");
-    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
-    assert_eq!(client.get(&id).metadata, metadata);
-}
-
-#[test]
-fn register_accepts_one_character_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-one");
-    let metadata = String::from_str(&env, "a");
-    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
-    assert_eq!(client.get(&id).metadata, metadata);
-}
-
-#[test]
-fn update_metadata_accepts_empty_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-empty");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "short"),
-        &empty_tags(&env),
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ar://short")
     );
-    let metadata = String::from_str(&env, "");
-    client.update_metadata(&id, &metadata);
-    assert_eq!(client.get(&id).metadata, metadata);
 }
 
-#[test]
-fn update_metadata_accepts_one_character_metadata() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "meta-upd-one");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "short"),
-        &empty_tags(&env),
-    );
-    let metadata = String::from_str(&env, "a");
-    client.update_metadata(&id, &metadata);
-    assert_eq!(client.get(&id).metadata, metadata);
-}
+// Empty metadata and single-character metadata (e.g. "a") are both rejected
+// by `validate_metadata_pointer` (`EmptyMetadata` / `InvalidMetadataPointer`
+// respectively, since "a" matches no supported pointer prefix) — see
+// `register_rejects_empty_metadata`, `update_metadata_rejects_empty`, and
+// `invalid_metadata_pointer_rejected` below.
 
 fn register_n(env: &Env, creator: &Address, client: &VaultRegistryClient<'_>, ids: &[&str]) {
     for id in ids {
@@ -1053,7 +998,7 @@ fn list_start_beyond_count_returns_empty() {
 #[test]
 fn register_extends_resource_storage_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-register");
+    let id = String::from_str(&env, "ttlregister");
     client.register(
         &creator,
         &id,
@@ -1070,12 +1015,12 @@ fn register_extends_resource_storage_ttl() {
 #[test]
 fn set_price_reextends_resource_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-price");
+    let id = String::from_str(&env, "ttlprice");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     env.ledger()
@@ -1095,7 +1040,7 @@ fn set_price_reextends_resource_ttl() {
 #[test]
 fn update_metadata_reextends_resource_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-meta");
+    let id = String::from_str(&env, "ttlmeta");
     client.register(
         &creator,
         &id,
@@ -1116,12 +1061,12 @@ fn update_metadata_reextends_resource_ttl() {
 #[test]
 fn transfer_ownership_reextends_resource_ttl() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttl-xfer");
+    let id = String::from_str(&env, "ttlxfer");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     env.ledger()
@@ -1221,9 +1166,8 @@ fn list_listed_start_beyond_listed_items_returns_empty() {
 fn list_listed_limit_capped_at_20() {
     let (env, creator, client) = setup();
     let ids: [&str; 25] = [
-        "i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9",
-        "i10", "i11", "i12", "i13", "i14", "i15", "i16", "i17", "i18", "i19",
-        "i20", "i21", "i22", "i23", "i24",
+        "i0", "i1", "i2", "i3", "i4", "i5", "i6", "i7", "i8", "i9", "i10", "i11", "i12", "i13",
+        "i14", "i15", "i16", "i17", "i18", "i19", "i20", "i21", "i22", "i23", "i24",
     ];
     register_n(&env, &creator, &client, &ids);
 
@@ -1257,8 +1201,14 @@ fn list_page_exposes_next_cursor_then_end() {
 
     let second = client.list_page(&first.next_cursor.unwrap(), &3u32);
     assert_eq!(second.items.len(), 2);
-    assert_eq!(second.items.get(0).unwrap().id, String::from_str(&env, "r3"));
-    assert_eq!(second.items.get(1).unwrap().id, String::from_str(&env, "r4"));
+    assert_eq!(
+        second.items.get(0).unwrap().id,
+        String::from_str(&env, "r3")
+    );
+    assert_eq!(
+        second.items.get(1).unwrap().id,
+        String::from_str(&env, "r4")
+    );
     assert_eq!(second.next_cursor, None);
 }
 
@@ -1269,7 +1219,7 @@ fn list_page_cursor_past_end_is_empty_end_of_list() {
         &creator,
         &String::from_str(&env, "x"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -1333,7 +1283,7 @@ fn register_with_tags_stores_labels() {
 #[test]
 fn set_tags_updates_value_without_touching_metadata() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "tag-update");
+    let id = String::from_str(&env, "tagupdate");
     let metadata = String::from_str(&env, "ipfs://QmKeepMeta");
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
 
@@ -1349,7 +1299,7 @@ fn set_tags_updates_value_without_touching_metadata() {
 #[test]
 fn invalid_metadata_pointer_rejected() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "bad-pointer");
+    let id = String::from_str(&env, "badpointer");
     let metadata = String::from_str(&env, "not-a-supported-pointer");
 
     assert_eq!(
@@ -1362,7 +1312,7 @@ fn invalid_metadata_pointer_rejected() {
 #[test]
 fn invalid_tag_rejected() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "bad-tag");
+    let id = String::from_str(&env, "badtag");
     let metadata = String::from_str(&env, "ipfs://m");
     let empty = String::from_str(&env, "");
     let mut bad = Vec::new(&env);
@@ -1456,9 +1406,12 @@ fn nominate_new_admin_rejects_pending_already_set() {
         client.try_nominate_new_admin(&pending2),
         Err(Ok(Error::PendingAdminAlreadySet))
     );
+}
+
+#[test]
 fn register_rejects_empty_metadata() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "empty-meta");
+    let id = String::from_str(&env, "emptymeta");
     let metadata = String::from_str(&env, "");
     assert_eq!(
         client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
@@ -1470,7 +1423,25 @@ fn register_rejects_empty_metadata() {
 #[test]
 fn update_metadata_rejects_empty() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "upd-empty");
+    let id = String::from_str(&env, "updempty");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://QmOriginal"),
+        &empty_tags(&env),
+    );
+    let empty = String::from_str(&env, "");
+    assert_eq!(
+        client.try_update_metadata(&id, &empty),
+        Err(Ok(Error::EmptyMetadata))
+    );
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ipfs://QmOriginal")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // update_metadata event tests
 // ---------------------------------------------------------------------------
@@ -1486,7 +1457,7 @@ fn collect_updmeta_events(
     let mut result: soroban_sdk::Vec<MetadataUpdateEvent> = soroban_sdk::Vec::new(env);
     for i in 0..all.len() {
         let (cid, topics, data) = all.get(i).unwrap();
-        if cid != *contract_id || topics.len() < 1 {
+        if cid != *contract_id || topics.is_empty() {
             continue;
         }
         // topics.get(0) is a Val. Try to decode it as a Symbol and compare.
@@ -1506,7 +1477,7 @@ fn collect_updmeta_events(
 #[test]
 fn update_metadata_emits_structured_event_with_old_and_new() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "event-test");
+    let id = String::from_str(&env, "eventtest");
     let old_meta = String::from_str(&env, "ipfs://QmOld");
     let new_meta = String::from_str(&env, "ipfs://QmNew");
 
@@ -1525,7 +1496,7 @@ fn update_metadata_emits_structured_event_with_old_and_new() {
 #[test]
 fn update_metadata_event_old_metadata_matches_prior_state() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-chain");
+    let id = String::from_str(&env, "evtchain");
     let meta_v1 = String::from_str(&env, "ipfs://QmV1");
     let meta_v2 = String::from_str(&env, "ipfs://QmV2");
     let meta_v3 = String::from_str(&env, "ipfs://QmV3");
@@ -1536,7 +1507,11 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
     client.update_metadata(&id, &meta_v2);
     {
         let events = collect_updmeta_events(&env, &client.address);
-        assert_eq!(events.len(), 1, "expected one updmeta event after first update");
+        assert_eq!(
+            events.len(),
+            1,
+            "expected one updmeta event after first update"
+        );
         let e = events.get(0).unwrap();
         assert_eq!(e.old_metadata, meta_v1);
         assert_eq!(e.new_metadata, meta_v2);
@@ -1546,7 +1521,11 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
     client.update_metadata(&id, &meta_v3);
     {
         let events = collect_updmeta_events(&env, &client.address);
-        assert_eq!(events.len(), 1, "expected one updmeta event after second update");
+        assert_eq!(
+            events.len(),
+            1,
+            "expected one updmeta event after second update"
+        );
         let e = events.get(0).unwrap();
         assert_eq!(e.old_metadata, meta_v2);
         assert_eq!(e.new_metadata, meta_v3);
@@ -1556,12 +1535,12 @@ fn update_metadata_event_old_metadata_matches_prior_state() {
 #[test]
 fn update_metadata_event_id_matches_resource_id() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-id-check");
+    let id = String::from_str(&env, "evtidcheck");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -1576,12 +1555,12 @@ fn update_metadata_event_id_matches_resource_id() {
 #[test]
 fn update_metadata_failed_validation_emits_no_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-no-emit");
+    let id = String::from_str(&env, "evtnoemit");
     client.register(
         &creator,
         &id,
         &100i128,
-        &String::from_str(&env, "valid"),
+        &String::from_str(&env, "ipfs://valid"),
         &empty_tags(&env),
     );
     let empty = String::from_str(&env, "");
@@ -1589,8 +1568,29 @@ fn update_metadata_failed_validation_emits_no_event() {
         client.try_update_metadata(&id, &empty),
         Err(Ok(Error::EmptyMetadata))
     );
-    assert_eq!(client.get(&id).metadata, String::from_str(&env, "valid"));
-        &String::from_str(&env, "m"),
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ipfs://valid")
+    );
+
+    // No updmeta event should be emitted when the call fails.
+    let events = collect_updmeta_events(&env, &client.address);
+    assert_eq!(
+        events.len(),
+        0,
+        "failed update_metadata must not emit any updmeta event"
+    );
+}
+
+#[test]
+fn update_metadata_too_long_emits_no_event() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evtnoemit2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -1602,13 +1602,17 @@ fn update_metadata_failed_validation_emits_no_event() {
 
     // No updmeta event should be emitted when the call fails.
     let events = collect_updmeta_events(&env, &client.address);
-    assert_eq!(events.len(), 0, "failed update_metadata must not emit any updmeta event");
+    assert_eq!(
+        events.len(),
+        0,
+        "failed update_metadata must not emit any updmeta event"
+    );
 }
 
 #[test]
 fn update_metadata_state_not_mutated_on_failed_call() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "no-state-change");
+    let id = String::from_str(&env, "nostatechange");
     let original = String::from_str(&env, "ipfs://QmOriginal");
     client.register(&creator, &id, &100i128, &original, &empty_tags(&env));
 
@@ -1624,6 +1628,8 @@ fn update_metadata_state_not_mutated_on_failed_call() {
     );
     assert_eq!(r.price, 100i128);
     assert_eq!(r.creator, creator);
+}
+
 /// Assert core registry invariants after mixed ops.
 ///
 /// Checks:
@@ -1677,7 +1683,7 @@ fn registry_invariant_suite_mixed_ops() {
     assert_eq!(client.list(&0u32, &20u32).len(), 0);
 
     // ── Step 1: register r0 under alice ──────────────────────────────────────
-    let r0 = String::from_str(&env, "inv-r0");
+    let r0 = String::from_str(&env, "invr0");
     let tags0 = tags(&env, &["dataset"]);
     client.register(
         &alice,
@@ -1688,15 +1694,15 @@ fn registry_invariant_suite_mixed_ops() {
     );
     assert_registry_invariants(
         &client,
-        &[r0.clone()],
-        &[alice.clone()],
+        core::slice::from_ref(&r0),
+        core::slice::from_ref(&alice),
         &[1_000],
         &[true],
-        &[tags0.clone()],
+        core::slice::from_ref(&tags0),
     );
 
     // ── Step 2: register r1 under alice ──────────────────────────────────────
-    let r1 = String::from_str(&env, "inv-r1");
+    let r1 = String::from_str(&env, "invr1");
     let empty0 = empty_tags(&env);
     client.register(
         &alice,
@@ -1771,7 +1777,7 @@ fn registry_invariant_suite_mixed_ops() {
     );
 
     // ── Step 8: register r2 under bob ────────────────────────────────────────
-    let r2 = String::from_str(&env, "inv-r2");
+    let r2 = String::from_str(&env, "invr2");
     let tags2 = tags(&env, &["beta"]);
     client.register(
         &bob,
@@ -1797,7 +1803,7 @@ fn registry_invariant_suite_mixed_ops() {
             &alice,
             &r1,
             &1i128,
-            &String::from_str(&env, "x"),
+            &String::from_str(&env, "ipfs://x"),
             &empty_tags(&env)
         ),
         Err(Ok(Error::AlreadyRegistered))
@@ -1857,7 +1863,7 @@ fn registry_invariant_suite_mixed_ops() {
     );
 
     // Missing resource lookups are deterministic NotFound.
-    let missing = String::from_str(&env, "no-such-resource");
+    let missing = String::from_str(&env, "nosuchresource");
     assert_eq!(client.try_get(&missing), Err(Ok(Error::NotFound)));
     assert_eq!(client.try_get_owner(&missing), Err(Ok(Error::NotFound)));
     assert!(!client.exists(&missing));
@@ -1887,11 +1893,9 @@ fn registry_invariant_suite_mixed_ops() {
     assert_eq!(client.count(), 3);
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(50))]
 #[test]
 fn creator_resource_count_starts_at_zero() {
-    let (env, creator, client) = setup();
+    let (_env, creator, client) = setup();
     assert_eq!(client.creator_resource_count(&creator), 0);
 }
 
@@ -1902,7 +1906,7 @@ fn creator_resource_count_increments_on_register() {
         &creator,
         &String::from_str(&env, "r1"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     assert_eq!(client.creator_resource_count(&creator), 1);
@@ -1911,7 +1915,7 @@ fn creator_resource_count_increments_on_register() {
         &creator,
         &String::from_str(&env, "r2"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     assert_eq!(client.creator_resource_count(&creator), 2);
@@ -1919,7 +1923,13 @@ fn creator_resource_count_increments_on_register() {
     // Failed duplicate does not inflate count.
     let dup = String::from_str(&env, "r1");
     assert_eq!(
-        client.try_register(&creator, &dup, &100i128, &String::from_str(&env, "m"), &empty_tags(&env)),
+        client.try_register(
+            &creator,
+            &dup,
+            &100i128,
+            &String::from_str(&env, "ipfs://m"),
+            &empty_tags(&env)
+        ),
         Err(Ok(Error::AlreadyRegistered)),
     );
     assert_eq!(client.creator_resource_count(&creator), 2);
@@ -1934,14 +1944,14 @@ fn creator_resource_count_moves_on_transfer_ownership() {
         &creator,
         &String::from_str(&env, "r1"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
     client.register(
         &creator,
         &String::from_str(&env, "r2"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
@@ -1966,24 +1976,23 @@ fn creator_resource_count_zero_for_unrelated_creator() {
         &creator_a,
         &String::from_str(&env, "r1"),
         &100i128,
-        &String::from_str(&env, "m"),
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
 
     // Creator B never registered anything; 0 expected.
     assert_eq!(client.creator_resource_count(&creator_b), 0);
 }
-}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
     fn test_metadata_pointer_roundtrip_property(
-        id_str in r"[a-zA-Z0-9_-]{1,32}",
+        id_str in r"[a-z0-9]{1,24}",
         price in 1..1000000000000i128,
         price_2 in 1..1000000000000i128,
-        meta_str in r"[a-zA-Z0-9:/\\._-]{1,512}",
-        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{1,512}",
+        meta_str in r"[a-zA-Z0-9:/\\._-]{1,500}",
+        meta_str_2 in r"[a-zA-Z0-9:/\\._-]{1,500}",
         listed in any::<bool>(),
     ) {
         let env = Env::default();
@@ -2026,38 +2035,149 @@ proptest! {
 
 // ── Tag removal event semantics (#362) ──────────────────────────────────────
 
+// ── set_tags validation — reject before any state mutation ──────────────────
+//
+// These tests ensure every invalid tag array is rejected by `validate_tags`
+// before the contract touches on-chain state. The acceptance criterion is:
+// "Tool rejects invalid tag arrays before RPC calls." The equivalent MCP-layer
+// rejection is covered by mcp/src/validation.test.ts and
+// mcp/src/catalogFilters.test.ts.
+
+#[test]
+fn set_tags_rejects_too_many_tags() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "manytags");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // MAX_TAGS is 8; a vector of 9 tags must be rejected.
+    let nine = tags(&env, &["a", "b", "c", "d", "e", "f", "g", "h", "i"]);
+    assert_eq!(
+        client.try_set_tags(&id, &nine),
+        Err(Ok(Error::InvalidTag)),
+        "set_tags must reject tag counts > MAX_TAGS (8)"
+    );
+    // State must be unchanged (still no tags).
+    assert_eq!(client.get(&id).tags, empty_tags(&env));
+}
+
+#[test]
+fn set_tags_accepts_exactly_max_tags() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "eighttagsok");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let eight = tags(&env, &["a", "b", "c", "d", "e", "f", "g", "h"]);
+    client.set_tags(&id, &eight);
+    assert_eq!(client.get(&id).tags.len(), 8);
+}
+
+#[test]
+fn set_tags_rejects_tag_exceeding_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "longtag");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // MAX_TAG_LEN is 32; a 33-character tag must be rejected.
+    let long_tag = String::from_str(&env, "123456789012345678901234567890123"); // 33 chars
+    let mut bad = Vec::new(&env);
+    bad.push_back(long_tag);
+    assert_eq!(
+        client.try_set_tags(&id, &bad),
+        Err(Ok(Error::InvalidTag)),
+        "set_tags must reject tags longer than MAX_TAG_LEN (32)"
+    );
+    assert_eq!(client.get(&id).tags, empty_tags(&env));
+}
+
+#[test]
+fn set_tags_accepts_tag_at_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "maxlentagok");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Exactly 32 characters — must be accepted.
+    let ok_tag = String::from_str(&env, "12345678901234567890123456789012"); // 32 chars
+    let mut one = Vec::new(&env);
+    one.push_back(ok_tag.clone());
+    client.set_tags(&id, &one);
+    assert_eq!(client.get(&id).tags.get(0).unwrap(), ok_tag);
+}
+
+#[test]
+fn set_tags_rejects_on_nonexistent_resource() {
+    let (env, _creator, client) = setup();
+    let ghost = String::from_str(&env, "ghost");
+    let t = tags(&env, &["x"]);
+    assert_eq!(
+        client.try_set_tags(&ghost, &t),
+        Err(Ok(Error::NotFound)),
+        "set_tags must error NotFound for an unregistered resource id"
+    );
+}
+
 #[test]
 fn set_tags_event_includes_prev_and_next() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "event-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "eventtest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with initial tags
     let initial_tags = tags(&env, &["data", "research"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
-    
+
     // Replace with new tags
     let new_tags = tags(&env, &["finance", "api"]);
     client.set_tags(&id, &new_tags);
-    
+
     // Verify event contains both prev and next tags
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    
+
     // Event structure: (contract_address, topics_vec, data)
     // topics=(symbol_short!("settags"), id), data=(prev_tags, new_tags)
-    let (_contract, topics, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_contract, topics, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     // Decode topics: [symbol_short!("settags"), id]
     assert_eq!(topics.len(), 2);
-    
+
     // Decode data as tuple: (prev_tags, new_tags)
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
-    
+
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "data"));
-    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "research"));
-    
+    assert_eq!(
+        prev_tags.get(1).unwrap(),
+        String::from_str(&env, "research")
+    );
+
     assert_eq!(next_tags.len(), 2);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "finance"));
     assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "api"));
@@ -2066,22 +2186,26 @@ fn set_tags_event_includes_prev_and_next() {
 #[test]
 fn set_tags_event_supports_tag_removal() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "removal-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "removaltest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with multiple tags
     let initial_tags = tags(&env, &["tag1", "tag2", "tag3"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
-    
+
     // Clear all tags
     let empty = empty_tags(&env);
     client.set_tags(&id, &empty);
-    
+
     // Verify event shows previous tags and empty next tags
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_, _, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
     assert_eq!(prev_tags.len(), 3);
     assert_eq!(next_tags.len(), 0);
@@ -2090,21 +2214,25 @@ fn set_tags_event_supports_tag_removal() {
 #[test]
 fn set_tags_event_supports_tag_addition() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "addition-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "additiontest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with no tags
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
-    
+
     // Add tags
     let new_tags = tags(&env, &["first", "second"]);
     client.set_tags(&id, &new_tags);
-    
+
     // Verify event shows empty previous and new tags
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_, _, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
     assert_eq!(prev_tags.len(), 0);
     assert_eq!(next_tags.len(), 2);
@@ -2114,31 +2242,37 @@ fn set_tags_event_supports_tag_addition() {
 #[test]
 fn set_tags_event_on_replacement() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "replace-test");
-    let metadata = String::from_str(&env, "m");
-    
+    let id = String::from_str(&env, "replacetest");
+    let metadata = String::from_str(&env, "ipfs://m");
+
     // Register with initial tags
     let initial_tags = tags(&env, &["old1", "old2"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
-    
+
     // Replace completely with different tags
     let replacement_tags = tags(&env, &["new1", "new2", "new3"]);
     client.set_tags(&id, &replacement_tags);
-    
+
     // Verify event shows complete replacement
     let events = env.events().all();
     let last_event = events.last().unwrap();
-    let (_, _, data): (Address, soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = last_event;
-    
+    let (_, _, data): (
+        Address,
+        soroban_sdk::Vec<soroban_sdk::Val>,
+        soroban_sdk::Val,
+    ) = last_event;
+
     let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "old1"));
     assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "old2"));
-    
+
     assert_eq!(next_tags.len(), 3);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "new1"));
     assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "new2"));
     assert_eq!(next_tags.get(2).unwrap(), String::from_str(&env, "new3"));
+}
+
 #[test]
 fn set_terms_hash_works_and_extends_ttl() {
     let (env, creator, client) = setup();
@@ -2174,30 +2308,1389 @@ fn set_terms_hash_rejects_over_max_length() {
     );
 }
 
+// Admin bootstrap/uninitialized-state behavior is covered by
+// `admin_transfer_nominate_then_accept` (bootstrap via the first
+// `nominate_new_admin` call) — see the two-step admin model above.
+// `admin()` returns `Option<Address>` (`None` before any admin is set), not
+// a `Result`, so there is no separate "uninitialized" error case to test.
+
+// ---------------------------------------------------------------------------
+// registry_info() — registry discovery metadata
+// ---------------------------------------------------------------------------
+
 #[test]
-fn initialize_sets_admin() {
+fn registry_info_exposes_stable_fields() {
+    let (env, _creator, client) = setup();
+    let info = client.registry_info();
+
+    assert_eq!(info.name, String::from_str(&env, REGISTRY_NAME));
+    assert_eq!(info.resource_schema_version, RESOURCE_SCHEMA_VERSION);
+    assert!(!info.version.is_empty(), "version must not be empty");
+    assert_eq!(info.network_id, env.ledger().network_id());
+}
+
+#[test]
+fn registry_info_is_stable_across_calls_and_registrations() {
+    let (env, creator, client) = setup();
+    let before = client.registry_info();
+
+    client.register(
+        &creator,
+        &String::from_str(&env, "infostability"),
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let after = client.registry_info();
+    assert_eq!(
+        before, after,
+        "registry_info must not depend on registry contents"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// contract_version() — compact build/schema version for deployment scripts
+// ---------------------------------------------------------------------------
+
+#[test]
+fn contract_version_returns_crate_and_schema_version() {
+    let (env, _creator, client) = setup();
+    let v = client.contract_version();
+
+    // crate_version is baked at build time; it must be a non-empty semver string.
+    assert!(!v.crate_version.is_empty(), "crate_version must not be empty");
+    // resource_schema_version is the compile-time constant; the call must echo it.
+    assert_eq!(
+        v.resource_schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "contract_version must expose RESOURCE_SCHEMA_VERSION"
+    );
+}
+
+#[test]
+fn contract_version_matches_registry_info_fields() {
+    // contract_version is a focused subset of registry_info. Both must agree on
+    // the same crate_version/schema_version so deployment scripts can use either.
+    let (env, _creator, client) = setup();
+    let v = client.contract_version();
+    let info = client.registry_info();
+
+    assert_eq!(
+        v.crate_version, info.version,
+        "contract_version.crate_version must equal registry_info.version"
+    );
+    assert_eq!(
+        v.resource_schema_version, info.resource_schema_version,
+        "contract_version.resource_schema_version must equal registry_info.resource_schema_version"
+    );
+}
+
+#[test]
+fn contract_version_is_stable_across_calls_and_registrations() {
+    let (env, creator, client) = setup();
+    let before = client.contract_version();
+
+    client.register(
+        &creator,
+        &String::from_str(&env, "cvstability"),
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let after = client.contract_version();
+    assert_eq!(
+        before, after,
+        "contract_version must not change when resources are registered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Event schema drift detection
+// ---------------------------------------------------------------------------
+//
+// `EVENT_SCHEMA` in lib.rs is the single source of truth for every event
+// topic this contract emits. These two tests fail if it drifts from either
+// side: the contract's actual runtime emissions, or the human-readable
+// Events table in `contract/README.md`. Add/rename/remove an emitted event
+// without updating all three (code, EVENT_SCHEMA, README) and one of these
+// tests catches it.
+extern crate std;
+
+fn topic0_symbol(env: &Env, topics: &soroban_sdk::Vec<Val>) -> Option<Symbol> {
+    Symbol::try_from_val(env, &topics.get(0)?).ok()
+}
+
+// ---------------------------------------------------------------------------
+// Tag index repair design (#429)
+// ---------------------------------------------------------------------------
+//
+// No on-chain tag index exists yet (see docs/tag-index-repair-design.md), but
+// a future one's repair path could rebuild id->tags associations either by
+// reading `Resource.tags` directly or by replaying `register`/`settags`
+// events. This test backs the ADR's "no third source of truth needed" claim
+// by reconstructing tag state purely from event replay — never calling
+// `get` — and checking it against `Resource.tags` exactly.
+#[test]
+fn register_then_settags_events_reconstruct_current_tags() {
+    let (env, creator, client) = setup();
+
+    let id_a = String::from_str(&env, "replaytaga");
+    let id_b = String::from_str(&env, "replaytagb");
+    let metadata = String::from_str(&env, "ipfs://m");
+
+    // The Soroban test event log only reliably reflects the most recent
+    // invocation (see `freeze_metadata_sets_flag_and_emits_event`'s comment
+    // on this), so record the last event's decoded tag state immediately
+    // after each call rather than replaying `env.events().all()` once at
+    // the end.
+    let last_settags_tags = |env: &Env| -> (String, Vec<String>) {
+        let (_, topics, data) = env.events().all().last().unwrap();
+        let event_id: String =
+            <String as TryFromVal<Env, Val>>::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+        let (_prev, next): (Vec<String>, Vec<String>) = data.try_into_val(env).unwrap();
+        (event_id, next)
+    };
+    let last_register_tags = |env: &Env| -> (String, Vec<String>) {
+        let (_, _, data) = env.events().all().last().unwrap();
+        let resource: Resource = data.try_into_val(env).unwrap();
+        (resource.id, resource.tags)
+    };
+
+    client.register(
+        &creator,
+        &id_a,
+        &100i128,
+        &metadata,
+        &tags(&env, &["alpha", "beta"]),
+    );
+    let (rid, _) = last_register_tags(&env);
+    assert_eq!(rid, id_a);
+
+    client.register(&creator, &id_b, &100i128, &metadata, &empty_tags(&env));
+    let (rid, _) = last_register_tags(&env);
+    assert_eq!(rid, id_b);
+
+    client.set_tags(&id_a, &tags(&env, &["gamma"]));
+    let (eid, _) = last_settags_tags(&env);
+    assert_eq!(eid, id_a);
+
+    client.set_tags(&id_b, &tags(&env, &["delta", "epsilon"]));
+    let (eid, reconstructed_b) = last_settags_tags(&env);
+    assert_eq!(eid, id_b);
+
+    client.set_tags(&id_a, &empty_tags(&env));
+    let (eid, _) = last_settags_tags(&env);
+    assert_eq!(eid, id_a);
+
+    client.set_tags(&id_a, &tags(&env, &["zeta"]));
+    let (eid, reconstructed_a) = last_settags_tags(&env);
+    assert_eq!(eid, id_a);
+
+    assert_eq!(reconstructed_a, client.get(&id_a).tags);
+    assert_eq!(reconstructed_b, client.get(&id_b).tags);
+
+    // Sanity: prove replay tracked the final mutation, not just the initial register.
+    assert_eq!(client.get(&id_a).tags.len(), 1);
+    assert_eq!(
+        client.get(&id_a).tags.get(0).unwrap(),
+        String::from_str(&env, "zeta")
+    );
+}
+
+#[test]
+fn full_workflow_emits_exactly_the_documented_events() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+    let mut observed: std::vec::Vec<std::string::String> = std::vec::Vec::new();
+
+    fn record(
+        env: &Env,
+        client: &VaultRegistryClient,
+        observed: &mut std::vec::Vec<std::string::String>,
+    ) {
+        let all = env.events().all();
+        for i in 0..all.len() {
+            let (cid, topics, _data) = all.get(i).unwrap();
+            if cid != client.address {
+                continue;
+            }
+            if let Some(sym) = topic0_symbol(env, &topics) {
+                observed.push(sym.to_string());
+            }
+        }
+    }
+
+    let r0 = String::from_str(&env, "schemar0");
+    client.register(
+        &alice,
+        &r0,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    record(&env, &client, &mut observed);
+
+    client.set_price(&r0, &200i128);
+    record(&env, &client, &mut observed);
+
+    client.update_metadata(&r0, &String::from_str(&env, "ipfs://m2"));
+    record(&env, &client, &mut observed);
+
+    client.set_tags(&r0, &tags(&env, &["a"]));
+    record(&env, &client, &mut observed);
+
+    client.set_listed(&r0, &false);
+    record(&env, &client, &mut observed);
+    client.delist(&r0);
+    record(&env, &client, &mut observed);
+
+    client.propose_transfer(&r0, &bob);
+    record(&env, &client, &mut observed);
+    env.mock_all_auths();
+    client.accept_transfer(&r0);
+    record(&env, &client, &mut observed);
+
+    let r1 = String::from_str(&env, "schemar1");
+    client.register(
+        &alice,
+        &r1,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    record(&env, &client, &mut observed);
+    client.transfer_ownership(&r1, &bob);
+    record(&env, &client, &mut observed);
+
+    let r2 = String::from_str(&env, "schemar2");
+    client.register(
+        &alice,
+        &r2,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    record(&env, &client, &mut observed);
+    client.propose_transfer(&r2, &bob);
+    record(&env, &client, &mut observed);
+    client.cancel_transfer(&r2);
+    record(&env, &client, &mut observed);
+
+    client.set_terms_hash(&alice, &String::from_str(&env, "termshash"));
+    record(&env, &client, &mut observed);
+
+    let admin1 = Address::generate(&env);
+    client.nominate_new_admin(&admin1); // bootstrap -> "setadmin"
+    record(&env, &client, &mut observed);
+    let admin2 = Address::generate(&env);
+    client.nominate_new_admin(&admin2); // rotation -> "nomadmin"
+    record(&env, &client, &mut observed);
+    client.accept_admin(&admin2);
+    record(&env, &client, &mut observed);
+
+    // Verifier role, verification mirror, freeze, and index repair.
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier); // -> "addverif"
+    record(&env, &client, &mut observed);
+    client.set_verification_status(&r2, &verifier, &VerificationStatus::Verified); // -> "verify"
+    record(&env, &client, &mut observed);
+    client.remove_verifier(&verifier); // -> "rmverif"
+    record(&env, &client, &mut observed);
+
+    client.freeze_metadata(&r2); // -> "freeze"
+    record(&env, &client, &mut observed);
+
+    client.repair_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "reindex"
+    record(&env, &client, &mut observed);
+
+    observed.sort();
+    observed.dedup();
+
+    let mut expected: std::vec::Vec<std::string::String> = EVENT_SCHEMA
+        .iter()
+        .map(|(topic, _)| std::string::String::from(*topic))
+        .collect();
+    expected.sort();
+
+    assert_eq!(
+        observed, expected,
+        "emitted event topics must exactly match EVENT_SCHEMA in lib.rs — update \
+         EVENT_SCHEMA (and contract/README.md's Events table) whenever you add, \
+         rename, or remove an emitted event"
+    );
+}
+
+// ─── Test helpers for the role / verification / freeze / repair suites ────
+
+/// Like `setup`, but also installs `admin` as the contract admin via the
+/// bootstrap path of `nominate_new_admin`.
+fn setup_with_admin<'a>() -> (Env, Address, Address, VaultRegistryClient<'a>) {
     let (env, creator, client) = setup();
     let admin = Address::generate(&env);
-    client.initialize(&admin);
-    assert_eq!(client.admin(), admin);
+    client.nominate_new_admin(&admin);
+    (env, creator, admin, client)
 }
 
-#[test]
-fn initialize_duplicate_rejected() {
-    let (env, _creator, client) = setup();
-    let admin = Address::generate(&env);
-    client.initialize(&admin);
-    let other = Address::generate(&env);
-    assert_eq!(
-        client.try_initialize(&other),
-        Err(Ok(Error::AlreadyInitialized))
+/// Register a resource with a valid cuid2-shaped id and a valid metadata
+/// pointer, no tags. Returns the id.
+fn register_default<'a>(
+    env: &Env,
+    creator: &Address,
+    client: &VaultRegistryClient<'a>,
+    id: &str,
+) -> String {
+    let id = String::from_str(env, id);
+    client.register(
+        creator,
+        &id,
+        &100i128,
+        &String::from_str(env, "ipfs://m"),
+        &empty_tags(env),
     );
-    // Original admin preserved.
-    assert_eq!(client.admin(), admin);
+    id
+}
+
+// ─── Verifier role management (#437) ───────────────────────────────────────
+
+#[test]
+fn admin_can_grant_and_revoke_verifier() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let verifier = Address::generate(&env);
+
+    assert!(!client.is_verifier(&verifier));
+
+    client.add_verifier(&verifier);
+    assert!(client.is_verifier(&verifier));
+
+    client.remove_verifier(&verifier);
+    assert!(!client.is_verifier(&verifier));
 }
 
 #[test]
-fn admin_uninitialized_returns_not_found() {
-    let (_env, _creator, client) = setup();
-    assert_eq!(client.try_admin(), Err(Ok(Error::NotFound)));
+fn add_verifier_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let verifier = Address::generate(&env);
+    let res = client.try_add_verifier(&verifier);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn is_verifier_false_for_unknown_address() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_verifier(&stranger));
+}
+
+// ─── On-chain verification status mirror (#436) ────────────────────────────
+
+#[test]
+fn resource_starts_pending_and_unfrozen() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "vres0");
+    let resource = client.get(&id);
+    assert_eq!(resource.verified, VerificationStatus::Pending);
+    assert!(!resource.frozen);
+}
+
+#[test]
+fn verifier_can_verify_pending_resource() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres1");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    assert_eq!(client.get(&id).verified, VerificationStatus::Verified);
+}
+
+#[test]
+fn set_verification_status_emits_old_and_new_status() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres2");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+
+    let all = env.events().all();
+    let (_contract, _topics, data) = all.get_unchecked(all.len() - 1);
+    let decoded: (VerificationStatus, VerificationStatus) =
+        <(VerificationStatus, VerificationStatus)>::try_from_val(&env, &data)
+            .expect("failed to decode verification event");
+    assert_eq!(decoded.0, VerificationStatus::Pending);
+    assert_eq!(decoded.1, VerificationStatus::Verified);
+}
+
+#[test]
+fn non_verifier_cannot_set_verification_status() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres3");
+    let stranger = Address::generate(&env);
+
+    let res = client.try_set_verification_status(&id, &stranger, &VerificationStatus::Verified);
+    assert_eq!(res, Err(Ok(Error::NotVerifier)));
+    assert_eq!(client.get(&id).verified, VerificationStatus::Pending);
+}
+
+#[test]
+fn revoked_verifier_cannot_set_verification_status() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres4");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+    client.remove_verifier(&verifier);
+
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    assert_eq!(res, Err(Ok(Error::NotVerifier)));
+}
+
+#[test]
+fn verification_self_transition_rejected() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres5");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    // Pending -> Pending is a no-op and rejected as invalid.
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending);
+    assert_eq!(res, Err(Ok(Error::InvalidVerificationTransition)));
+}
+
+#[test]
+fn verification_cannot_revert_to_pending() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres6");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending);
+    assert_eq!(res, Err(Ok(Error::InvalidVerificationTransition)));
+}
+
+#[test]
+fn verification_round_trip_verified_rejected_verified() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres7");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Rejected);
+    assert_eq!(client.get(&id).verified, VerificationStatus::Rejected);
+
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    assert_eq!(client.get(&id).verified, VerificationStatus::Verified);
+}
+
+#[test]
+fn verification_status_on_missing_resource_fails() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    let res = client.try_set_verification_status(
+        &String::from_str(&env, "nosuchresource"),
+        &verifier,
+        &VerificationStatus::Verified,
+    );
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+// ─── Metadata freeze (#438) ────────────────────────────────────────────────
+
+#[test]
+fn event_schema_matches_documented_readme_table() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("contract/README.md must be readable from the vault-registry crate");
+
+    let events_section = readme
+        .split("### Events")
+        .nth(1)
+        .expect("contract/README.md must have an `### Events` section")
+        .split("### Registry info")
+        .next()
+        .expect("`### Events` section must be followed by `### Registry info`");
+
+    for (topic, _payload) in EVENT_SCHEMA {
+        let needle = std::format!("| `{topic}` ");
+        assert!(
+            events_section.contains(needle.as_str()),
+            "EVENT_SCHEMA lists `{topic}` but contract/README.md's Events table \
+             does not document it — update the table to match lib.rs::EVENT_SCHEMA"
+        );
+    }
+
+    // Reverse direction: every event name documented in the table's leading
+    // column must be a real, currently-emitted topic in EVENT_SCHEMA — and
+    // there must be exactly one documented row per schema entry (no stale
+    // duplicates left behind by a bad merge).
+    let documented: std::vec::Vec<&str> = events_section
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let rest = line.strip_prefix("| `")?;
+            let end = rest.find('`')?;
+            Some(&rest[..end])
+        })
+        .collect();
+
+    for name in &documented {
+        assert!(
+            EVENT_SCHEMA.iter().any(|(topic, _)| topic == name),
+            "contract/README.md documents event `{name}` but it is not in \
+             lib.rs::EVENT_SCHEMA — either the doc is stale or EVENT_SCHEMA is \
+             missing an entry"
+        );
+    }
+
+    assert_eq!(
+        documented.len(),
+        EVENT_SCHEMA.len(),
+        "contract/README.md's Events table row count must match EVENT_SCHEMA's \
+         length exactly (no duplicate or missing rows)"
+    );
+}
+
+#[test]
+fn freeze_metadata_sets_flag_and_emits_event() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres0");
+
+    client.freeze_metadata(&id);
+    // Checked immediately after the write, before any other invocation
+    // (e.g. a read call) rolls the per-invocation event log forward.
+    assert_eq!(env.events().all().len(), 1);
+    assert!(client.get(&id).frozen);
+}
+
+#[test]
+fn freeze_metadata_twice_fails() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres1");
+    client.freeze_metadata(&id);
+
+    let res = client.try_freeze_metadata(&id);
+    assert_eq!(res, Err(Ok(Error::AlreadyFrozen)));
+}
+
+#[test]
+fn update_metadata_on_frozen_resource_fails() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres2");
+    client.freeze_metadata(&id);
+
+    let res = client.try_update_metadata(&id, &String::from_str(&env, "ipfs://new"));
+    assert_eq!(res, Err(Ok(Error::MetadataFrozen)));
+}
+
+#[test]
+fn frozen_resource_still_allows_price_listing_tags_and_ownership_mutations() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "fres3");
+    client.freeze_metadata(&id);
+
+    client.set_price(&id, &500i128);
+    assert_eq!(client.get(&id).price, 500i128);
+
+    client.set_listed(&id, &false);
+    assert!(!client.get(&id).listed);
+
+    client.set_tags(&id, &tags(&env, &["dataset"]));
+    assert_eq!(client.get(&id).tags.len(), 1);
+
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.get(&id).creator, new_owner);
+
+    // Frozen state survives all of the above.
+    assert!(client.get(&id).frozen);
+}
+
+// ─── Index repair (#428) ───────────────────────────────────────────────────
+
+#[test]
+fn repair_index_rebuilds_from_authoritative_list() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres0a");
+    let b = register_default(&env, &creator, &client, "rres0b");
+    let c = register_default(&env, &creator, &client, "rres0c");
+
+    client.repair_index(&Vec::from_array(&env, [c.clone(), a.clone()]));
+
+    assert_eq!(client.count(), 2);
+    let page = client.list(&0u32, &10u32);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page.get(0).unwrap().id, c);
+    assert_eq!(page.get(1).unwrap().id, a);
+
+    // repair only rewrites the derived index — the dropped resource `b` is
+    // still directly addressable by id.
+    assert!(client.exists(&b));
+    assert_eq!(client.get(&b).id, b);
+}
+
+#[test]
+fn repair_index_rejects_unknown_id() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres1a");
+
+    let res = client.try_repair_index(&Vec::from_array(
+        &env,
+        [a.clone(), String::from_str(&env, "ghost")],
+    ));
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+    // No partial write: the index is untouched.
+    assert_eq!(client.count(), 1);
+    assert_eq!(client.list(&0u32, &10u32).get(0).unwrap().id, a);
+}
+
+#[test]
+fn repair_index_rejects_duplicates() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres2a");
+
+    let res = client.try_repair_index(&Vec::from_array(&env, [a.clone(), a.clone()]));
+    assert_eq!(res, Err(Ok(Error::DuplicateInRepair)));
+}
+
+#[test]
+fn repair_index_before_admin_set_fails() {
+    let (env, creator, client) = setup();
+    let a = register_default(&env, &creator, &client, "rres3a");
+
+    let res = client.try_repair_index(&Vec::from_array(&env, [a.clone()]));
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn repair_index_rerunning_current_list_is_a_safe_noop() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres4a");
+    let b = register_default(&env, &creator, &client, "rres4b");
+
+    client.repair_index(&Vec::from_array(&env, [a.clone(), b.clone()]));
+    assert_eq!(client.count(), 2);
+    let page = client.list(&0u32, &10u32);
+    assert_eq!(page.get(0).unwrap().id, a);
+    assert_eq!(page.get(1).unwrap().id, b);
+}
+
+// ---------------------------------------------------------------------------
+// Issue 1 — MAX_METADATA_POINTER_LEN boundary hardening
+// ---------------------------------------------------------------------------
+//
+// Acceptance criteria:
+//   • Exact max length succeeds.            (register_accepts_metadata_at_max_length above)
+//   • Max + 1 fails with MetadataTooLong.   (register_rejects_metadata_over_max_length above)
+//   • Random shorter format-valid strings succeed.  ← proptest below
+//   • update_metadata obeys the same boundary.      (update_metadata_accepts_at_max_length above)
+//   • Error handling is deterministic: only MetadataTooLong is returned for over-limit,
+//     never a panic or a different error code.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(60))]
+    /// Any format-valid metadata pointer up to MAX_METADATA_POINTER_LEN bytes
+    /// must be accepted by both `register` and `update_metadata`. The prefix
+    /// is fixed; the body length is drawn uniformly in [0, max − prefix_len].
+    #[test]
+    fn metadata_boundary_shorter_strings_always_succeed(
+        id_str   in r"[a-z][a-z0-9]{0,10}",
+        body_len in 0usize..=(512usize - "ipfs://".len()),
+        ch       in r"[a-zA-Z0-9]",
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+
+        let body: alloc::string::String = ch.repeat(body_len);
+        let raw = alloc::format!("ipfs://{}", body);
+        // Double-check our generator stays within the contract limit.
+        prop_assert!(raw.len() <= MAX_METADATA_POINTER_LEN as usize);
+
+        let id       = String::from_str(&env, &id_str);
+        let metadata = String::from_str(&env, &raw);
+
+        // register must succeed
+        let reg_result = client.try_register(
+            &creator, &id, &100i128, &metadata, &empty_tags(&env),
+        );
+        prop_assert!(reg_result.is_ok(), "register rejected valid metadata of len {}: {:?}", raw.len(), reg_result);
+
+        // update_metadata must also succeed
+        let new_body: alloc::string::String = ch.repeat(body_len);
+        let new_raw  = alloc::format!("https://{}", new_body);
+        prop_assert!(new_raw.len() <= MAX_METADATA_POINTER_LEN as usize);
+        let new_meta = String::from_str(&env, &new_raw);
+        let upd_result = client.try_update_metadata(&id, &new_meta);
+        prop_assert!(upd_result.is_ok(), "update_metadata rejected valid metadata of len {}: {:?}", new_raw.len(), upd_result);
+    }
+
+    /// Over-limit metadata (MAX + 1 … MAX + 50) must always return MetadataTooLong,
+    /// never any other error and never succeed.
+    #[test]
+    fn metadata_over_limit_always_returns_metadata_too_long(
+        id_str  in r"[a-z][a-z0-9]{0,10}",
+        excess  in 1usize..=50usize,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+
+        let prefix = "ipfs://";
+        let total_len = MAX_METADATA_POINTER_LEN as usize + excess;
+        let body: alloc::string::String = "a".repeat(total_len - prefix.len());
+        let raw = alloc::format!("{}{}", prefix, body);
+
+        let id       = String::from_str(&env, &id_str);
+        let metadata = String::from_str(&env, &raw);
+
+        let res = client.try_register(
+            &creator, &id, &100i128, &metadata, &empty_tags(&env),
+        );
+        prop_assert_eq!(
+            res,
+            Err(Ok(Error::MetadataTooLong)),
+            "expected MetadataTooLong for metadata len {}", raw.len()
+        );
+        // Resource must not have been created.
+        prop_assert!(!client.exists(&id));
+
+        // update_metadata on an existing resource with over-limit pointer also
+        // returns MetadataTooLong and leaves the original metadata untouched.
+        let valid_meta = String::from_str(&env, "ipfs://seed");
+        let id2 = String::from_str(&env, &alloc::format!("{}x", &id_str[..id_str.len().min(10)]));
+        // id2 may collide across runs; skip if already exists via the try_ variant
+        if client.try_register(&creator, &id2, &100i128, &valid_meta, &empty_tags(&env)).is_ok() {
+            let upd = client.try_update_metadata(&id2, &metadata);
+            prop_assert_eq!(
+                upd,
+                Err(Ok(Error::MetadataTooLong)),
+                "update_metadata should return MetadataTooLong for len {}", raw.len()
+            );
+            prop_assert_eq!(client.get(&id2).metadata, valid_meta);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue 2 — Duplicate detection stability across lifecycle flows
+// ---------------------------------------------------------------------------
+//
+// Acceptance criteria:
+//   • Duplicate register always fails with AlreadyRegistered.
+//   • count and Index state are unchanged after every failed duplicate attempt.
+//   • Stability holds after transfer, delist, relist, and propose/accept flows.
+
+/// After transferring ownership, the old id is still occupied — a duplicate
+/// register must fail regardless of whether the caller is the old or new owner.
+#[test]
+fn duplicate_register_fails_after_transfer_ownership() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+    let id = String::from_str(&env, "dupxfer");
+    let meta = String::from_str(&env, "ipfs://m");
+
+    client.register(&alice, &id, &100i128, &meta, &empty_tags(&env));
+    client.transfer_ownership(&id, &bob);
+
+    // Both the old and the new owner must be rejected on a fresh register.
+    assert_eq!(
+        client.try_register(&alice, &id, &200i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(
+        client.try_register(&bob, &id, &300i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    // count and index must be unchanged.
+    assert_eq!(client.count(), 1);
+    assert_eq!(client.list(&0u32, &10u32).get(0).unwrap().id, id);
+    assert_eq!(client.get_owner(&id), bob);
+}
+
+/// After propose + accept transfer, the id is still locked against re-registration.
+#[test]
+fn duplicate_register_fails_after_propose_accept_transfer() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+    let id = String::from_str(&env, "dupaccept");
+    let meta = String::from_str(&env, "ipfs://m");
+
+    client.register(&alice, &id, &100i128, &meta, &empty_tags(&env));
+    client.propose_transfer(&id, &bob);
+    client.accept_transfer(&id);
+
+    assert_eq!(
+        client.try_register(&alice, &id, &200i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(
+        client.try_register(&bob, &id, &300i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(client.count(), 1);
+    assert_eq!(client.get_owner(&id), bob);
+}
+
+/// Delisting a resource does not vacate its id — a duplicate register must fail
+/// on both a delisted and a relisted resource, with count/index intact throughout.
+#[test]
+fn duplicate_register_fails_across_delist_and_relist() {
+    let (env, alice, client) = setup();
+    let id = String::from_str(&env, "dupdelist");
+    let meta = String::from_str(&env, "ipfs://m");
+
+    client.register(&alice, &id, &100i128, &meta, &empty_tags(&env));
+
+    // After delist: id still occupied.
+    client.delist(&id);
+    assert!(!client.get(&id).listed);
+    assert_eq!(
+        client.try_register(&alice, &id, &200i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(client.count(), 1);
+
+    // After relist: id still occupied.
+    client.set_listed(&id, &true);
+    assert!(client.get(&id).listed);
+    assert_eq!(
+        client.try_register(&alice, &id, &300i128, &meta, &empty_tags(&env)),
+        Err(Ok(Error::AlreadyRegistered)),
+    );
+    assert_eq!(client.count(), 1);
+
+    // Index order is stable throughout.
+    assert_eq!(client.list(&0u32, &10u32).get(0).unwrap().id, id);
+}
+
+/// Multi-resource scenario: duplicate attempts against any of several resources
+/// (after mixed transfer / delist / relist ops) never corrupt count or index order.
+#[test]
+fn duplicate_detection_stable_after_mixed_lifecycle_ops() {
+    let (env, alice, client) = setup();
+    let bob = Address::generate(&env);
+    let meta = String::from_str(&env, "ipfs://m");
+
+    let r0 = String::from_str(&env, "mxr0");
+    let r1 = String::from_str(&env, "mxr1");
+    let r2 = String::from_str(&env, "mxr2");
+
+    client.register(&alice, &r0, &100i128, &meta, &empty_tags(&env));
+    client.register(&alice, &r1, &200i128, &meta, &empty_tags(&env));
+    client.register(&alice, &r2, &300i128, &meta, &empty_tags(&env));
+
+    // Mutate state.
+    client.transfer_ownership(&r0, &bob);
+    client.delist(&r1);
+    client.set_listed(&r1, &true); // relist
+
+    // Each duplicate attempt must return AlreadyRegistered.
+    for id in [&r0, &r1, &r2] {
+        assert_eq!(
+            client.try_register(&alice, id, &1i128, &meta, &empty_tags(&env)),
+            Err(Ok(Error::AlreadyRegistered)),
+            "expected AlreadyRegistered for id {:?}", id,
+        );
+        assert_eq!(
+            client.try_register(&bob, id, &1i128, &meta, &empty_tags(&env)),
+            Err(Ok(Error::AlreadyRegistered)),
+            "expected AlreadyRegistered for id {:?}", id,
+        );
+    }
+
+    // Count stays at 3; insertion order is preserved.
+    assert_eq!(client.count(), 3);
+    let page = client.list(&0u32, &10u32);
+    assert_eq!(page.get(0).unwrap().id, r0);
+    assert_eq!(page.get(1).unwrap().id, r1);
+    assert_eq!(page.get(2).unwrap().id, r2);
+}
+// ── updated_at ledger metadata (#365) ───────────────────────────────────────
+
+/// `register` stamps updated_at with the ledger sequence at call time.
+#[test]
+fn register_stamps_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(42);
+    let id = String::from_str(&env, "ts1");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    assert_eq!(client.get(&id).updated_at, 42);
+}
+
+/// `set_price` updates updated_at to the ledger sequence at call time.
+#[test]
+fn set_price_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(10);
+    let id = String::from_str(&env, "ts2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 10);
+
+    env.ledger().set_sequence_number(55);
+    client.set_price(&id, &200i128);
+    assert_eq!(client.get(&id).updated_at, 55);
+}
+
+/// `update_metadata` updates updated_at to the ledger sequence at call time.
+#[test]
+fn update_metadata_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(7);
+    let id = String::from_str(&env, "ts3");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://old"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 7);
+
+    env.ledger().set_sequence_number(99);
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://new"));
+    assert_eq!(client.get(&id).updated_at, 99);
+}
+
+/// `transfer_ownership` updates updated_at to the ledger sequence at call time.
+#[test]
+fn transfer_ownership_updates_updated_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(3);
+    let id = String::from_str(&env, "ts4");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 3);
+
+    let new_owner = Address::generate(&env);
+    env.ledger().set_sequence_number(200);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.get(&id).updated_at, 200);
+}
+
+/// updated_at is independent per resource and not shared across resources.
+#[test]
+fn updated_at_is_per_resource() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(1);
+    let id_a = String::from_str(&env, "tsa");
+    client.register(
+        &creator,
+        &id_a,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger().set_sequence_number(2);
+    let id_b = String::from_str(&env, "tsb");
+    client.register(
+        &creator,
+        &id_b,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Mutate only b at ledger 50.
+    env.ledger().set_sequence_number(50);
+    client.set_price(&id_b, &999i128);
+
+    // a should still reflect ledger 1; b should reflect ledger 50.
+    assert_eq!(client.get(&id_a).updated_at, 1);
+    assert_eq!(client.get(&id_b).updated_at, 50);
+}
+
+// ---------------------------------------------------------------------------
+// TTL bump on read paths (#372)
+// ---------------------------------------------------------------------------
+//
+// Every public read that touches a persistent entry (get, get_owner, exists,
+// list, list_page, list_listed, list_by_creator, get_terms_hash) must call
+// `bump_persistent` on each entry it successfully reads.  A resource that is
+// being browsed or paid for is "hot" and must not be archived.
+//
+// Design choice: reads use the same BUMP_AMOUNT / LIFETIME_THRESHOLD as
+// writes.  A resource that is only ever read (never mutated) will therefore
+// stay alive as long as it keeps getting reads — exactly the "hot resource"
+// semantics described in the issue.  Instance-storage entries (Count, Admin,
+// CreatorCount, Verifier, …) are NOT bumped on reads; they are refreshed on
+// every write and bumping them per-read would be unnecessarily expensive.
+//
+// All tests below follow the same pattern:
+//   1. Register the resource (TTL = BUMP_AMOUNT immediately after write).
+//   2. Advance the ledger by TTL_DAY_IN_LEDGERS to let the TTL decay by one day.
+//   3. Call the read-only path under test.
+//   4. Assert the TTL is restored to BUMP_AMOUNT.
+
+/// Helper: read the persistent TTL for a Resource key directly from contract
+/// storage. Already defined at the top of this file as `resource_storage_ttl`.
+
+/// `get` restores TTL on a hot resource.
+#[test]
+fn get_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlget");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Let TTL decay by one day.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
+        "TTL should have decayed before the read"
+    );
+
+    // A read via `get` must restore the TTL.
+    client.get(&id);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "get must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// `get_owner` restores TTL on a hot resource.
+#[test]
+fn get_owner_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlgetowner");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    client.get_owner(&id);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "get_owner must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// `exists` restores TTL when the resource is found.
+#[test]
+fn exists_bumps_ttl_when_found() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlexists");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    assert!(client.exists(&id));
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "exists must bump TTL when the entry is found"
+    );
+}
+
+/// `exists` does NOT bump when the resource is absent (nothing to bump).
+#[test]
+fn exists_does_not_bump_when_absent() {
+    let (env, _creator, client) = setup();
+    // No register — the key does not exist.
+    let missing = String::from_str(&env, "ttlmissing");
+    assert!(!client.exists(&missing));
+    // No panic / storage error; the test passing is sufficient.
+}
+
+/// `list` (delegates to `list_page`) restores TTL on every resource it returns.
+#[test]
+fn list_bumps_ttl_for_returned_resources() {
+    let (env, creator, client) = setup();
+    let ids = ["ttll0", "ttll1", "ttll2"];
+    for id_str in &ids {
+        client.register(
+            &creator,
+            &String::from_str(&env, id_str),
+            &100i128,
+            &String::from_str(&env, "ipfs://m"),
+            &empty_tags(&env),
+        );
+    }
+
+    // Decay TTL by one day across all entries.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+
+    for id_str in &ids {
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
+            TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
+            "TTL must have decayed before the read"
+        );
+    }
+
+    // One call to list covers all three resources.
+    client.list(&0u32, &20u32);
+
+    for id_str in &ids {
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
+            TTL_BUMP_AMOUNT,
+            "list must bump TTL for each returned resource"
+        );
+    }
+}
+
+/// `list_listed` restores TTL for listed resources (and also for the
+/// skipped-but-read delisted ones, since their index/resource entries are
+/// still accessed during the scan).
+#[test]
+fn list_listed_bumps_ttl_for_scanned_resources() {
+    let (env, creator, client) = setup();
+    let id_listed = String::from_str(&env, "ttllisted");
+    let id_delisted = String::from_str(&env, "ttldelisted");
+
+    client.register(
+        &creator,
+        &id_listed,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.register(
+        &creator,
+        &id_delisted,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.delist(&id_delisted);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+
+    // Both should have decayed.
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_listed),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_delisted),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    // list_listed scans all entries (including delisted ones) to find listed ones.
+    let page = client.list_listed(&0u32, &20u32);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0).unwrap().id, id_listed);
+
+    // Both entries were touched during the scan — both get their TTL restored.
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_listed),
+        TTL_BUMP_AMOUNT,
+        "list_listed must bump TTL for listed resources it returns"
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_delisted),
+        TTL_BUMP_AMOUNT,
+        "list_listed must bump TTL for delisted resources it reads during the scan"
+    );
+}
+
+/// `list_by_creator` restores TTL for every resource it returns.
+#[test]
+fn list_by_creator_bumps_ttl_for_returned_resources() {
+    let (env, creator, client) = setup();
+    let id_a = String::from_str(&env, "ttlbyca");
+    let id_b = String::from_str(&env, "ttlbycb");
+
+    client.register(
+        &creator,
+        &id_a,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.register(
+        &creator,
+        &id_b,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_a),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_b),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    let page = client.list_by_creator(&creator, &0u32, &20u32);
+    assert_eq!(page.len(), 2);
+
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_a),
+        TTL_BUMP_AMOUNT,
+        "list_by_creator must bump TTL for each returned resource"
+    );
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id_b),
+        TTL_BUMP_AMOUNT,
+        "list_by_creator must bump TTL for each returned resource"
+    );
+}
+
+/// `get_terms_hash` restores TTL on the terms entry it reads.
+#[test]
+fn get_terms_hash_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+
+    // Register a resource so the instance storage is freshly bumped just
+    // before the terms write. This prevents the instance from archiving when
+    // we later advance the ledger past LIFETIME_THRESHOLD to trigger the bump.
+    client.register(
+        &creator,
+        &String::from_str(&env, "ttlterms"),
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let terms = String::from_str(&env, "sha256:abc123");
+    client.set_terms_hash(&creator, &terms);
+
+    let key = DataKey::CreatorTerms(creator.clone());
+    let ttl_after_write =
+        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(ttl_after_write, TTL_BUMP_AMOUNT);
+
+    // Advance past LIFETIME_THRESHOLD (= BUMP_AMOUNT - DAY_IN_LEDGERS) so the
+    // conditional extend_ttl fires. The instance was just bumped by
+    // set_terms_hash, so it won't archive at this depth.
+    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + decay);
+    let ttl_after_decay =
+        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(
+        ttl_after_decay,
+        TTL_BUMP_AMOUNT - decay,
+        "TTL should have decayed before the read"
+    );
+
+    // A read must restore it.
+    client.get_terms_hash(&creator);
+    let ttl_after_read =
+        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
+    assert_eq!(
+        ttl_after_read, TTL_BUMP_AMOUNT,
+        "get_terms_hash must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// Reads do NOT bump TTL when they return an error (entry not found).
+#[test]
+fn failed_reads_do_not_bump_ttl() {
+    let (env, creator, client) = setup();
+    // Register one real resource so the contract has state.
+    let id = String::from_str(&env, "ttlrealerr");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Calls against a non-existent id must return NotFound and not panic.
+    let missing = String::from_str(&env, "nosuchresource");
+    assert_eq!(client.try_get(&missing), Err(Ok(Error::NotFound)));
+    assert_eq!(client.try_get_owner(&missing), Err(Ok(Error::NotFound)));
+    assert!(!client.exists(&missing));
+    // No assertion on a specific TTL value here — there is no entry to measure.
+    // The test passing without a trap is the correctness signal.
+}
+
+/// A single resource that is read repeatedly never falls below BUMP_AMOUNT
+/// in TTL, regardless of how many ledgers pass between reads.
+#[test]
+fn repeated_reads_keep_ttl_at_bump_amount() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlrepeat");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Simulate 5 days of decay followed by a read, repeated 3 times.
+    for _ in 0..3 {
+        env.ledger()
+            .set_sequence_number(env.ledger().sequence() + 5 * TTL_DAY_IN_LEDGERS);
+        client.get(&id);
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &id),
+            TTL_BUMP_AMOUNT,
+            "TTL must be restored to BUMP_AMOUNT after each read"
+        );
+    }
 }

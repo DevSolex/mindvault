@@ -64,7 +64,9 @@ describe("RegisterModal", () => {
     await waitFor(() => {
       expect(mocks.prepareRegisterTx).toHaveBeenCalledWith("res-1", "key-1");
     });
-    expect(screen.getByText(/ready to sign transaction/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText(/ready to sign transaction/i)).toBeInTheDocument();
+    });
     expect(screen.getByRole("button", { name: /sign & submit/i })).toBeInTheDocument();
   });
 

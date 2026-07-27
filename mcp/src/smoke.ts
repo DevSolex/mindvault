@@ -81,10 +81,41 @@ export function isToolError(res: ToolCallResult): boolean {
   return /^Error:/m.test(resultText(res));
 }
 
-/** Extract the resource id printed by `mindvault_publish` ("ID: <id>"). */
+/**
+ * Extract the resource id from `mindvault_publish` output.
+ *
+ * The tool reports a JSON before/after summary; older builds printed a plain
+ * "ID: <id>" line. Both are accepted so the smoke test works against either.
+ */
 export function parseResourceId(text: string): string | null {
+  const summary = parsePublishSummary(text);
+  const id = summary?.after?.id ?? summary?.id;
+  if (typeof id === "string" && id.length > 0) return id;
+
   const match = text.match(/^ID:\s*(\S+)/m);
   return match ? match[1] : null;
+}
+
+/** Parse publish output as the JSON summary, or null when it is plain text. */
+function parsePublishSummary(text: string): { id?: string; after?: { id?: string } } | null {
+  if (!text.trimStart().startsWith("{")) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether publish actually listed a resource.
+ *
+ * A publish can "succeed" as a tool call while reporting a soft failure —
+ * insufficient funds, or a rejected verification — so the smoke test asserts on
+ * the outcome rather than the absence of an error.
+ */
+export function publishSucceeded(text: string): boolean {
+  return parseResourceId(text) !== null && !/insufficient|rejected by verification/i.test(text);
 }
 
 function errorMessage(err: unknown): string {
@@ -205,7 +236,7 @@ export function buildSmokeSteps(scenario: SmokeScenario = DEFAULT_SCENARIO): Smo
         price: scenario.price,
         externalUrl: scenario.externalUrl,
       },
-      expect: (text) => /Resource published\./.test(text),
+      expect: publishSucceeded,
       expectMessage:
         "Publish did not complete (resource was not verified/registered). Ensure the wallet is funded when targeting testnet.",
       capture: (text, ctx) => {

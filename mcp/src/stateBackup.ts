@@ -15,7 +15,7 @@
  */
 
 import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { STATE_VERSION, type ProfileState, type WalletProfile } from "./profiles.js";
@@ -182,8 +182,7 @@ function normalizePersisted(raw: unknown): ProfileState {
     profiles[name] = profile;
   }
   const requested = typeof obj.activeProfile === "string" ? obj.activeProfile : "default";
-  const activeProfile =
-    (requested in profiles ? requested : Object.keys(profiles)[0]) ?? "default";
+  const activeProfile = (requested in profiles ? requested : Object.keys(profiles)[0]) ?? "default";
   return { version: STATE_VERSION, activeProfile, profiles };
 }
 
@@ -200,3 +199,89 @@ export function persistState(state: ProfileState): void {
   }
 }
 
+// ── State file permission checks ────────────────────────────────────────────
+
+export interface StatePermissionResult {
+  exists: boolean;
+  mode: string | null;
+  expectedMode: string;
+  isSafe: boolean;
+  message: string;
+}
+
+/**
+ * Format a numeric mode as a 4-digit octal string (e.g. 0o600 → "0600").
+ */
+function formatMode(mode: number): string {
+  return "0" + (mode & 0o7777).toString(8).padStart(3, "0");
+}
+
+/**
+ * Check the state file's permissions. Returns whether the file exists, its
+ * current mode, whether it matches the expected 0600, and an actionable message.
+ *
+ * The state file contains wallet secret keys and publisher API keys, so it
+ * must be mode 0600 (owner read/write only). Broader permissions (e.g. 0644)
+ * allow other users on the system to read the secrets.
+ */
+export function checkStatePermissions(): StatePermissionResult {
+  const EXPECTED = 0o600;
+  const expectedStr = formatMode(EXPECTED);
+
+  if (!existsSync(STATE_FILE)) {
+    return {
+      exists: false,
+      mode: null,
+      expectedMode: expectedStr,
+      isSafe: true,
+      message: `State file ${STATE_FILE} does not exist. No secrets to protect.`,
+    };
+  }
+
+  try {
+    const stat = statSync(STATE_FILE);
+    // stat.mode includes file type bits; mask to permission bits only.
+    const permBits = stat.mode & 0o7777;
+    const currentStr = formatMode(permBits);
+    const isSafe = permBits === EXPECTED;
+
+    if (isSafe) {
+      return {
+        exists: true,
+        mode: currentStr,
+        expectedMode: expectedStr,
+        isSafe: true,
+        message: `State file permissions are safe (${currentStr}).`,
+      };
+    }
+
+    // Build an actionable warning for unsafe modes.
+    const othersRead = (permBits & 0o004) !== 0;
+    const groupRead = (permBits & 0o040) !== 0;
+    const issues: string[] = [];
+    if (othersRead) issues.push("world-readable (other can read)");
+    if (groupRead) issues.push("group-readable");
+    if ((permBits & 0o002) !== 0) issues.push("world-writable");
+    if ((permBits & 0o020) !== 0) issues.push("group-writable");
+
+    return {
+      exists: true,
+      mode: currentStr,
+      expectedMode: expectedStr,
+      isSafe: false,
+      message: [
+        `State file permissions are UNSAFE (${currentStr}): ${issues.join(", ")}.`,
+        `Wallet secret keys and API keys may be readable by other users.`,
+        `Fix: chmod ${expectedStr} ${STATE_FILE}`,
+      ].join("\n"),
+    };
+  } catch (err) {
+    return {
+      exists: true,
+      mode: null,
+      expectedMode: expectedStr,
+      isSafe: false,
+      message: `Could not read state file permissions: ${err}`,
+    };
+  }
+}

@@ -64,3 +64,7 @@ The orchestration core is unit-tested in
 [`mcp/src/smoke.test.ts`](../mcp/src/smoke.test.ts) (happy path, first-failure
 short-circuit, soft-error handling, and transport failure) and runs as part of
 `pnpm --filter @mindvault/mcp test` and the root `pnpm test`.
+
+For SDK-level coverage of `listTools` / `callTool` against the real server
+handlers (with mocked fetch/registry), see
+[mcp-integration-harness.md](mcp-integration-harness.md).

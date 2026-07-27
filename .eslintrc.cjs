@@ -10,7 +10,7 @@ module.exports = {
       "./server/tsconfig.json",
       "./web/tsconfig.json",
       "./packages/registry-client/tsconfig.eslint.json",
-      "./mcp/tsconfig.json",
+      "./mcp/tsconfig.eslint.json",
     ],
     tsconfigRootDir: __dirname,
     sourceType: "module",

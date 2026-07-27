@@ -13,105 +13,176 @@ through x402 and the USDC Stellar Asset Contract (see the root README). The
 registry complements that: the server settles payment via x402, and records /
 reads the canonical resource entry here.
 
+### Resource type
+
+| Function                                       | Auth                  | Args                                                                                                                                                                                                                                                                   | Returns                   | Description                                                                                                              |
+| ---------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `register(creator, id, price, metadata, tags)` | `creator`             | `creator: Address` — the resource owner; `id: String` — unique cuid2 (1–24 bytes); `price: i128` — USDC stroops (`> 0`, `<= MAX_PRICE`); `metadata: String` — pointer (max 512 bytes, non-empty, supported prefix); `tags: Vec<String>` — discovery labels (0–8 items) | `Result<(), Error>`       | Register a new resource. Resources are listed by default.                                                                |
+| `set_price(id, new_price)`                     | `creator`             | `id: String`; `new_price: i128` — USDC stroops (`> 0`, `<= MAX_PRICE`)                                                                                                                                                                                                 | `Result<(), Error>`       | Update the resource price.                                                                                               |
+| `update_metadata(id, metadata)`                | `creator`             | `id: String`; `metadata: String` — new pointer (max 512 bytes, non-empty, supported prefix)                                                                                                                                                                            | `Result<(), Error>`       | Update the metadata pointer.                                                                                             |
+| `set_tags(id, tags)`                           | `creator`             | `id: String`; `tags: Vec<String>` — replacement discovery labels (0–8 items)                                                                                                                                                                                           | `Result<(), Error>`       | Replace a resource's discovery tags. Does not touch `metadata`.                                                          |
+| `transfer_ownership(id, new_creator)`          | `creator`             | `id: String`; `new_creator: Address`                                                                                                                                                                                                                                   | `Result<(), Error>`       | Immediately transfer resource ownership. Clears any pending proposed transfer.                                           |
+| `propose_transfer(id, new_creator)`            | `creator`             | `id: String`; `new_creator: Address`                                                                                                                                                                                                                                   | `Result<(), Error>`       | Propose a transfer that `new_creator` must accept.                                                                       |
+| `accept_transfer(id)`                          | pending owner         | `id: String`                                                                                                                                                                                                                                                           | `Result<(), Error>`       | Accept a proposed transfer. Only the pending owner may call this.                                                        |
+| `cancel_transfer(id)`                          | `creator`             | `id: String`                                                                                                                                                                                                                                                           | `Result<(), Error>`       | Cancel a proposed transfer.                                                                                              |
+| `set_listed(id, listed)`                       | `creator`             | `id: String`; `listed: bool`                                                                                                                                                                                                                                           | `Result<(), Error>`       | Set the listing state (`true` = listed, `false` = delisted).                                                             |
+| `delist(id)`                                   | `creator`             | `id: String`                                                                                                                                                                                                                                                           | `Result<(), Error>`       | Convenience; equivalent to `set_listed(id, false)`.                                                                      |
+| `list(start, limit)`                           | —                     | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20)                                                                                                                                                                                                  | `Vec<Resource>`           | Paginated resource list in insertion order (body only; prefer `list_page` for cursors).                                  |
+| `list_page(cursor, limit)`                     | —                     | `cursor: u32` — 0‑based catalog index; `limit: u32` — page size (capped at 20)                                                                                                                                                                                         | `CatalogPage`             | Paginated page with `items` + `next_cursor` (`None` = end-of-list).                                                      |
+| `list_listed(start, limit)`                    | —                     | `start: u32`; `limit: u32` (capped at 20)                                                                                                                                                                                                                              | `Vec<Resource>`           | Paginated list of **listed-only** resources. Delisted resources are skipped; relisted resources reappear.                |
+| `list_by_creator(creator, start, limit)`       | —                     | `creator: Address`; `start: u32`; `limit: u32` (capped at 20)                                                                                                                                                                                                          | `Vec<Resource>`           | Paginated list of resources currently owned by `creator`.                                                                |
+| `get(id)`                                      | —                     | `id: String`                                                                                                                                                                                                                                                           | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent.                                                                     |
+| `exists(id)`                                   | —                     | `id: String`                                                                                                                                                                                                                                                           | `bool`                    | Whether a resource is registered.                                                                                        |
+| `get_owner(id)`                                | —                     | `id: String`                                                                                                                                                                                                                                                           | `Result<Address, Error>`  | Fetch the current owner of a resource. Errors `NotFound` if absent.                                                      |
+| `count()`                                      | —                     | —                                                                                                                                                                                                                                                                      | `u32`                     | Total resources successfully registered (monotonic; never decremented).                                                  |
+| `creator_resource_count(creator)`              | —                     | `creator: Address`                                                                                                                                                                                                                                                     | `u32`                     | Resources currently owned by `creator` (moves with ownership transfer, unlike `count()`).                                |
+| `registry_info()`                              | —                     | —                                                                                                                                                                                                                                                                      | `RegistryInfo`            | Discover this registry's name, version, resource schema version, and network in one read-only call. Always succeeds.     |
+| `admin()`                                      | —                     | —                                                                                                                                                                                                                                                                      | `Option<Address>`         | Current contract admin address (`None` before any admin is set).                                                         |
+| `pending_admin()`                              | —                     | —                                                                                                                                                                                                                                                                      | `Option<Address>`         | Pending nominated contract admin address.                                                                                |
+| `nominate_new_admin(new_admin)`                | `admin` / `new_admin` | `new_admin: Address`                                                                                                                                                                                                                                                   | `Result<(), Error>`       | Nominate a new contract admin. If no admin is set yet, this call bootstraps the initial admin directly (no accept step). |
+| `accept_admin(new_admin)`                      | `pending_admin`       | `new_admin: Address`                                                                                                                                                                                                                                                   | `Result<(), Error>`       | Accept a pending admin nomination and become contract admin.                                                             |
+| `set_terms_hash(creator, terms_hash)`          | `creator`             | `creator: Address`; `terms_hash: String` — max 64 bytes                                                                                                                                                                                                                | `Result<(), Error>`       | Store a hash of accepted marketplace terms for the creator.                                                              |
+| `get_terms_hash(creator)`                      | —                     | `creator: Address`                                                                                                                                                                                                                                                     | `Result<String, Error>`   | Fetch a creator's marketplace terms hash. Errors `NotFound` if absent.                                                   |
+
+```rust
+pub struct Resource {
+    pub id: String,        // unique resource ID (1-24 lowercase letters/digits), matches server resource ID
+    pub creator: Address,  // current owner's Stellar address
+    pub price: i128,       // price in USDC stroops (7 decimals)
+    pub metadata: String,  // pointer (supported URI or content-hash form), max 512 bytes, non-empty
+    pub listed: bool,      // whether the resource is available for discovery/purchase
+    pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
+    pub verified: VerificationStatus, // on-chain mirror of off-chain verification, settable only by a verifier
+    pub frozen: bool,      // once true, update_metadata is permanently rejected
+}
+
+pub enum VerificationStatus {
+    Pending,
+    Verified,
+    Rejected,
+}
+```
+
+Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`,
+and content-hash forms such as `sha256:`, `sha-256:`, or `0x`.
+
+### Catalog page (cursor primitive)
+
+```rust
+pub struct CatalogPage {
+    pub items: Vec<Resource>,     // this page of resources (insertion order)
+    pub next_cursor: Option<u32>, // next catalog index for `list`/`list_page`, or None at end-of-list
+}
+```
+
+Clients should paginate by passing `next_cursor` back as `cursor`/`start` instead of
+recomputing offsets from `items.len()`. `list(start, limit)` remains available and
+returns only the `items` body for existing callers.
+
 ### Methods
 
-| Function                                 | Auth                  | Args                                                                                                                                                   | Returns                   | Description                                                         |
-| ---------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------- | ------------------------------------------------------------------- |
-| `register(creator, id, price, metadata)` | `creator`             | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes) | `Result<(), Error>`       | Register a new resource. Resources are listed by default.           |
-| `set_price(id, new_price)`               | `creator`             | `id: String` — resource cuid2; `new_price: i128` — USDC stroops (> 0)                                                                                  | `Result<(), Error>`       | Update the resource price.                                          |
-| `update_metadata(id, metadata)`          | `creator`             | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes)                                                                        | `Result<(), Error>`       | Update the metadata pointer.                                        |
-| `transfer_ownership(id, new_creator)`    | `creator`             | `id: String` — resource cuid2; `new_creator: Address` — new owner                                                                                      | `Result<(), Error>`       | Transfer resource ownership to a new address.                       |
-| `set_listed(id, listed)`                 | `creator`             | `id: String` — resource cuid2; `listed: bool` — listing state                                                                                          | `Result<(), Error>`       | Set the listing state (true = listed, false = delisted).            |
-| `delist(id)`                             | `creator`             | `id: String` — resource cuid2                                                                                                                          | `Result<(), Error>`       | Convenience; equivalent to `set_listed(id, false)`.                 |
-| `list(start, limit)`                     | —                     | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20)                                                                                  | `Vec<Resource>`           | Paginated resource list in insertion order.                         |
-| `get(id)`                                | —                     | `id: String` — resource cuid2                                                                                                                          | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent.                |
-| `exists(id)`                             | —                     | `id: String` — resource cuid2                                                                                                                          | `bool`                    | Whether a resource is registered.                                   |
-| `count()`                                | —                     | —                                                                                                                                                      | `u32`                     | Total resources successfully registered (monotonic).                |
-| `admin()`                                | —                     | —                                                                                                                                                      | `Option<Address>`         | Current contract admin address.                                     |
-| `pending_admin()`                        | —                     | —                                                                                                                                                      | `Option<Address>`         | Pending nominated contract admin address.                           |
-| `nominate_new_admin(new_admin)`          | `admin` / `new_admin` | `new_admin: Address` — nominated admin                                                                                                                 | `Result<(), Error>`       | Nominate a new contract admin. If no admin set, sets initial admin. |
-| `accept_admin(new_admin)`                | `pending_admin`       | `new_admin: Address` — pending admin                                                                                                                   | `Result<(), Error>`       | Accept pending admin nomination and become contract admin.          |
+| Function                                        | Auth                                                     | Args                                                                                                                                                                                                                                                 | Returns                   | Description                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `register(creator, id, price, metadata, tags)`  | `creator`                                                | `creator: Address`; `id: String` — unique cuid2 (1-24 lowercase letters/digits); `price: i128` — USDC stroops, `0 < price <= MAX_PRICE`; `metadata: String` — non-empty pointer (max 512 bytes); `tags: Vec<String>` — max 8 tags, each max 32 bytes | `Result<(), Error>`       | Register a new resource. Resources are listed by default, start `Pending` verification, and start unfrozen. Reserved IDs (`admin`, `null`, `registry`, `api`, `index`, `root`, `system`, case-insensitive) are rejected.                                                                                 |
+| `set_price(id, new_price)`                      | `creator`                                                | `id: String`; `new_price: i128` — `0 < new_price <= MAX_PRICE`                                                                                                                                                                                       | `Result<(), Error>`       | Update the resource price. Emits `setprice` with the old and new price.                                                                                                                                                                                                                                  |
+| `update_metadata(id, metadata)`                 | `creator`                                                | `id: String`; `metadata: String` — new pointer (max 512 bytes, non-empty)                                                                                                                                                                            | `Result<(), Error>`       | Update the metadata pointer. Emits `updmeta` with the old and new pointer. Errors `MetadataFrozen` once `freeze_metadata` has been called.                                                                                                                                                               |
+| `freeze_metadata(id)`                           | `creator`                                                | `id: String`                                                                                                                                                                                                                                         | `Result<(), Error>`       | Permanently freeze the metadata pointer — `update_metadata` errors afterward. Irreversible; errors `AlreadyFrozen` if called twice. Price, listing, tags, and ownership stay mutable. Emits `freeze`.                                                                                                    |
+| `set_tags(id, tags)`                            | `creator`                                                | `id: String`; `tags: Vec<String>` — max 8 tags, each max 32 bytes                                                                                                                                                                                    | `Result<(), Error>`       | Replace discovery tags. Does not touch `metadata`. Emits `settags` with the previous and next tag lists.                                                                                                                                                                                                 |
+| `transfer_ownership(id, new_creator)`           | `creator`                                                | `id: String`; `new_creator: Address`                                                                                                                                                                                                                 | `Result<(), Error>`       | Transfer resource ownership immediately. Errors `AlreadyOwner` if `new_creator` already owns it. Clears any pending `propose_transfer` for the resource.                                                                                                                                                 |
+| `propose_transfer(id, new_creator)`             | `creator`                                                | `id: String`; `new_creator: Address`                                                                                                                                                                                                                 | `Result<(), Error>`       | Propose a two-step transfer; takes effect only once `new_creator` calls `accept_transfer`.                                                                                                                                                                                                               |
+| `accept_transfer(id)`                           | proposed `new_creator`                                   | `id: String`                                                                                                                                                                                                                                         | `Result<(), Error>`       | Accept a proposed transfer. Errors `NoPendingTransfer` if none is pending.                                                                                                                                                                                                                               |
+| `cancel_transfer(id)`                           | `creator`                                                | `id: String`                                                                                                                                                                                                                                         | `Result<(), Error>`       | Cancel a proposed transfer. Errors `NoPendingTransfer` if none is pending.                                                                                                                                                                                                                               |
+| `set_listed(id, listed)`                        | `creator`                                                | `id: String`; `listed: bool`                                                                                                                                                                                                                         | `Result<(), Error>`       | Set the listing state. Emits `setlisted` with `(old_listed, new_listed)`, even on a no-op transition.                                                                                                                                                                                                    |
+| `delist(id)`                                    | `creator`                                                | `id: String`                                                                                                                                                                                                                                         | `Result<(), Error>`       | Convenience; equivalent to `set_listed(id, false)`.                                                                                                                                                                                                                                                      |
+| `list(start, limit)`                            | —                                                        | `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                                                            | `Vec<Resource>`           | Paginated resource list in insertion order (items only; prefer `list_page` for cursors).                                                                                                                                                                                                                 |
+| `list_page(cursor, limit)`                      | —                                                        | `cursor: u32`; `limit: u32` — capped at 20                                                                                                                                                                                                           | `CatalogPage`             | Paginated page with `items` + `next_cursor`.                                                                                                                                                                                                                                                             |
+| `list_listed(start, limit)`                     | —                                                        | `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                                                            | `Vec<Resource>`           | Paginated list of listed-only resources. Delisted resources are skipped; relisted resources reappear.                                                                                                                                                                                                    |
+| `list_by_creator(creator, start, limit)`        | —                                                        | `creator: Address`; `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                                        | `Vec<Resource>`           | Paginated list of resources currently owned by `creator`, in registration order.                                                                                                                                                                                                                         |
+| `get(id)`                                       | —                                                        | `id: String`                                                                                                                                                                                                                                         | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent.                                                                                                                                                                                                                                                     |
+| `exists(id)`                                    | —                                                        | `id: String`                                                                                                                                                                                                                                         | `bool`                    | Whether a resource is registered.                                                                                                                                                                                                                                                                        |
+| `get_owner(id)`                                 | —                                                        | `id: String`                                                                                                                                                                                                                                         | `Result<Address, Error>`  | Fetch the resource's current owner. Errors `NotFound` if absent.                                                                                                                                                                                                                                         |
+| `count()`                                       | —                                                        | —                                                                                                                                                                                                                                                    | `u32`                     | Total resources ever successfully registered (monotonic; not decremented on transfer).                                                                                                                                                                                                                   |
+| `creator_resource_count(creator)`               | —                                                        | `creator: Address`                                                                                                                                                                                                                                   | `u32`                     | Number of resources currently owned by `creator` (moves with `transfer_ownership`/`accept_transfer`, unlike `count`).                                                                                                                                                                                    |
+| `admin()`                                       | —                                                        | —                                                                                                                                                                                                                                                    | `Option<Address>`         | Current contract admin address, if any has been set.                                                                                                                                                                                                                                                     |
+| `pending_admin()`                               | —                                                        | —                                                                                                                                                                                                                                                    | `Option<Address>`         | Pending nominated admin address, if a nomination is in flight.                                                                                                                                                                                                                                           |
+| `nominate_new_admin(new_admin)`                 | current `admin` (or `new_admin` for the first-ever call) | `new_admin: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | If no admin is set yet, bootstraps `new_admin` as admin directly. Otherwise nominates `new_admin` as pending admin; takes effect once they call `accept_admin`. Errors `SameAdmin` / `PendingAdminAlreadySet`.                                                                                           |
+| `accept_admin(new_admin)`                       | pending admin                                            | `new_admin: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Accept a pending admin nomination. Errors `PendingAdminNotSet` if `new_admin` doesn't match the pending nomination.                                                                                                                                                                                      |
+| `set_terms_hash(creator, terms_hash)`           | `creator`                                                | `creator: Address`; `terms_hash: String` — max 64 bytes                                                                                                                                                                                              | `Result<(), Error>`       | Store a hash of the creator's accepted marketplace terms.                                                                                                                                                                                                                                                |
+| `get_terms_hash(creator)`                       | —                                                        | `creator: Address`                                                                                                                                                                                                                                   | `Result<String, Error>`   | Fetch a creator's terms hash. Errors `NotFound` if absent.                                                                                                                                                                                                                                               |
+| `set_verification_status(id, verifier, status)` | `verifier`                                               | `id: String`; `verifier: Address`; `status: VerificationStatus`                                                                                                                                                                                      | `Result<(), Error>`       | Mirror off-chain verification status on-chain. Only `Pending→Verified`, `Pending→Rejected`, `Verified→Rejected`, and `Rejected→Verified` are allowed; other transitions (including no-ops and reverting to `Pending`) error `InvalidVerificationTransition`. Emits `verify` with the old and new status. |
+| `add_verifier(verifier)`                        | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                                       |
+| `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
+| `is_verifier(address)`                          | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the verifier role.                                                                                                                                                                                                                                                     |
+| `repair_index(ids)`                             | `admin`                                                  | `ids: Vec<String>` — authoritative ordered id list                                                                                                                                                                                                   | `Result<(), Error>`       | Rebuild the `list`/`list_page`/`count` pagination index from `ids`. Every id must already be a registered `Resource` (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md).                                  |
+
+### Roles
+
+Two roles sit alongside the per-resource `creator` and the pre-existing admin:
+
+- **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`) and repair the pagination index (`repair_index`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
+- **verifier** — zero or more addresses granted by the admin. Can only call `set_verification_status`. Cannot touch price, metadata, listing, tags, ownership, or the admin/verifier role list itself.
 
 ### Error codes
 
-| Code | Error                    | Description                                                      |
-| ---- | ------------------------ | ---------------------------------------------------------------- |
-| `1`  | `AlreadyRegistered`      | A resource with the given `id` already exists.                   |
-| `2`  | `NotFound`               | No resource matches the given `id`.                              |
-| `3`  | `InvalidPrice`           | Price is `<= 0`.                                                 |
-| `4`  | `MetadataTooLong`        | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
-| `5`  | `InvalidTag`             | Tag format or count validation failed.                           |
-| `6`  | `Unauthorized`           | Caller authentication check failed or unauthorized.              |
-| `7`  | `PendingAdminNotSet`     | No pending admin is set or caller does not match pending admin.  |
-| `8`  | `PendingAdminAlreadySet` | A pending admin nomination is already active.                    |
-| `9`  | `SameAdmin`              | Nominated new admin is already the current contract admin.       |
-| Function | Auth | Args | Returns | Description |
-|----------|------|------|---------|-------------|
-| `register(creator, id, price, metadata)` | `creator` | `creator: Address` — the resource owner; `id: String` — unique cuid2; `price: i128` — USDC stroops (> 0); `metadata: String` — pointer (max 512 bytes, non-empty) | `Result<(), Error>` | Register a new resource. Resources are listed by default. |
-| `update_metadata(id, metadata)` | `creator` | `id: String` — resource cuid2; `metadata: String` — new pointer (max 512 bytes, non-empty) | `Result<(), Error>` | Update the metadata pointer. |
-| `transfer_ownership(id, new_creator)` | `creator` | `id: String` — resource cuid2; `new_creator: Address` — new owner | `Result<(), Error>` | Transfer resource ownership to a new address. |
-| `set_listed(id, listed)` | `creator` | `id: String` — resource cuid2; `listed: bool` — listing state | `Result<(), Error>` | Set the listing state (true = listed, false = delisted). |
-| `delist(id)` | `creator` | `id: String` — resource cuid2 | `Result<(), Error>` | Convenience; equivalent to `set_listed(id, false)`. |
-| `list(start, limit)` | — | `start: u32` — 0‑based index; `limit: u32` — page size (capped at 20) | `Vec<Resource>` | Paginated resource list in insertion order (body only; prefer `list_page` for cursors). |
-| `list_page(cursor, limit)` | — | `cursor: u32` — 0‑based catalog index; `limit: u32` — page size (capped at 20) | `CatalogPage` | Paginated page with `items` + `next_cursor` (`None` = end-of-list). |
-| `get(id)` | — | `id: String` — resource cuid2 | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent. |
-| `exists(id)` | — | `id: String` — resource cuid2 | `bool` | Whether a resource is registered. |
-| `count()` | — | — | `u32` | Total resources successfully registered (monotonic). |
-| `set_terms_hash(creator, terms_hash)` | `creator` | `creator: Address` — creator address; `terms_hash: String` — max 64 bytes | `Result<(), Error>` | Store a hash of accepted marketplace terms for the creator. |
-| `get_terms_hash(creator)` | — | `creator: Address` — creator address | `Result<String, Error>` | Fetch a creator's marketplace terms hash. Errors `NotFound` if absent. |
-
-### Error codes
-
-| Code | Error | Description |
-|------|-------|-------------|
-| `1` | `AlreadyRegistered` | A resource with the given `id` already exists. |
-| `2` | `NotFound` | No resource matches the given `id`. |
-| `3` | `InvalidPrice` | Price is `<= 0`. |
-| `4` | `MetadataTooLong` | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes). |
-| `5` | `InvalidTag` | The provided tags list or string length is invalid. |
-| `6` | `TermsHashTooLong` | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes). |
+| Code | Error                    | Description                                                           |
+| ---- | ------------------------ | --------------------------------------------------------------------- |
+| `1`  | `AlreadyRegistered`      | A resource with the given `id` already exists.                        |
+| `2`  | `NotFound`               | No resource (or terms hash) matches the given key.                    |
+| `3`  | `InvalidPrice`           | Price is `<= 0`.                                                      |
+| `4`  | `MetadataTooLong`        | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes).      |
+| `5`  | `InvalidTag`             | Tag format or count validation failed.                                |
+| `6`  | `Unauthorized`           | Caller authentication check failed or unauthorized.                   |
+| `7`  | `PendingAdminNotSet`     | No pending admin is set, or caller does not match the pending admin.  |
+| `8`  | `PendingAdminAlreadySet` | A pending admin nomination is already active.                         |
+| `9`  | `SameAdmin`              | Nominated new admin is already the current contract admin.            |
+| `10` | `TermsHashTooLong`       | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes).                   |
+| `11` | `InvalidResourceId`      | Resource id is empty or exceeds 24 bytes.                             |
+| `12` | `InvalidMetadataPointer` | Metadata pointer does not start with a supported prefix.              |
+| `13` | `AlreadyOwner`           | Proposed/target new owner is already the current owner.               |
+| `14` | `NoPendingTransfer`      | No pending transfer exists for this resource.                         |
+| `15` | `ReservedId`             | Resource id collides with a reserved word (e.g. `admin`, `registry`). |
+| `16` | `PriceExceedsMax`        | Price exceeds `MAX_PRICE`.                                            |
+| `17` | `EmptyMetadata`          | Metadata pointer is empty.                                            |
 
 ### Events
 
-All events use the topic `(symbol, id)` (or `(symbol,)` for admin actions).
+All events use the topic `(symbol, id)` for resource-scoped actions, or
+`(symbol,)` (or `(symbol, address)`) for account-scoped actions (admin, terms).
+This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
+`src/lib.rs` — the `event_schema_matches_documented_readme_table` and
+`full_workflow_emits_exactly_the_documented_events` tests in `src/test.rs` fail
+if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
+apart, so update all three together.
 
-| Event       | Payload                                                   | Triggered by                             |
-| ----------- | --------------------------------------------------------- | ---------------------------------------- |
-| `register`  | `RegisterEvent { id, creator, price, metadata, listed, tags }` | `register()` succeeds                    |
-| `setprice`  | `new_price: i128`                                         | `set_price()` succeeds                   |
-| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`  | `update_metadata()` succeeds             |
-| `transfer`  | `new_creator: Address`                                    | `transfer_ownership()` succeeds          |
-| `setlisted` | `(old_listed: bool, new_listed: bool)`                    | `set_listed()` (and `delist()`) succeeds |
-| `setterms`  | `terms_hash: String`                                      | `set_terms_hash()` succeeds              |
-| `setadmin`  | `new_admin: Address`                                      | Initial `nominate_new_admin()` succeeds  |
-| `nomadmin`  | `new_admin: Address`                                      | `nominate_new_admin()` succeeds          |
-| `accadmin`  | `new_admin: Address`                                      | `accept_admin()` succeeds                |
-
-### RegisterEvent type
-
-The `register` event carries a structured payload so consumers can reconstruct
-a full `Resource` without an additional on-chain read:
-
-```rust
-pub struct RegisterEvent {
-    pub id: String,       // resource ID
-    pub creator: Address, // owner address
-    pub price: i128,      // USDC stroops (7 decimals)
-    pub metadata: String, // pointer (URI / content hash)
-    pub listed: bool,     // always true at registration
-    pub tags: Vec<String>,// discovery labels
-}
-```
+| Event       | Payload                                                  | Triggered by                                               |
+| ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
+| `register`  | `Resource` (full resource record)                        | `register()` succeeds                                      |
+| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`     | `set_price()` succeeds                                     |
+| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds                               |
+| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`       | `set_tags()` succeeds                                      |
+| `transfer`  | `(previous_owner: Address, new_owner: Address)`          | `transfer_ownership()` or `accept_transfer()` succeeds     |
+| `propose`   | `(owner: Address, proposed: Address)`                    | `propose_transfer()` succeeds                              |
+| `cancel`    | `owner: Address`                                         | `cancel_transfer()` succeeds                               |
+| `setlisted` | `(old_listed: bool, new_listed: bool)`                   | `set_listed()` (and `delist()`) succeeds                   |
+| `setterms`  | `terms_hash: String`                                     | `set_terms_hash()` succeeds                                |
+| `setadmin`  | `new_admin: Address`                                     | The first (bootstrap) `nominate_new_admin()` call succeeds |
+| `nomadmin`  | `new_admin: Address`                                     | A subsequent `nominate_new_admin()` call succeeds          |
+| `accadmin`  | `new_admin: Address`                                     | `accept_admin()` succeeds                                  |
+| `freeze`    | `()`                                                     | `freeze_metadata()` succeeds                               |
+| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds           |
+| `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
+| `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
+| `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
 
-| Transition | `(old, new)` |
-|------------|-------------|
-| Delist (was listed) | `(true, false)` |
-| Relist (was delisted) | `(false, true)` |
-| No-op relist | `(true, true)` |
-| No-op delist | `(false, false)` |
+| Transition            | `(old, new)`     |
+| --------------------- | ---------------- |
+| Delist (was listed)   | `(true, false)`  |
+| Relist (was delisted) | `(false, true)`  |
+| No-op relist          | `(true, true)`   |
+| No-op delist          | `(false, false)` |
 
 Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted`
 event — `delist` is a thin convenience wrapper that calls `set_listed`. The event
@@ -128,100 +199,80 @@ pub struct MetadataUpdateEvent {
 }
 ```
 
-**Note:** The `settags` event emits both previous and next tags, enabling indexers
+The `settags` event emits both previous and next tags, enabling indexers
 to detect tag removals and reconcile state changes without requiring full history
 scans.
-### Price units
 
-`price` is an `i128` in **USDC stroops** (7 decimal places).  
-Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
-
-### Resource type
+### Registry info (discovery)
 
 ```rust
-pub struct Resource {
-    pub id: String,       // unique resource ID (1–24 lowercase letters/digits), matches server resource ID
-    pub creator: Address, // current owner's Stellar address
-    pub price: i128,      // price in USDC stroops (7 decimals)
-    pub metadata: String, // pointer (supported URI or content-hash form), max 512 bytes
-    pub listed: bool,     // whether the resource is available for discovery/purchase
-    pub tags: Vec<String>, // discovery labels (0-8 items, max 32 chars each)
-    pub tags: Vec<String>,// discovery labels (e.g. "dataset", "research")
+pub struct RegistryInfo {
+    pub name: String,                  // stable registry name ("mindvault-vault-registry")
+    pub version: String,               // contract crate version (Cargo.toml, CARGO_PKG_VERSION)
+    pub resource_schema_version: u32,  // version of the on-chain Resource schema
+    pub network_id: BytesN<32>,        // env.ledger().network_id() of the ledger this is deployed on
 }
 ```
 
-### Methods
-
-| Method | Description |
-|--------|-------------|
-| `register(...)` | Register a new resource with tags. |
-| `set_price(id, price)` | Update a resource's price. |
-| `update_metadata(id, metadata)` | Update the metadata pointer. |
-| `set_tags(id, tags)` | Replace discovery tags. |
-| `transfer_ownership(id, new_creator)` | Change resource owner. |
-| `set_listed(id, listed)` | Set listing state manually. |
-| `delist(id)` | Convenience for `set_listed(id, false)`. |
-| `list(start, limit)` | Paginated list of **all** resources in insertion order, capped at `20`. |
-| `list_listed(start, limit)` | Paginated list of **listed-only** resources in insertion order, capped at `20`. Skips delisted resources; relisted resources reappear on subsequent calls. |
-| `get(id)` | Fetch a single resource by ID. |
-| `exists(id)` | Whether a resource is registered. |
-| `get_owner(id)` | Fetch resource owner. |
-| `count()` | Total successfully registered resources. |
-    pub tags: Vec<String>,// discovery labels (max 8 tags, each 1–32 bytes)
-}
-```
-
-### Catalog page (cursor primitive)
-
-```rust
-pub struct CatalogPage {
-    pub items: Vec<Resource>,     // this page of resources (insertion order)
-    pub next_cursor: Option<u32>, // next catalog index for `list`/`list_page`, or None at end-of-list
-}
-```
-
-Clients should paginate by passing `next_cursor` back as `cursor`/`start` instead of
-recomputing offsets from `items.len()`. `list(start, limit)` remains available and
-returns only the `items` body for existing callers.
+`registry_info()` lets an agent/client discover which registry it's talking to —
+and confirm it's the network it expects — without hardcoding assumptions or a
+separate config lookup. It always succeeds; there is no error case.
 
 ### Constants
 
-| Constant                   | Value | Description                                      |
-| -------------------------- | ----- | ------------------------------------------------ |
-| `MAX_METADATA_POINTER_LEN` | `512` | Maximum length of the metadata pointer in bytes. |
-| `MAX_TERMS_HASH_LEN` | `64` | Maximum length of the creator terms hash in bytes. |
+| Constant                   | Value                        | Description                                           |
+| -------------------------- | ---------------------------- | ----------------------------------------------------- |
+| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.      |
+| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.    |
+| `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
+| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
+| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
-### WASM Size Budget
+`price` is an `i128` in **USDC stroops** (7 decimal places).
+Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
 
-To prevent unexpected size growth from landing silently, this contract enforces a strictly tracked optimized WASM size budget in CI. 
+### Constants
 
-Currently, the limit is **10,240 bytes (10 KB)**. 
+| Constant                   | Value                        | Description                                           |
+| -------------------------- | ---------------------------- | ----------------------------------------------------- |
+| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer, in bytes.     |
+| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash, in bytes.   |
+| `MAX_PRICE`                | `10^18`                      | Maximum price, in USDC stroops.                       |
+| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
+| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
-If your genuine feature additions cause the CI to fail with a size limit error, please raise the `MAX_SIZE` variable directly within `.github/workflows/contract-ci.yml` and explicitly document why the growth was necessary in your PR description.
+### WASM size budget
 
-Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`, and content-hash prefixes such as `sha256:` or `0x`. |
+This contract enforces a strictly tracked optimized WASM size budget in CI
+(`stellar contract build --optimize`). Currently the limit is **36,864 bytes
+(36 KB)**, against a current optimized size of ~33 KB.
 
-### Breaking change: tags on `register` (v2)
+The budget has been raised twice as the surface grew: from a stale 10 KB
+figure to 28 KB (tags, pagination, admin, terms hashes), and from 28 KB to
+36 KB once `registry_info`, the verifier role, the on-chain verification
+mirror, metadata freeze, and index repair merged. If genuine feature additions
+push past it, raise `MAX_SIZE` in `.github/workflows/contract-ci.yml` and
+explain the growth in your PR description.
 
-`register` now requires a fifth argument `tags: Vec<String>`. Existing callers must pass
-`[]` (empty tags) until they adopt labels. The `Resource` struct gains a `tags` field;
-`set_tags` updates tags without touching `metadata`.
+### Emergency pause
 
-**Migration:** redeploy the contract, regenerate TypeScript bindings
-(`CONTRACT_WASM=... pnpm contract:bindings`), and update every `register` call site to
-include `tags` (use `[]` for resources without labels). Server-side filtering by tag is
-a follow-up; tags are stored on-chain for catalog use.
+See [`docs/contract-registry-pause-decision.md`](../docs/contract-registry-pause-decision.md)
+for the architecture spike on admin pause/unpause. **v1 does not implement pause**
+(creator-scoped writes + off-chain ops are sufficient for the current trust model).
 
-### Generating Bindings
+### Generating bindings
 
-The TypeScript client bindings must remain in sync with the contract interface. If you modify the contract signature, you **must** regenerate the bindings:
+The TypeScript client bindings must stay in sync with the contract interface. If you
+change the contract signature, regenerate them:
 
 ```bash
 CONTRACT_WASM=contract/target/wasm32v1-none/release/vault_registry.wasm pnpm contract:bindings
 ```
 
 > [!IMPORTANT]
-> CI strictly enforces binding freshness. If you forget to run this script and commit the updated `packages/registry-client/src/generated/index.ts` file, the `Contract CI` workflow will fail.
+> CI strictly enforces binding freshness. If you forget to run this script and commit
+> the updated `packages/registry-client/src/generated/index.ts`, the `Contract CI`
+> workflow will fail.
 
 ### Develop
 
@@ -245,6 +296,12 @@ stellar contract deploy \
 The command prints the deployed contract ID — wire it into the server config so
 the backend can record resources on registration.
 
+> [!IMPORTANT]
+> Before deploying a new WASM to any network, complete the full
+> **[Contract Upgrade Checklist](../docs/contract-upgrade-checklist.md)** — it
+> covers build verification, WASM size budget, network identity checks, binding
+> regeneration, admin role bootstrap, and post-deploy smoke tests.
+
 ### Testnet Deployment
 
 The current canonical testnet deployment:
@@ -263,14 +320,27 @@ Set `VAULT_REGISTRY_CONTRACT_ID` and `SOROBAN_RPC_URL` in the server `.env`
 (see [`server/.env.example`](../server/.env.example)) so the backend can
 record/read resources on this contract.
 
+> [!NOTE]
+> This deployment predates `registry_info()`, `creator_resource_count()`,
+> `list_by_creator()`, and the two-step admin model. Redeploy and update this
+> table's Contract ID / Wasm Hash after shipping those changes to testnet.
+
 ### Emergency pause
 
 See [contract-registry-pause-decision.md](../docs/contract-registry-pause-decision.md)
 for the architecture spike on admin pause/unpause. **v1 does not implement pause**
 (creator-scoped writes + off-chain ops are sufficient for the current trust model).
 
+> **Note:** the deployment above predates `tags`, the two-step admin/transfer
+> flows, `creator_resource_count`, terms hashes, the verifier role, the
+> on-chain verification mirror, metadata freezing, and index repair
+> described in this README. Redeploy from current source and update this
+> table (plus `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
+> `pnpm contract:bindings`) to pick them up.
+
 ### Ideas for contributors
 
 - Optional escrow/refund extension (see the root README's "Not Yet Built").
-- A TypeScript binding generated via `stellar contract bindings typescript`
-  for the `server/` and `web/` packages to consume.
+- Tag-based discovery (`list_by_tag`) — see
+  [`docs/tag-index-repair-design.md`](../docs/tag-index-repair-design.md) for
+  the repair contract an on-chain tag index must satisfy before it ships.

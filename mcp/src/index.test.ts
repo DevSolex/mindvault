@@ -46,8 +46,10 @@ vi.mock("@mindvault/registry-client", async (importOriginal) => {
 
 import {
   browse,
+  dispatchTool,
   search,
   preview,
+  publishStatus,
   txStatus,
   buy,
   registerOnchain,
@@ -55,6 +57,10 @@ import {
   useProfile,
   listProfiles,
   networkProfile,
+  updateMetadata,
+  setPrice,
+  transferOwnership,
+  setListed,
   _setAgentWallet,
   _setAgentApiKey,
   _resetProfiles,
@@ -183,13 +189,13 @@ describe("search", () => {
 
   it("returns message for empty query", async () => {
     const result = await search("");
-    expect(result).toBe("Provide a non-empty search query.");
+    expect(result).toBe("Provide a search query or at least one catalog filter.");
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it("returns message for whitespace-only query", async () => {
     const result = await search("   ");
-    expect(result).toBe("Provide a non-empty search query.");
+    expect(result).toBe("Provide a search query or at least one catalog filter.");
   });
 
   it("returns message when no resources match", async () => {
@@ -226,6 +232,105 @@ describe("search", () => {
       expect.stringContaining("/resources"),
       expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
     );
+  });
+
+  it("forwards price, type, and verification filters in the query string", async () => {
+    await search({
+      query: "Stellar",
+      minPrice: "1.00",
+      maxPrice: "10.00",
+      verificationStatus: "verified",
+      resourceType: "link",
+    });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("search=Stellar");
+    expect(url).toContain("minPrice=1.00");
+    expect(url).toContain("maxPrice=10.00");
+    expect(url).toContain("verificationStatus=verified");
+    expect(url).toContain("resourceType=link");
+  });
+
+  it("forwards owner, sort, and pagination filters", async () => {
+    await search({
+      query: "x",
+      owner: "Alice",
+      sort: "price_asc",
+      limit: 10,
+      offset: 5,
+    });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("owner=Alice");
+    expect(url).toContain("sort=price_asc");
+    expect(url).toContain("limit=10");
+    expect(url).toContain("offset=5");
+  });
+
+  it("filters by tags and listed client-side", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      mockResponse([
+        {
+          ...sampleResources[0],
+          tags: ["stellar", "guide"],
+          listed: true,
+        },
+        {
+          ...sampleResources[1],
+          tags: ["soroban"],
+          listed: true,
+        },
+      ]),
+    );
+    const result = await search({ query: "a", tags: ["stellar"], listed: true });
+    expect(result).toContain("res-001");
+    expect(result).not.toContain("res-002");
+  });
+
+  it("allows filter-only search without a keyword", async () => {
+    const result = await search({ resourceType: "link", verificationStatus: "verified" });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("resourceType=link");
+    expect(url).toContain("verificationStatus=verified");
+    expect(url).not.toContain("search=");
+    expect(result).toContain("res-001");
+  });
+});
+
+describe("browse with filters", () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(mockResponse(sampleResources)),
+    );
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("applies the same catalog filters as search", async () => {
+    await browse({
+      query: "Stellar",
+      minPrice: "1.00",
+      maxPrice: "10.00",
+      verificationStatus: "verified",
+      resourceType: "link",
+      owner: "Alice",
+      sort: "newest",
+      limit: 20,
+      offset: 0,
+      tags: ["guide"],
+      listed: true,
+    });
+    const url = String((globalThis.fetch as any).mock.calls[0][0]);
+    expect(url).toContain("search=Stellar");
+    expect(url).toContain("minPrice=1.00");
+    expect(url).toContain("owner=Alice");
+    expect(url).not.toContain("tags=");
+    expect(url).not.toContain("listed=");
+  });
+
+  it("returns a no-match message when filters exclude everything", async () => {
+    const result = await browse({ query: "zzzz-no-match" });
+    expect(result).toContain("No resources match");
   });
 });
 
@@ -289,6 +394,166 @@ describe("preview", () => {
       expect.stringContaining("/resources/res-001/meta"),
       expect.anything(),
     );
+  });
+});
+
+describe("publishStatus", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function mockMetaAndVerification(opts: {
+    verificationStatus: string;
+    onchainStatus?: string;
+    onchainTxHash?: string | null;
+    listed?: boolean;
+  }) {
+    const meta = {
+      id: "res-001",
+      title: "Introduction to Stellar",
+      verificationStatus: opts.verificationStatus,
+      onchainStatus: opts.onchainStatus ?? "none",
+      onchainTxHash: opts.onchainTxHash ?? null,
+      contentHash: "abc123",
+      accessUrl: "https://example.com/stellar-intro",
+      listed: opts.listed ?? opts.verificationStatus === "verified",
+    };
+    const verification = {
+      resourceId: "res-001",
+      title: "Introduction to Stellar",
+      status: opts.verificationStatus,
+      listed: opts.listed ?? opts.verificationStatus === "verified",
+      verification:
+        opts.verificationStatus === "verified"
+          ? {
+              isOriginal: true,
+              confidence: 0.95,
+              flags: [],
+              checkedAt: "2026-01-01T00:00:00.000Z",
+            }
+          : null,
+    };
+    return vi.spyOn(globalThis, "fetch").mockImplementation((input: any) => {
+      const url = String(input);
+      if (url.includes("/verification")) return Promise.resolve(mockResponse(verification));
+      if (url.includes("/meta")) return Promise.resolve(mockResponse(meta));
+      return Promise.resolve(mockResponse({ error: "unexpected" }, false, 500));
+    });
+  }
+
+  it("reports verified status with on-chain sync fields", async () => {
+    mockMetaAndVerification({
+      verificationStatus: "verified",
+      onchainStatus: "registered",
+      onchainTxHash: "txhash1",
+    });
+    const parsed = JSON.parse(await publishStatus({ resourceId: "res-001" }));
+    expect(parsed.verificationStatus).toBe("verified");
+    expect(parsed.onchainStatus).toBe("registered");
+    expect(parsed.onchainTxHash).toBe("txhash1");
+    expect(parsed.listed).toBe(true);
+    expect(parsed.settled).toBe(true);
+    expect(parsed.polled).toBe(false);
+    expect(parsed.attempts).toBe(1);
+  });
+
+  it("reports pending, rejected, and skipped statuses", async () => {
+    for (const status of ["pending", "rejected", "skipped"] as const) {
+      mockMetaAndVerification({ verificationStatus: status, onchainStatus: "none" });
+      const parsed = JSON.parse(await publishStatus({ resourceId: "res-001" }));
+      expect(parsed.verificationStatus).toBe(status);
+      expect(parsed.settled).toBe(status !== "pending");
+      expect(parsed.onchainStatus).toBe("none");
+    }
+  });
+
+  it("throws a deterministic error when resourceId is missing", async () => {
+    await expect(publishStatus({})).rejects.toThrow(/resourceId is required/);
+    await expect(publishStatus({ resourceId: "   " })).rejects.toThrow(/resourceId is required/);
+  });
+
+  it("throws a deterministic 404 error", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "Resource not found" }, false, 404),
+    );
+    await expect(publishStatus({ resourceId: "missing" })).rejects.toThrow(/not found/i);
+  });
+
+  it("polls until verification settles when wait is true", async () => {
+    vi.useFakeTimers();
+    let round = 0;
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: any) => {
+      const url = String(input);
+      // Advance the poll round only on meta requests so meta+verification stay
+      // consistent within a single Promise.all pair.
+      if (url.includes("/meta")) round += 1;
+      const status = round < 2 ? "pending" : "verified";
+      if (url.includes("/verification")) {
+        return Promise.resolve(
+          mockResponse({
+            resourceId: "res-001",
+            status,
+            listed: status === "verified",
+            verification: null,
+          }),
+        );
+      }
+      if (url.includes("/meta")) {
+        return Promise.resolve(
+          mockResponse({
+            id: "res-001",
+            verificationStatus: status,
+            onchainStatus: status === "verified" ? "pending" : "none",
+            onchainTxHash: null,
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse({ error: "unexpected" }, false, 500));
+    });
+
+    const pending = publishStatus({
+      resourceId: "res-001",
+      wait: true,
+      timeoutMs: 10_000,
+      intervalMs: 500,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const parsed = JSON.parse(await pending);
+    expect(parsed.verificationStatus).toBe("verified");
+    expect(parsed.settled).toBe(true);
+    expect(parsed.polled).toBe(true);
+    expect(parsed.attempts).toBeGreaterThan(1);
+    expect(parsed.onchainStatus).toBe("pending");
+  });
+
+  it("returns timedOut when wait expires while still pending", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation((input: any) => {
+      const url = String(input);
+      const body = url.includes("/verification")
+        ? { resourceId: "res-001", status: "pending", listed: false, verification: null }
+        : {
+            id: "res-001",
+            verificationStatus: "pending",
+            onchainStatus: "none",
+            onchainTxHash: null,
+          };
+      return Promise.resolve(mockResponse(body));
+    });
+
+    const pending = publishStatus({
+      resourceId: "res-001",
+      wait: true,
+      timeoutMs: 1_000,
+      intervalMs: 200,
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    const parsed = JSON.parse(await pending);
+    expect(parsed.verificationStatus).toBe("pending");
+    expect(parsed.timedOut).toBe(true);
+    expect(parsed.settled).toBe(false);
+    expect(parsed.message).toMatch(/Timed out/);
   });
 });
 
@@ -429,8 +694,14 @@ describe("buy – happy path (402 → sign → retry → success)", () => {
 
     const result = await buy("res-001");
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id", "res-001");
-    expect(parsed).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("id", "res-001");
+    expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("purchased", true);
+    expect(parsed.changedFields).toContain("purchased");
+    expect(parsed).toHaveProperty("after");
+    expect(parsed.after).toHaveProperty("id", "res-001");
+    expect(parsed.after).toHaveProperty("title", "Introduction to Stellar");
+    expect(parsed.after).toHaveProperty("purchased", true);
   });
 
   it("returns an insufficient-funds message when wallet balance is too low", async () => {
@@ -530,8 +801,156 @@ describe("buy – output shape for agent consumption", () => {
     // Output must be parseable JSON – agents rely on this.
     expect(() => JSON.parse(result)).not.toThrow();
     const parsed = JSON.parse(result);
-    expect(parsed).toHaveProperty("id");
-    expect(parsed).toHaveProperty("accessUrl");
+    expect(parsed).toHaveProperty("after");
+    expect(parsed.after).toHaveProperty("id");
+    expect(parsed.after).toHaveProperty("accessUrl");
+    expect(parsed.after).toHaveProperty("purchased", true);
+  });
+});
+
+// ── buy – purchase receipt persistence (#415) ──────────────────────────────
+
+describe("buy – purchase receipt persistence", () => {
+  let purchaseDir: string;
+
+  beforeEach(async () => {
+    _setAgentWallet(testWallet);
+    const { mkdtempSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    purchaseDir = mkdtempSync(join(tmpdir(), "mv-purchase-"));
+
+    const { _setPurchasesFilePath } = await import("./purchaseHistory.js");
+    _setPurchasesFilePath(join(purchaseDir, "purchases.json"));
+  });
+
+  afterEach(async () => {
+    _setAgentWallet(null);
+    const { rmSync } = await import("fs");
+    rmSync(purchaseDir, { recursive: true, force: true });
+
+    const { _setPurchasesFilePath } = await import("./purchaseHistory.js");
+    _setPurchasesFilePath(null);
+    vi.restoreAllMocks();
+  });
+
+  it("records purchase with resourceId, amount, network, txHash, and timestamp", async () => {
+    const resourcePayload = {
+      id: "res-purchase-001",
+      title: "Test Dataset",
+      price: "10.50",
+      accessUrl: "https://example.com/res-001",
+      txHash: "abc123txhash",
+      receipt: { amount: "10.50", paymentId: "pay-12345" },
+    };
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes("/accounts/")) {
+        return Promise.resolve(
+          mockResponse({
+            balances: [{ asset_type: "credit_alphanum4", asset_code: "USDC", balance: "100.00" }],
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    const { wrapFetchWithPayment } = await import("@x402/fetch");
+    vi.mocked(wrapFetchWithPayment).mockImplementation(() => {
+      return () => Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    await buy("res-purchase-001");
+
+    const { listPurchases } = await import("./purchaseHistory.js");
+    const purchases = listPurchases();
+    expect(purchases).toHaveLength(1);
+    expect(purchases[0]).toMatchObject({
+      resourceId: "res-purchase-001",
+      amount: "10.50",
+      network: expect.stringContaining("stellar"),
+      txHash: "abc123txhash",
+      receiptRef: "pay-12345",
+      title: "Test Dataset",
+    });
+    expect(purchases[0].timestamp).toBeDefined();
+  });
+
+  it("persists receipt to ~/.mindvault/purchases.json with deterministic structure", async () => {
+    const resourcePayload = {
+      id: "res-002",
+      title: "Tutorial",
+      price: "5.00",
+      accessUrl: "https://example.com/tut",
+      txHash: null,
+      receipt: { amount: "5.00", paymentId: null },
+    };
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes("/accounts/")) {
+        return Promise.resolve(
+          mockResponse({
+            balances: [{ asset_type: "credit_alphanum4", asset_code: "USDC", balance: "100.00" }],
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    const { wrapFetchWithPayment } = await import("@x402/fetch");
+    vi.mocked(wrapFetchWithPayment).mockImplementation(() => {
+      return () => Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    await buy("res-002");
+
+    const { readFileSync } = await import("fs");
+    const fileContent = JSON.parse(readFileSync(purchaseDir + "/purchases.json", "utf-8"));
+    expect(fileContent).toHaveProperty("version", 1);
+    expect(fileContent).toHaveProperty("purchases");
+    expect(fileContent.purchases).toHaveLength(1);
+    expect(fileContent.purchases[0]).toHaveProperty("resourceId");
+    expect(fileContent.purchases[0]).toHaveProperty("amount");
+    expect(fileContent.purchases[0]).toHaveProperty("network");
+    expect(fileContent.purchases[0]).toHaveProperty("timestamp");
+  });
+
+  it("handles missing txHash and receiptRef gracefully", async () => {
+    const resourcePayload = {
+      id: "res-003",
+      title: "Guide",
+      price: "2.50",
+      accessUrl: "https://example.com/guide",
+    };
+
+    vi.spyOn(globalThis, "fetch").mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes("/accounts/")) {
+        return Promise.resolve(
+          mockResponse({
+            balances: [{ asset_type: "credit_alphanum4", asset_code: "USDC", balance: "100.00" }],
+          }),
+        );
+      }
+      return Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    const { wrapFetchWithPayment } = await import("@x402/fetch");
+    vi.mocked(wrapFetchWithPayment).mockImplementation(() => {
+      return () => Promise.resolve(mockResponse(resourcePayload));
+    });
+
+    await buy("res-003");
+
+    const { listPurchases } = await import("./purchaseHistory.js");
+    const purchases = listPurchases();
+    expect(purchases[0]).toMatchObject({
+      resourceId: "res-003",
+      txHash: null,
+      receiptRef: null,
+    });
   });
 });
 
@@ -744,6 +1163,110 @@ describe("registerOnchain – error and retry messaging", () => {
   });
 });
 
+// ── setupWallet – failure diagnostics (#414) ─────────────────────────────────
+
+describe("setupWallet – sponsored account failure diagnostics", () => {
+  beforeEach(() => {
+    _resetProfiles();
+  });
+
+  afterEach(() => {
+    _resetProfiles();
+    vi.restoreAllMocks();
+  });
+
+  it("returns actionable error when service returns 503 (unavailable)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "service temporarily unavailable" }, false, 503),
+    );
+
+    await expect(dispatchTool("mindvault_setup_wallet", {})).rejects.toThrow();
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("setup");
+      expect(msg).toContain("unavailable");
+      expect(msg).toMatch(/restarting|wait/i);
+    }
+  });
+
+  it("returns actionable error when service returns 429 (rate limited)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "too many requests" }, false, 429),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Rate limit");
+      expect(msg).toMatch(/wait.*retry/i);
+    }
+  });
+
+  it("includes service status and issue category in error output", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "account creation failed" }, false, 500),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Service:");
+      expect(msg).toContain("Status:");
+      expect(msg).toContain("Issue:");
+    }
+  });
+
+  it("does not leak internal service details in error message", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        internalErrorCode: "SPONSOR_DB_FAILED",
+        debugStackTrace: "at Function.doSomething...",
+      }, false, 500),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).not.toContain("SPONSOR_DB_FAILED");
+      expect(msg).not.toContain("stackTrace");
+      expect(msg).not.toContain("at Function");
+    }
+  });
+
+  it("provides next steps without leaking internals", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ reason: "sponsorship quota exceeded" }, false, 400),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Next:");
+      expect(msg).toMatch(/malformed|client|issue/i);
+    }
+  });
+
+  it("handles network errors deterministically", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(
+      new Error("ECONNREFUSED: Connection refused"),
+    );
+
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Next:");
+      expect(msg).toMatch(/network|connect/i);
+    }
+  });
+});
+
 describe("multi-wallet profiles", () => {
   beforeEach(() => {
     _resetProfiles();
@@ -948,7 +1471,6 @@ describe("wallet_info balance details", () => {
   });
 });
 
-
 // ── networkProfile (#412) ───────────────────────────────────────────────────
 
 describe("networkProfile", () => {
@@ -1010,5 +1532,259 @@ describe("networkProfile", () => {
 
     expect(parsed.x402Network).toBeTruthy();
     expect(typeof parsed.x402Network).toBe("string");
+  });
+});
+
+// ── Tool dispatch argument validation ───────────────────────────────────────
+
+describe("dispatchTool argument validation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("rejects an unknown tool without touching the network", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    await expect(dispatchTool("mindvault_nope", {})).rejects.toThrow(
+      "Unknown tool: mindvault_nope",
+    );
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid arguments before any request is made", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    await expect(
+      dispatchTool("mindvault_preview", { resourceId: "../etc/passwd" }),
+    ).rejects.toThrow("Invalid arguments for mindvault_preview");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown argument name instead of ignoring it", async () => {
+    await expect(
+      dispatchTool("mindvault_search", { query: "stellar", resourceTyp: "link" }),
+    ).rejects.toThrow("resourceTyp is not a recognized argument");
+  });
+
+  it("reports a missing required argument by name", async () => {
+    await expect(dispatchTool("mindvault_buy", {})).rejects.toThrow("resourceId is required");
+  });
+
+  it("passes normalized arguments through to the handler", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse(singleResourceMeta));
+    await dispatchTool("mindvault_preview", { resourceId: "  res-001  " });
+    expect(spy).toHaveBeenCalledWith(
+      expect.stringContaining("/resources/res-001/meta"),
+      expect.anything(),
+    );
+  });
+
+  it("rejects limit above the contract cap via dispatchTool", async () => {
+    await expect(dispatchTool("mindvault_registry_list", { limit: 50 })).rejects.toThrow(
+      "Invalid arguments for mindvault_registry_list",
+    );
+  });
+
+  it("produces the same error message for the same invalid call", async () => {
+    const first = await dispatchTool("mindvault_tx_status", { txHash: "nope" }).catch((e) => e);
+    const second = await dispatchTool("mindvault_tx_status", { txHash: "nope" }).catch((e) => e);
+    expect(first.message).toBe(second.message);
+    expect(first.message).toContain("hexadecimal");
+  });
+});
+
+// ── updateMetadata (#398) ───────────────────────────────────────────────────
+
+describe("updateMetadata", () => {
+  beforeEach(() => {
+    _resetProfiles();
+  });
+
+  it("throws when no wallet is set up", async () => {
+    await expect(updateMetadata("res-001", "ipfs://Qm123")).rejects.toThrow("No wallet");
+  });
+
+  it("succeeds in mock mode when wallet is present", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await updateMetadata("res-001", "ipfs://Qm123");
+      const parsed = JSON.parse(res);
+      expect(parsed.status).toBe("success");
+      expect(parsed.resourceId).toBe("res-001");
+      expect(parsed.metadata).toBe("ipfs://Qm123");
+      expect(parsed.txHash).toBeTruthy();
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
+  });
+
+  it("dispatches through dispatchTool with valid arguments", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await dispatchTool("mindvault_update_metadata", {
+        resourceId: "res-001",
+        metadata: "ipfs://Qm123",
+      });
+      expect(res).toContain("success");
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
+  });
+});
+
+// ── setPrice (#397) ─────────────────────────────────────────────────────────
+
+describe("setPrice", () => {
+  beforeEach(() => {
+    _resetProfiles();
+  });
+
+  it("throws when no wallet is set up", async () => {
+    await expect(setPrice("res-001", "10.00")).rejects.toThrow("No wallet");
+  });
+
+  it("succeeds in mock mode when wallet is present", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await setPrice("res-001", "10.00");
+      const parsed = JSON.parse(res);
+      expect(parsed.status).toBe("success");
+      expect(parsed.resourceId).toBe("res-001");
+      expect(parsed.price).toBe("10.00");
+      expect(parsed.txHash).toBeTruthy();
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
+  });
+
+  it("dispatches through dispatchTool with valid arguments", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await dispatchTool("mindvault_set_price", {
+        resourceId: "res-001",
+        price: "10.00",
+      });
+      expect(res).toContain("success");
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
+  });
+});
+
+// ── transferOwnership (#396) ────────────────────────────────────────────────
+
+describe("transferOwnership", () => {
+  beforeEach(() => {
+    _resetProfiles();
+  });
+
+  it("throws when no wallet is set up", async () => {
+    await expect(
+      transferOwnership(
+        "res-001",
+        "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      ),
+    ).rejects.toThrow("No wallet");
+  });
+
+  it("succeeds in mock mode when wallet is present", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await transferOwnership(
+        "res-001",
+        "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      );
+      const parsed = JSON.parse(res);
+      expect(parsed.status).toBe("success");
+      expect(parsed.resourceId).toBe("res-001");
+      expect(parsed.newCreator).toBe(
+        "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      );
+      expect(parsed.txHash).toBeTruthy();
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
+  });
+
+  it("dispatches through dispatchTool with valid arguments", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await dispatchTool("mindvault_transfer_ownership", {
+        resourceId: "res-001",
+        newCreator: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      });
+      expect(res).toContain("success");
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
+  });
+});
+
+// ── setListed (#400) ────────────────────────────────────────────────────────
+
+describe("setListed", () => {
+  beforeEach(() => {
+    _resetProfiles();
+  });
+
+  it("throws when no wallet is set up", async () => {
+    await expect(setListed("res-001", false)).rejects.toThrow("No wallet");
+  });
+
+  it("succeeds in mock mode when wallet is present", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await setListed("res-001", false);
+      const parsed = JSON.parse(res);
+      expect(parsed.status).toBe("success");
+      expect(parsed.resourceId).toBe("res-001");
+      expect(parsed.listed).toBe(false);
+      expect(parsed.txHash).toBeTruthy();
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
+  });
+
+  it("dispatches through dispatchTool with valid arguments", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    try {
+      const res = await dispatchTool("mindvault_set_listed", {
+        resourceId: "res-001",
+        listed: true,
+      });
+      expect(res).toContain("success");
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+    }
   });
 });

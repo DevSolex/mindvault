@@ -3,12 +3,37 @@
   "version": "1.0.0",
   "type": "module",
   "description": "MCP server for MindVault — AI agent access to the vault",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/distributed-nerd/mindvault.git",
+    "directory": "mcp"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "stellar",
+    "soroban",
+    "x402",
+    "ai-agents"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "mindvault-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "tsx src/index.ts",
     "smoke": "tsx scripts/smoke.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublish:check": "tsx scripts/prepublish-check.ts"
   },
   "dependencies": {
     "@mindvault/registry-client": "workspace:*",
