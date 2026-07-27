@@ -75,24 +75,33 @@ reads the canonical resource entry here.
 
 All events use the topic `(symbol, id)` (or `(symbol,)` for admin actions).
 
-| Event       | Payload                | Triggered by                             |
-| ----------- | ---------------------- | ---------------------------------------- |
-| `register`  | `creator: Address`     | `register()` succeeds                    |
-| `setprice`  | `new_price: i128`      | `set_price()` succeeds                   |
-| `updmeta`   | `()`                   | `update_metadata()` succeeds             |
-| `transfer`  | `new_creator: Address` | `transfer_ownership()` succeeds          |
-| `setlisted` | `listed: bool`         | `set_listed()` (and `delist()`) succeeds |
-| `setadmin`  | `new_admin: Address`   | Initial `nominate_new_admin()` succeeds  |
-| `nomadmin`  | `new_admin: Address`   | `nominate_new_admin()` succeeds          |
-| `accadmin`  | `new_admin: Address`   | `accept_admin()` succeeds                |
-| Event | Payload | Triggered by |
-|-------|---------|-------------|
-| `register` | `creator: Address` | `register()` succeeds |
-| `setprice` | `new_price: i128` | `set_price()` succeeds |
-| `updmeta` | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds |
-| `transfer` | `new_creator: Address` | `transfer_ownership()` succeeds |
-| `setlisted` | `(old_listed: bool, new_listed: bool)` | `set_listed()` (and `delist()`) succeeds |
-| `setterms` | `terms_hash: String` | `set_terms_hash()` succeeds |
+| Event       | Payload                                                   | Triggered by                             |
+| ----------- | --------------------------------------------------------- | ---------------------------------------- |
+| `register`  | `RegisterEvent { id, creator, price, metadata, listed, tags }` | `register()` succeeds                    |
+| `setprice`  | `new_price: i128`                                         | `set_price()` succeeds                   |
+| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`  | `update_metadata()` succeeds             |
+| `transfer`  | `new_creator: Address`                                    | `transfer_ownership()` succeeds          |
+| `setlisted` | `(old_listed: bool, new_listed: bool)`                    | `set_listed()` (and `delist()`) succeeds |
+| `setterms`  | `terms_hash: String`                                      | `set_terms_hash()` succeeds              |
+| `setadmin`  | `new_admin: Address`                                      | Initial `nominate_new_admin()` succeeds  |
+| `nomadmin`  | `new_admin: Address`                                      | `nominate_new_admin()` succeeds          |
+| `accadmin`  | `new_admin: Address`                                      | `accept_admin()` succeeds                |
+
+### RegisterEvent type
+
+The `register` event carries a structured payload so consumers can reconstruct
+a full `Resource` without an additional on-chain read:
+
+```rust
+pub struct RegisterEvent {
+    pub id: String,       // resource ID
+    pub creator: Address, // owner address
+    pub price: i128,      // USDC stroops (7 decimals)
+    pub metadata: String, // pointer (URI / content hash)
+    pub listed: bool,     // always true at registration
+    pub tags: Vec<String>,// discovery labels
+}
+```
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
@@ -107,6 +116,7 @@ listeners can determine the transition direction without querying additional sta
 Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted`
 event — `delist` is a thin convenience wrapper that calls `set_listed`. The event
 is emitted even when the new value equals the old value.
+
 The `updmeta` event carries structured data so that off-chain indexers can build
 a full audit trail without querying historical ledger state:
 
@@ -121,7 +131,6 @@ pub struct MetadataUpdateEvent {
 **Note:** The `settags` event emits both previous and next tags, enabling indexers
 to detect tag removals and reconcile state changes without requiring full history
 scans.
-
 ### Price units
 
 `price` is an `i128` in **USDC stroops** (7 decimal places).  

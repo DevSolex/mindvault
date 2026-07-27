@@ -43,6 +43,21 @@ pub struct Resource {
     pub tags: Vec<String>,
 }
 
+/// Structured payload emitted by `register()`.
+///
+/// Consumers can reconstruct a full `Resource` from this event without an
+/// additional on-chain read.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisterEvent {
+    pub id: String,
+    pub creator: Address,
+    pub price: i128,
+    pub metadata: String,
+    pub listed: bool,
+    pub tags: Vec<String>,
+}
+
 /// One page of the on-chain catalog plus a cursor for the next page.
 ///
 /// `next_cursor` is the catalog index to pass back into `list` / `list_page`
@@ -150,9 +165,9 @@ impl VaultRegistry {
             id: id.clone(),
             creator: creator.clone(),
             price,
-            metadata,
+            metadata: metadata.clone(),
             listed: true,
-            tags,
+            tags: tags.clone(),
         };
         env.storage().persistent().set(&key, &resource);
         Self::bump_persistent(&env, &key);
@@ -174,8 +189,16 @@ impl VaultRegistry {
         let cur = Self::creator_count(&env, &creator);
         Self::set_creator_count(&env, &creator, cur + 1);
 
+        let event = RegisterEvent {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata,
+            listed: true,
+            tags,
+        };
         env.events()
-            .publish((symbol_short!("register"), creator), resource);
+            .publish((symbol_short!("register"), id), event);
         Ok(())
     }
 

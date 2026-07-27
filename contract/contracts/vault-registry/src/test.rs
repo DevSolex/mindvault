@@ -4,8 +4,7 @@ use super::*;
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
-    Address, Env, IntoVal, String, Vec,
-    Address, Env, String, TryFromVal, Vec,
+    Address, Env, String, Vec,
 };
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
@@ -54,38 +53,80 @@ fn register_then_read() {
 }
 
 #[test]
-fn register_event_contains_full_resource_payload() {
+fn register_emits_structured_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "evt-res");
-    let metadata = String::from_str(&env, "ipfs://evt");
-    let price = 500i128;
-    let tags_list = tags(&env, &["tag1"]);
+    let id = String::from_str(&env, "evt1");
+    let metadata = String::from_str(&env, "ipfs://QmEvent");
+    let resource_tags = tags(&env, &["dataset", "research"]);
 
-    client.register(&creator, &id, &price, &metadata, &tags_list);
+    client.register(&creator, &id, &1_000_000i128, &metadata, &resource_tags);
 
-    let all_events = env.events().all();
-    let mut found = false;
-    for i in 0..all_events.len() {
-        let (_, topics, data) = all_events.get(i).unwrap();
-        if topics.len() != 2 {
-            continue;
-        }
-        let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap()).ok().unwrap();
-        if t0 != Symbol::new(&env, "register") {
-            continue;
-        }
-        let resource: Resource = <Resource as TryFromVal<Env, Val>>::try_from_val(&env, &data).ok().unwrap();
-        assert_eq!(resource.id, id);
-        assert_eq!(resource.creator, creator);
-        assert_eq!(resource.price, price);
-        assert_eq!(resource.metadata, metadata);
-        assert!(resource.listed);
-        assert_eq!(resource.tags.len(), 1);
-        assert_eq!(resource.tags.get(0).unwrap(), String::from_str(&env, "tag1"));
-        found = true;
-        break;
-    }
-    assert!(found, "register event not emitted");
+    let events = env.events().all();
+    let register_events: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            let topics = &e.topics;
+            if topics.len() < 1 {
+                return false;
+            }
+            let sym = topics.get(0).unwrap();
+            let sym_str = soroban_sdk::Symbol::try_from(sym).unwrap();
+            sym_str == soroban_sdk::symbol_short!("register")
+        })
+        .collect();
+
+    assert_eq!(register_events.len(), 1);
+    let evt = register_events.get(0).unwrap();
+
+    // Topic[1] must be the resource id
+    let topic_id: String = evt.topics.get(1).unwrap().try_into().unwrap();
+    assert_eq!(topic_id, id);
+
+    // Payload must be a RegisterEvent
+    let payload: RegisterEvent = evt.data.clone().try_into().unwrap();
+    assert_eq!(payload.id, id);
+    assert_eq!(payload.creator, creator);
+    assert_eq!(payload.price, 1_000_000i128);
+    assert_eq!(payload.metadata, metadata);
+    assert!(payload.listed);
+    assert_eq!(payload.tags.len(), 2);
+    assert_eq!(payload.tags.get(0).unwrap(), String::from_str(&env, "dataset"));
+    assert_eq!(payload.tags.get(1).unwrap(), String::from_str(&env, "research"));
+}
+
+#[test]
+fn register_event_empty_tags() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "evt2");
+    let metadata = String::from_str(&env, "https://example.com");
+
+    client.register(&creator, &id, &500i128, &metadata, &empty_tags(&env));
+
+    let events = env.events().all();
+    let register_events: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            let topics = &e.topics;
+            if topics.len() < 1 {
+                return false;
+            }
+            let sym = topics.get(0).unwrap();
+            let sym_str = soroban_sdk::Symbol::try_from(sym).unwrap();
+            sym_str == soroban_sdk::symbol_short!("register")
+        })
+        .collect();
+
+    assert_eq!(register_events.len(), 1);
+    let evt = register_events.get(0).unwrap();
+    let payload: RegisterEvent = evt.data.clone().try_into().unwrap();
+
+    assert_eq!(payload.id, id);
+    assert_eq!(payload.creator, creator);
+    assert_eq!(payload.price, 500i128);
+    assert_eq!(payload.metadata, metadata);
+    assert!(payload.listed);
+    assert_eq!(payload.tags.len(), 0);
+}
 }
 
 #[test]
