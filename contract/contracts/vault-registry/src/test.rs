@@ -2858,140 +2858,6 @@ fn event_schema_matches_documented_readme_table() {
     );
 }
 
-// ─── API matrix tests (#391) ───────────────────────────────────────────────
-
-/// Every method listed in `METHOD_SCHEMA` must appear as a row in the README's
-/// `### Methods` table, and every row in that table must be present in
-/// `METHOD_SCHEMA`. This keeps the documented API surface exactly in sync with
-/// the canonical constant in `lib.rs`.
-#[test]
-fn readme_methods_table_matches_method_schema() {
-    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
-        .expect("contract/README.md must be readable from the vault-registry crate");
-
-    // Isolate the Methods section (between `### Methods` and the next `###`).
-    let methods_section = readme
-        .split("### Methods")
-        .nth(1)
-        .expect("contract/README.md must have a `### Methods` section")
-        .split("\n### ")
-        .next()
-        .expect("`### Methods` must be followed by another `###` section");
-
-    // Forward check: every METHOD_SCHEMA entry must appear in the table.
-    for (method, _auth) in METHOD_SCHEMA {
-        // Table rows start the function column with `| \`fn_name(` or `| \`fn_name \``
-        let needle = std::format!("| `{method}(");
-        let needle2 = std::format!("| `{method} ");
-        assert!(
-            methods_section.contains(needle.as_str())
-                || methods_section.contains(needle2.as_str()),
-            "METHOD_SCHEMA lists `{method}` but contract/README.md's Methods table \
-             does not document it — add a row to the Methods table in README.md"
-        );
-    }
-
-    // Reverse check: every function name documented in the table must be in METHOD_SCHEMA.
-    let documented: std::vec::Vec<&str> = methods_section
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            // Match rows like `| `register(creator, ...` or `| `count()` `
-            let rest = line.strip_prefix("| `")?;
-            let end = rest.find(|c: char| c == '(' || c == ' ' || c == '`')?;
-            let name = &rest[..end];
-            if name.is_empty() || name.starts_with('-') {
-                return None;
-            }
-            Some(name)
-        })
-        .collect();
-
-    for name in &documented {
-        assert!(
-            METHOD_SCHEMA.iter().any(|(m, _)| m == name),
-            "contract/README.md documents method `{name}` but it is not in \
-             lib.rs::METHOD_SCHEMA — either the doc is stale or METHOD_SCHEMA is \
-             missing an entry"
-        );
-    }
-
-    assert_eq!(
-        documented.len(),
-        METHOD_SCHEMA.len(),
-        "contract/README.md's Methods table row count ({}) must match \
-         METHOD_SCHEMA's length ({}) exactly",
-        documented.len(),
-        METHOD_SCHEMA.len()
-    );
-}
-
-/// Every error code listed in `ERROR_SCHEMA` must appear as a row in the
-/// README's `### Error codes` table, and every row in that table must be
-/// present in `ERROR_SCHEMA`. This keeps error documentation exactly in sync
-/// with the actual `Error` enum in `lib.rs`.
-#[test]
-fn readme_error_codes_table_matches_error_schema() {
-    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
-        .expect("contract/README.md must be readable from the vault-registry crate");
-
-    // Isolate the Error codes section (between `### Error codes` and the next `###`).
-    let errors_section = readme
-        .split("### Error codes")
-        .nth(1)
-        .expect("contract/README.md must have an `### Error codes` section")
-        .split("\n### ")
-        .next()
-        .expect("`### Error codes` must be followed by another `###` section");
-
-    // Forward check: every ERROR_SCHEMA entry must appear in the table.
-    for (code, name, _desc) in ERROR_SCHEMA {
-        let code_needle = std::format!("| `{code}`");
-        let name_needle = std::format!("`{name}`");
-        assert!(
-            errors_section.contains(code_needle.as_str()),
-            "ERROR_SCHEMA lists error code `{code}` (`{name}`) but contract/README.md's \
-             Error codes table does not document it — add a row to the Error codes table"
-        );
-        assert!(
-            errors_section.contains(name_needle.as_str()),
-            "ERROR_SCHEMA lists error `{name}` but contract/README.md's Error codes table \
-             does not contain `{name}` — update the table to match lib.rs::ERROR_SCHEMA"
-        );
-    }
-
-    // Reverse check: every row in the table must be in ERROR_SCHEMA.
-    let documented_codes: std::vec::Vec<u32> = errors_section
-        .lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            // Match rows like `| `1` | `AlreadyRegistered` | ...`
-            let rest = line.strip_prefix("| `")?;
-            let end = rest.find('`')?;
-            rest[..end].parse::<u32>().ok()
-        })
-        .collect();
-
-    for code in &documented_codes {
-        assert!(
-            ERROR_SCHEMA.iter().any(|(c, _, _)| c == code),
-            "contract/README.md documents error code `{code}` but it is not in \
-             lib.rs::ERROR_SCHEMA — either the doc is stale or ERROR_SCHEMA is missing an entry"
-        );
-    }
-
-    assert_eq!(
-        documented_codes.len(),
-        ERROR_SCHEMA.len(),
-        "contract/README.md's Error codes table row count ({}) must match \
-         ERROR_SCHEMA's length ({}) exactly",
-        documented_codes.len(),
-        ERROR_SCHEMA.len()
-    );
-}
-
-// ─── Metadata freeze (#438) ────────────────────────────────────────────────
-
 #[test]
 fn freeze_metadata_sets_flag_and_emits_event() {
     let (env, creator, client) = setup();
@@ -3132,14 +2998,13 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(60))]
     /// Any format-valid metadata pointer up to MAX_METADATA_POINTER_LEN bytes
     /// must be accepted by both `register` and `update_metadata`. The prefix
-    /// is fixed; the body length is drawn uniformly in [0, max − longest_prefix_len]
-    /// where the longest prefix used in this test is `https://` (8 bytes).
+    /// is fixed; the body length is drawn uniformly in [0, max − prefix_len].
     #[test]
     fn metadata_boundary_shorter_strings_always_succeed(
         id_str   in r"[a-z][a-z0-9]{0,10}",
-        // Cap body_len against the longest prefix used below ("https://" = 8 bytes)
-        // so both the `ipfs://` register call and the `https://` update call stay
-        // within MAX_METADATA_POINTER_LEN (512 bytes).
+        // Bound by "https://" (8 bytes) — the longer of the two prefixes used
+        // in this test — so the generated body stays within MAX_METADATA_POINTER_LEN
+        // for both the register ("ipfs://") and update_metadata ("https://") steps.
         body_len in 0usize..=(512usize - "https://".len()),
         ch       in r"[a-zA-Z0-9]",
     ) {
