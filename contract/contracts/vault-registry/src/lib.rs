@@ -332,7 +332,7 @@ impl VaultRegistry {
             price,
             metadata: metadata.clone(),
             listed: true,
-            tags,
+            tags: tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
             updated_at: env.ledger().sequence(),
