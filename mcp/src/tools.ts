@@ -174,7 +174,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "mindvault_publish",
     description:
-      "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status.",
+      "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status. Pass dryRun: true to validate inputs without submitting payment.",
     inputSchema: {
       type: "object",
       properties: {
@@ -203,6 +203,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description: "Public http(s) URL buyers receive after payment.",
           examples: ["https://docs.stellar.org/consensus", "https://example.com/data.json"],
         },
+        dryRun: {
+          type: "boolean",
+          description:
+            "Optional dry-run flag. When true, validates inputs and shows intended network, endpoint, and required wallet state without submitting payment or transactions.",
+        },
         confirmMainnet: {
           type: "boolean",
           description:
@@ -215,7 +220,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "mindvault_buy",
     description:
-      "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
+      "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1). Pass dryRun: true to validate the resource and show intended payment flow without submitting payment.",
     inputSchema: {
       type: "object",
       properties: {
@@ -224,6 +229,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "The resource ID to buy, from mindvault_browse or mindvault_search. Letters, digits, dot, dash, or underscore.",
           examples: ["cm7x8y9z", "swcn98besxpp6t1u8e77fqz3"],
+        },
+        dryRun: {
+          type: "boolean",
+          description:
+            "Optional dry-run flag. When true, validates the resource ID and shows intended network, endpoint, and required wallet state without submitting payment.",
         },
         confirmMainnet: {
           type: "boolean",

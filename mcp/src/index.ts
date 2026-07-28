@@ -47,6 +47,8 @@ import {
 } from "./mock.js";
 import { createMockFetch, mockEnabledFromEnv, mockRegistryList, mockRegistryLookup } from "./mock.js";
 import { purchaseHistoryTool, recordPurchase } from "./purchaseHistory.js";
+import { dryRunPublish, dryRunBuy, dryRunOnchain } from "./dryRun.js";
+import { initAuditLogging, logToolStart, logToolSuccess, logToolError } from "./auditLog.js";
 import {
   REGISTRY_LIST_DEFAULT_LIMIT,
   REGISTRY_LIST_DEFAULT_START,
@@ -150,6 +152,10 @@ const NETWORK: X402Network = normalizeX402Network(
 // Opt-in tool-level metrics (set MINDVAULT_METRICS=1). Disabled by default so
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
+
+// Opt-in audit logging (set MINDVAULT_AUDIT_LOG=1). Logs tool calls, network
+// requests, duration, status, and tx hashes with automatic secret redaction.
+initAuditLogging(process.env);
 
 // Contributor-friendly mock mode (set MINDVAULT_MOCK=1). When on, every HTTP
 // call and the on-chain registry lookup are served from deterministic in-memory
@@ -1284,7 +1290,22 @@ async function publish(args: {
   description?: string;
   price: string;
   externalUrl: string;
+  dryRun?: boolean;
 }): Promise<string> {
+  if (args.dryRun) {
+    return JSON.stringify(
+      dryRunPublish(
+        args,
+        NETWORK,
+        BASE_URL,
+        !!activeProfile().wallet,
+        !!currentApiKey(),
+      ),
+      null,
+      2,
+    );
+  }
+
   const wallet = requireWallet();
   const apiKey = requireApiKey();
 
@@ -1422,7 +1443,19 @@ async function publish(args: {
   return JSON.stringify(summary, null, 2);
 }
 
-export async function buy(resourceId: string): Promise<string> {
+export async function buy(
+  resourceId: string,
+  dryRun?: boolean,
+  estimatedPrice?: string | null,
+): Promise<string> {
+  if (dryRun) {
+    return JSON.stringify(
+      dryRunBuy(resourceId, NETWORK, BASE_URL, !!activeProfile().wallet, estimatedPrice ?? null),
+      null,
+      2,
+    );
+  }
+
   const wallet = requireWallet();
 
   // Check the wallet can cover the price before attempting payment so a
@@ -2449,11 +2482,12 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
         description: optionalString(args, "description"),
         price: requiredString(args, "price"),
         externalUrl: requiredString(args, "externalUrl"),
+        dryRun: flag(args, "dryRun"),
       });
     case "mindvault_publish_status":
       return publishStatus(rawRecord);
     case "mindvault_buy":
-      return buy(requiredString(args, "resourceId"));
+      return buy(requiredString(args, "resourceId"), flag(args, "dryRun"));
     case "mindvault_purchase_history":
       return purchaseHistoryTool(rawRecord);
     case "mindvault_register_onchain":
