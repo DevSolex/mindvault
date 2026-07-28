@@ -43,8 +43,9 @@ const MAX_TAG_LEN: u32 = 32;
 pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
 /// Version of the on-chain `Resource` schema. Bump whenever a change to the
 /// `Resource` struct's fields would require callers to change how they decode
-/// it (e.g. the tags field added in schema version 2).
-pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
+/// it (e.g. the tags field added in schema version 2, dispute_flag added in
+/// schema version 4).
+pub const RESOURCE_SCHEMA_VERSION: u32 = 4;
 
 /// Maximum byte length of a settlement transaction hash stored in a
 /// [`PaymentReceipt`]. Stellar transaction hashes are 64 hex characters
@@ -95,6 +96,10 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
         "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
     ),
     ("retagidx", "new_count: u32 (topic carries repaired_id_count: u32)"),
+    ("flag", "FlagEvent { id, moderator, reason }"),
+    ("unflag", "id: String"),
+    ("addmod", "true"),
+    ("rmmod", "false"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -141,6 +146,49 @@ pub enum VerificationStatus {
     Rejected,
 }
 
+/// Reason code supplied when a moderator flags a resource for dispute.
+///
+/// The discriminants are stable — do not renumber existing variants.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum FlagReason {
+    Spam = 0,
+    Copyright = 1,
+    Malicious = 2,
+    Other = 3,
+}
+
+/// Wrapper for an optional [`FlagReason`] value, used as the `dispute_flag`
+/// field of [`Resource`]. Soroban's `contracttype` macro requires that all
+/// field types are `ScVal`-encodable; `Option<FlagReason>` is not directly
+/// supported when `FlagReason` is a custom `contracttype` enum, so we use a
+/// two-variant enum instead of native `Option`.
+///
+/// `NoFlag` encodes the absence of a dispute flag (analogous to `None`).
+/// `Flagged(FlagReason)` encodes an active flag with a specific reason code.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeFlag {
+    NoFlag,
+    Flagged(FlagReason),
+}
+
+impl DisputeFlag {
+    /// Returns `true` when the resource is actively flagged.
+    pub fn is_flagged(&self) -> bool {
+        matches!(self, DisputeFlag::Flagged(_))
+    }
+}
+
+/// Structured payload emitted by `flag_resource()`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlagEvent {
+    pub id: String,
+    pub moderator: Address,
+    pub reason: FlagReason,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct Resource {
@@ -160,6 +208,11 @@ pub struct Resource {
     /// (register or any mutation). Clients can use this to detect staleness
     /// or order events without trusting off-chain timestamps.
     pub updated_at: u32,
+    /// Active dispute flag set by a moderator, or `DisputeFlag::NoFlag` if the
+    /// resource is not flagged. Flagging does not delist or delete the resource —
+    /// it is informational state that callers can filter on. Only a moderator may
+    /// set or clear this field (see `flag_resource` / `unflag_resource`).
+    pub dispute_flag: DisputeFlag,
 }
 
 /// Structured payload emitted by `register()`.
@@ -209,6 +262,9 @@ pub enum DataKey {
     /// of resource ids that carry it. Maintained by `register`, `set_tags`,
     /// and repaired wholesale by `repair_tag_index`.
     TagIndex(String),
+    /// Moderator role flag. Stored in instance storage alongside `Verifier`.
+    /// `true` = role active; `false` = revoked (or absent = never granted).
+    Moderator(Address),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -341,6 +397,7 @@ impl VaultRegistry {
             verified: VerificationStatus::Pending,
             frozen: false,
             updated_at: env.ledger().sequence(),
+            dispute_flag: DisputeFlag::NoFlag,
         };
         env.storage().persistent().set(&key, &resource);
         Self::bump_persistent(&env, &key);
@@ -1254,6 +1311,112 @@ impl VaultRegistry {
             .ok_or(Error::NotFound)?;
         Self::bump_persistent(&env, &key);
         Ok(hash)
+    }
+
+    // ─── Moderator role management (#389) ────────────────────────────────────
+
+    /// Grant the moderator role to `moderator`, authorizing `flag_resource` and
+    /// `unflag_resource`. Only the admin may call this. Errors `AdminNotSet` if
+    /// no admin has been set yet (see `nominate_new_admin`).
+    pub fn add_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &true);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("addmod"), moderator), true);
+        Ok(())
+    }
+
+    /// Revoke the moderator role from `moderator`. Only the admin may call this.
+    pub fn remove_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &false);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("rmmod"), moderator), false);
+        Ok(())
+    }
+
+    /// Whether `address` currently holds the moderator role.
+    pub fn is_moderator(env: Env, address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Moderator(address))
+            .unwrap_or(false)
+    }
+
+    // ─── Dispute flagging (#389) ──────────────────────────────────────────────
+
+    /// Flag a resource for dispute. Only an address currently holding the
+    /// moderator role (see `add_moderator`) may call this.
+    ///
+    /// Sets `Resource.dispute_flag` to `Some(reason)`. Flagging is informational:
+    /// it does not delist, delete, or restrict the resource — callers may filter
+    /// on this field. Calling `flag_resource` on an already-flagged resource
+    /// replaces the existing flag with the new reason.
+    ///
+    /// Emits a `flag` event with `FlagEvent { id, moderator, reason }`.
+    ///
+    /// Errors deterministically:
+    /// - [`Error::Unauthorized`] — caller does not hold the moderator role
+    /// - [`Error::NotFound`] — `id` is not a registered resource
+    /// - [`Error::InvalidResourceId`] — `id` fails format validation
+    pub fn flag_resource(
+        env: Env,
+        id: String,
+        moderator: Address,
+        reason: FlagReason,
+    ) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::Unauthorized);
+        }
+        Self::validate_resource_id(&id)?;
+        let mut resource = Self::load(&env, &id)?;
+        resource.dispute_flag = DisputeFlag::Flagged(reason);
+        Self::save(&env, &mut resource);
+        env.events().publish(
+            (symbol_short!("flag"), id.clone()),
+            FlagEvent {
+                id,
+                moderator,
+                reason,
+            },
+        );
+        Ok(())
+    }
+
+    /// Remove the dispute flag from a resource. Only an address currently holding
+    /// the moderator role (see `add_moderator`) may call this.
+    ///
+    /// Clears `Resource.dispute_flag` to `None`. If the resource is not currently
+    /// flagged this is a no-op (the event is still emitted so off-chain indexers
+    /// have a complete audit trail).
+    ///
+    /// Emits an `unflag` event with the resource `id` as the data payload.
+    ///
+    /// Errors deterministically:
+    /// - [`Error::Unauthorized`] — caller does not hold the moderator role
+    /// - [`Error::NotFound`] — `id` is not a registered resource
+    /// - [`Error::InvalidResourceId`] — `id` fails format validation
+    pub fn unflag_resource(env: Env, id: String, moderator: Address) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::Unauthorized);
+        }
+        Self::validate_resource_id(&id)?;
+        let mut resource = Self::load(&env, &id)?;
+        resource.dispute_flag = DisputeFlag::NoFlag;
+        Self::save(&env, &mut resource);
+        env.events()
+            .publish((symbol_short!("unflag"), id.clone()), id);
+        Ok(())
     }
 }
 

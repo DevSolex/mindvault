@@ -3136,6 +3136,17 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.record_payment(&r0, &payer, &String::from_str(&env, "txhash123"), &1_000_000i128); // -> "payrec"
     record(&env, &client, &mut observed);
 
+    // Moderator role management and dispute flagging (#389).
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator); // -> "addmod"
+    record(&env, &client, &mut observed);
+    client.flag_resource(&r0, &moderator, &FlagReason::Spam); // -> "flag"
+    record(&env, &client, &mut observed);
+    client.unflag_resource(&r0, &moderator); // -> "unflag"
+    record(&env, &client, &mut observed);
+    client.remove_moderator(&moderator); // -> "rmmod"
+    record(&env, &client, &mut observed);
+
     observed.sort();
     observed.dedup();
 
@@ -4648,5 +4659,452 @@ fn record_payment_does_not_mutate_resource() {
         client.list(&0u32, &10u32).get(0).unwrap().id,
         id,
         "record_payment must not affect catalog order"
+    );
+}
+
+// ─── Dispute flagging (#389) ───────────────────────────────────────────────
+//
+// Acceptance criteria (from issue):
+//   • Flag state is exposed in reads and listing filters; events include reason code.
+//   • Error handling is deterministic and documented.
+//   • The implementation passes the relevant local test suite.
+
+// ── Helper: setup with admin + moderator pre-configured ──────────────────
+
+fn setup_with_moderator<'a>() -> (Env, Address, Address, Address, VaultRegistryClient<'a>) {
+    let (env, creator, admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    (env, creator, admin, moderator, client)
+}
+
+// ── add_moderator / remove_moderator / is_moderator ──────────────────────
+
+#[test]
+fn admin_can_grant_and_revoke_moderator() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+
+    assert!(!client.is_moderator(&moderator));
+
+    client.add_moderator(&moderator);
+    assert!(client.is_moderator(&moderator));
+
+    client.remove_moderator(&moderator);
+    assert!(!client.is_moderator(&moderator));
+}
+
+#[test]
+fn add_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_add_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn remove_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_remove_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn is_moderator_false_for_unknown_address() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_moderator(&stranger));
+}
+
+#[test]
+fn add_moderator_emits_addmod_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    // Check event immediately — before any other invocation resets the log.
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            if sym == Symbol::new(&env, "addmod") {
+                let val: bool = FromVal::from_val(&env, &data);
+                return val;
+            }
+        }
+        false
+    });
+    assert!(found, "addmod event not emitted");
+}
+
+#[test]
+fn remove_moderator_emits_rmmod_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.remove_moderator(&moderator);
+
+    // Check event immediately — before any other invocation resets the log.
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            if sym == Symbol::new(&env, "rmmod") {
+                let val: bool = FromVal::from_val(&env, &data);
+                return !val; // rmmod emits false
+            }
+        }
+        false
+    });
+    assert!(found, "rmmod event not emitted");
+}
+
+// ── flag_resource ─────────────────────────────────────────────────────────
+
+#[test]
+fn moderator_can_flag_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres0");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let resource = client.get(&id);
+    assert_eq!(resource.dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+}
+
+#[test]
+fn flag_resource_emits_flag_event_with_reason() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres1");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
+
+    let all = env.events().all();
+    let mut found = false;
+    for i in 0..all.len() {
+        let (cid, topics, data) = all.get(i).unwrap();
+        if cid != client.address {
+            continue;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            if sym != Symbol::new(&env, "flag") {
+                continue;
+            }
+            let event: FlagEvent = TryFromVal::try_from_val(&env, &data).unwrap();
+            assert_eq!(event.id, id);
+            assert_eq!(event.moderator, moderator);
+            assert_eq!(event.reason, FlagReason::Copyright);
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "flag event not emitted");
+}
+
+#[test]
+fn flag_resource_with_all_reasons() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+
+    for (suffix, reason) in [
+        ("fr2a", FlagReason::Spam),
+        ("fr2b", FlagReason::Copyright),
+        ("fr2c", FlagReason::Malicious),
+        ("fr2d", FlagReason::Other),
+    ] {
+        let id = register_default(&env, &creator, &client, suffix);
+        client.flag_resource(&id, &moderator, &reason);
+        let resource = client.get(&id);
+        assert_eq!(
+            resource.dispute_flag,
+            DisputeFlag::Flagged(reason),
+            "dispute_flag mismatch for reason {:?}", reason
+        );
+    }
+}
+
+#[test]
+fn flag_resource_replaces_existing_flag() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres3");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+
+    client.flag_resource(&id, &moderator, &FlagReason::Malicious);
+    assert_eq!(
+        client.get(&id).dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Malicious),
+        "re-flag should replace the reason"
+    );
+}
+
+#[test]
+fn flag_resource_non_moderator_is_unauthorized() {
+    let (env, creator, _admin, _moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres4");
+    let stranger = Address::generate(&env);
+
+    let res = client.try_flag_resource(&id, &stranger, &FlagReason::Spam);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    // Resource must not be flagged.
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn flag_resource_revoked_moderator_is_unauthorized() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres5");
+
+    client.remove_moderator(&moderator);
+
+    let res = client.try_flag_resource(&id, &moderator, &FlagReason::Spam);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn flag_resource_missing_resource_fails() {
+    let (env, _creator, _admin, moderator, client) = setup_with_moderator();
+    let ghost = String::from_str(&env, "ghostres0");
+
+    let res = client.try_flag_resource(&ghost, &moderator, &FlagReason::Other);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn flag_resource_does_not_delist_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres6");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let resource = client.get(&id);
+    assert!(resource.listed, "flagging must not change listed state");
+}
+
+#[test]
+fn flag_resource_preserves_all_other_fields() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres7");
+    let before = client.get(&id);
+
+    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
+
+    let after = client.get(&id);
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.creator, before.creator);
+    assert_eq!(after.price, before.price);
+    assert_eq!(after.metadata, before.metadata);
+    assert_eq!(after.listed, before.listed);
+    assert_eq!(after.tags, before.tags);
+    assert_eq!(after.verified, before.verified);
+    assert_eq!(after.frozen, before.frozen);
+    assert_eq!(after.dispute_flag, DisputeFlag::Flagged(FlagReason::Copyright));
+}
+
+// ── unflag_resource ───────────────────────────────────────────────────────
+
+#[test]
+fn moderator_can_unflag_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr0");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+
+    client.unflag_resource(&id, &moderator);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn unflag_resource_emits_unflag_event() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr1");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Other);
+    client.unflag_resource(&id, &moderator);
+
+    // Check event immediately — before any other invocation resets the log.
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, _data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            return sym == Symbol::new(&env, "unflag");
+        }
+        false
+    });
+    assert!(found, "unflag event not emitted");
+}
+
+#[test]
+fn unflag_resource_on_unflagged_is_noop_but_emits_event() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr2");
+
+    // Resource starts unflagged — unflagging is a no-op but must succeed and emit.
+    client.unflag_resource(&id, &moderator);
+
+    // Check the event immediately after the call, before any other invocation
+    // resets the per-invocation event log (same pattern as freeze tests).
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, _data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            return sym == Symbol::new(&env, "unflag");
+        }
+        false
+    });
+    assert!(found, "unflag event must be emitted even on a no-op");
+
+    // State check comes after the event check to avoid resetting the event log.
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn unflag_resource_non_moderator_is_unauthorized() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr3");
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let stranger = Address::generate(&env);
+    let res = client.try_unflag_resource(&id, &stranger);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    // Flag must remain.
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+}
+
+#[test]
+fn unflag_resource_missing_resource_fails() {
+    let (env, _creator, _admin, moderator, client) = setup_with_moderator();
+    let ghost = String::from_str(&env, "ghostres1");
+    let res = client.try_unflag_resource(&ghost, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+// ── dispute_flag in reads / listing ───────────────────────────────────────
+
+#[test]
+fn resource_starts_with_no_flag() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "noflag0");
+    let resource = client.get(&id);
+    assert_eq!(resource.dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn list_exposes_dispute_flag_in_results() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id_a = register_default(&env, &creator, &client, "listflag0");
+    let id_b = register_default(&env, &creator, &client, "listflag1");
+
+    client.flag_resource(&id_a, &moderator, &FlagReason::Malicious);
+
+    let page = client.list(&0u32, &20u32);
+    assert_eq!(page.len(), 2);
+
+    // Find each resource in the returned page (order may vary by insertion).
+    let mut found_a = false;
+    let mut found_b = false;
+    for i in 0..page.len() {
+        let r = page.get(i).unwrap();
+        if r.id == id_a {
+            assert_eq!(r.dispute_flag, DisputeFlag::Flagged(FlagReason::Malicious));
+            found_a = true;
+        }
+        if r.id == id_b {
+            assert_eq!(r.dispute_flag, DisputeFlag::NoFlag);
+            found_b = true;
+        }
+    }
+    assert!(found_a && found_b, "both resources must appear in list");
+}
+
+#[test]
+fn list_listed_exposes_dispute_flag() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "listdflag");
+    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
+
+    let listed = client.list_listed(&0u32, &20u32);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.get(0).unwrap().dispute_flag, DisputeFlag::Flagged(FlagReason::Copyright));
+}
+
+#[test]
+fn flag_resource_appears_in_list_page_items() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "pageflag0");
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let page = client.list_page(&0u32, &20u32);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        page.items.get(0).unwrap().dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Spam)
+    );
+}
+
+// ── flag/unflag interaction with other resource mutations ─────────────────
+
+#[test]
+fn creator_can_mutate_flagged_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "mutflag0");
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    // Creator can still update price, metadata, listing, and tags.
+    client.set_price(&id, &999i128);
+    assert_eq!(client.get(&id).price, 999i128);
+
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://updated"));
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ipfs://updated")
+    );
+
+    client.set_listed(&id, &false);
+    assert!(!client.get(&id).listed);
+
+    client.set_tags(&id, &tags(&env, &["new"]));
+    assert_eq!(client.get(&id).tags.len(), 1);
+
+    // dispute_flag is preserved through all mutations.
+    assert_eq!(
+        client.get(&id).dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Spam),
+        "dispute_flag must survive unrelated mutations"
+    );
+}
+
+#[test]
+fn flag_and_unflag_roundtrip() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "roundtrip0");
+
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+
+    client.flag_resource(&id, &moderator, &FlagReason::Other);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Other));
+
+    client.unflag_resource(&id, &moderator);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+
+    // Can be re-flagged after unflagging.
+    client.flag_resource(&id, &moderator, &FlagReason::Malicious);
+    assert_eq!(
+        client.get(&id).dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Malicious)
     );
 }

@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "4od8h8y9x"
+                  "string": "4ds9u"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 52040336810
+                    "lo": 130787029231
                   }
                 },
                 {
-                  "string": "ipfs://\\\\ufs\\\\\\\\/9__v_0J\\\\0:fg_W5xEd.:ku1b0//B\\\\0na43k.V_HRIZ_Tw\\\\jo/4j:CBCTcEkm.m_.W\\\\mi\\\\5jJ3.\\\\D\\\\/zzC_Q3___jC/A\\\\c\\\\\\\\ZZ_Z\\\\_\\\\.3HVnS/"
+                  "string": "ipfs://_\\\\A3\\\\p-X/mr\\\\sM472DZ:\\\\._:1_A._Q.ehZn_0/NI744__X:-U_GBGN\\\\_ekOM\\\\.7J\\\\LMX6\\\\.9F-_\\\\O_Ks0.Jv\\\\p\\\\k8T\\\\uQLYelgY_v1n\\\\Xv1Mf\\\\mu/tK7_5gD_0yV\\\\3:\\\\_\\\\__u1N_cz_\\\\_\\\\/_R\\\\lg2\\\\Jk\\\\he\\\\p/tl:tRLI\\\\y__i23O_\\\\cTn.4d:r\\\\.S_zU\\\\/"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "4od8h8y9x"
+                  "string": "4ds9u"
                 },
                 {
-                  "string": "https://I\\\\9_-JJ_Q__fM\\\\-"
+                  "string": "https://aJ._S20ieh-_M___b\\\\fC4lT2i/AC"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "4od8h8y9x"
+                  "string": "4ds9u"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 577074654134
+                    "lo": 363402621719
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "4od8h8y9x"
+                  "string": "4ds9u"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "4od8h8y9x"
+                      "string": "4ds9u"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "4od8h8y9x"
+                  "string": "4ds9u"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "4od8h8y9x"
+                  "string": "4ds9u"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "4od8h8y9x"
+                      "string": "4ds9u"
                     }
                   ]
                 },
@@ -264,6 +264,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -275,7 +287,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "4od8h8y9x"
+                        "string": "4ds9u"
                       }
                     },
                     {
@@ -283,7 +295,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": false
+                        "bool": true
                       }
                     },
                     {
@@ -291,7 +303,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://I\\\\9_-JJ_Q__fM\\\\-"
+                        "string": "https://aJ._S20ieh-_M___b\\\\fC4lT2i/AC"
                       }
                     },
                     {
@@ -301,7 +313,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 577074654134
+                          "lo": 363402621719
                         }
                       }
                     },
