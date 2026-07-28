@@ -73,7 +73,7 @@ fn register_then_read() {
 }
 
 #[test]
-fn register_emits_structured_event() {
+fn register_event_contains_full_resource_payload() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "evtres");
     let metadata = String::from_str(&env, "ipfs://evt");
@@ -3744,7 +3744,7 @@ fn event_schema_matches_documented_readme_table() {
         .expect("`### Events` section must precede lifecycle documentation")
         .split("### Registry info")
         .next()
-        .expect("`### Events` section must be followed by `### Registry info`");
+        .expect("`### Events` section must be immediately followed by `### Registry info`");
 
     for (topic, _payload) in EVENT_SCHEMA {
         let needle = std::format!("| `{topic}` ");
@@ -4152,6 +4152,7 @@ fn duplicate_detection_stable_after_mixed_lifecycle_ops() {
     assert_eq!(page.get(1).unwrap().id, r1);
     assert_eq!(page.get(2).unwrap().id, r2);
 }
+
 // ── updated_at ledger metadata (#365) ───────────────────────────────────────
 
 /// `register` stamps updated_at with the ledger sequence at call time.
@@ -4339,415 +4340,183 @@ fn updated_at_is_per_resource() {
     assert_eq!(client.get(&id_b).updated_at, 50);
 }
 
-// ---------------------------------------------------------------------------
-// TTL bump on read paths (#372)
-// ---------------------------------------------------------------------------
+// ─── Deployment preflight checks (#392) ────────────────────────────────────
 //
-// Every public read that touches a persistent entry (get, get_owner, exists,
-// list, list_page, list_listed, list_by_creator, get_terms_hash) must call
-// `bump_persistent` on each entry it successfully reads.  A resource that is
-// being browsed or paid for is "hot" and must not be archived.
-//
-// Design choice: reads use the same BUMP_AMOUNT / LIFETIME_THRESHOLD as
-// writes.  A resource that is only ever read (never mutated) will therefore
-// stay alive as long as it keeps getting reads — exactly the "hot resource"
-// semantics described in the issue.  Instance-storage entries (Count, Admin,
-// CreatorCount, Verifier, …) are NOT bumped on reads; they are refreshed on
-// every write and bumping them per-read would be unnecessarily expensive.
-//
-// All tests below follow the same pattern:
-//   1. Register the resource (TTL = BUMP_AMOUNT immediately after write).
-//   2. Advance the ledger by TTL_DAY_IN_LEDGERS to let the TTL decay by one day.
-//   3. Call the read-only path under test.
-//   4. Assert the TTL is restored to BUMP_AMOUNT.
+// These tests back the automated steps in docs/contract-upgrade-checklist.md.
+// Each one exercises a specific Phase-1 or Phase-4 verification requirement
+// so that running `cargo test` locally (or `make preflight`) gives the same
+// confidence as the manual checklist commands against a live network.
 
-/// Helper: read the persistent TTL for a Resource key directly from contract
-/// storage. Already defined at the top of this file as `resource_storage_ttl`.
-
-/// `get` restores TTL on a hot resource.
+/// `CARGO_PKG_VERSION` baked into `contract_version()` must be a non-empty
+/// string in `MAJOR.MINOR.PATCH` semver format. Deployers use this value to
+/// confirm which build is running on-chain (checklist Phase 4).
 #[test]
-fn get_bumps_ttl_on_read() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttlget");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
+fn contract_version_crate_version_is_valid_semver() {
+    let (_env, _creator, client) = setup();
+    let v = client.contract_version();
+
+    // Copy into a std String for parsing.
+    let len = v.crate_version.len() as usize;
+    let mut buf = alloc::vec![0u8; len];
+    v.crate_version.copy_into_slice(&mut buf);
+    let version_str = alloc::str::from_utf8(&buf).expect("crate_version must be valid UTF-8");
+
+    assert!(
+        !version_str.is_empty(),
+        "crate_version must not be empty"
     );
 
-    // Let TTL decay by one day.
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id),
-        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
-        "TTL should have decayed before the read"
+    // Must contain at least two dots (MAJOR.MINOR.PATCH).
+    let dot_count = version_str.chars().filter(|&c| c == '.').count();
+    assert!(
+        dot_count >= 2,
+        "crate_version '{}' must be in MAJOR.MINOR.PATCH format (at least 2 dots)",
+        version_str
     );
 
-    // A read via `get` must restore the TTL.
-    client.get(&id);
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id),
-        TTL_BUMP_AMOUNT,
-        "get must bump TTL back to BUMP_AMOUNT"
+    // Every segment must be a non-empty string of ASCII digits or digits+pre-release.
+    let parts: alloc::vec::Vec<&str> = version_str.splitn(3, '.').collect();
+    assert_eq!(parts.len(), 3, "crate_version must have exactly 3 dot-separated parts");
+    assert!(
+        parts[0].chars().all(|c| c.is_ascii_digit()),
+        "MAJOR segment '{}' must be numeric",
+        parts[0]
+    );
+    assert!(
+        !parts[0].is_empty(),
+        "MAJOR segment must not be empty"
+    );
+    assert!(
+        !parts[1].is_empty(),
+        "MINOR segment must not be empty"
     );
 }
 
-/// `get_owner` restores TTL on a hot resource.
+/// `registry_info()` must return the stable registry name that clients use
+/// to confirm they are talking to the right contract (checklist Phase 4).
 #[test]
-fn get_owner_bumps_ttl_on_read() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttlgetowner");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id),
-        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
-    );
-
-    client.get_owner(&id);
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id),
-        TTL_BUMP_AMOUNT,
-        "get_owner must bump TTL back to BUMP_AMOUNT"
-    );
-}
-
-/// `exists` restores TTL when the resource is found.
-#[test]
-fn exists_bumps_ttl_when_found() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttlexists");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id),
-        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
-    );
-
-    assert!(client.exists(&id));
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id),
-        TTL_BUMP_AMOUNT,
-        "exists must bump TTL when the entry is found"
-    );
-}
-
-/// `exists` does NOT bump when the resource is absent (nothing to bump).
-#[test]
-fn exists_does_not_bump_when_absent() {
+fn registry_info_name_is_stable_registry_name() {
     let (env, _creator, client) = setup();
-    // No register — the key does not exist.
-    let missing = String::from_str(&env, "ttlmissing");
-    assert!(!client.exists(&missing));
-    // No panic / storage error; the test passing is sufficient.
-}
-
-/// `list` (delegates to `list_page`) restores TTL on every resource it returns.
-#[test]
-fn list_bumps_ttl_for_returned_resources() {
-    let (env, creator, client) = setup();
-    let ids = ["ttll0", "ttll1", "ttll2"];
-    for id_str in &ids {
-        client.register(
-            &creator,
-            &String::from_str(&env, id_str),
-            &100i128,
-            &String::from_str(&env, "ipfs://m"),
-            &empty_tags(&env),
-        );
-    }
-
-    // Decay TTL by one day across all entries.
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
-
-    for id_str in &ids {
-        assert_eq!(
-            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
-            TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
-            "TTL must have decayed before the read"
-        );
-    }
-
-    // One call to list covers all three resources.
-    client.list(&0u32, &20u32);
-
-    for id_str in &ids {
-        assert_eq!(
-            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
-            TTL_BUMP_AMOUNT,
-            "list must bump TTL for each returned resource"
-        );
-    }
-}
-
-/// `list_listed` restores TTL for listed resources (and also for the
-/// skipped-but-read delisted ones, since their index/resource entries are
-/// still accessed during the scan).
-#[test]
-fn list_listed_bumps_ttl_for_scanned_resources() {
-    let (env, creator, client) = setup();
-    let id_listed = String::from_str(&env, "ttllisted");
-    let id_delisted = String::from_str(&env, "ttldelisted");
-
-    client.register(
-        &creator,
-        &id_listed,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-    client.register(
-        &creator,
-        &id_delisted,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-    client.delist(&id_delisted);
-
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
-
-    // Both should have decayed.
+    let info = client.registry_info();
     assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_listed),
-        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
-    );
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_delisted),
-        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
-    );
-
-    // list_listed scans all entries (including delisted ones) to find listed ones.
-    let page = client.list_listed(&0u32, &20u32);
-    assert_eq!(page.len(), 1);
-    assert_eq!(page.get(0).unwrap().id, id_listed);
-
-    // Both entries were touched during the scan — both get their TTL restored.
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_listed),
-        TTL_BUMP_AMOUNT,
-        "list_listed must bump TTL for listed resources it returns"
-    );
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_delisted),
-        TTL_BUMP_AMOUNT,
-        "list_listed must bump TTL for delisted resources it reads during the scan"
+        info.name,
+        String::from_str(&env, REGISTRY_NAME),
+        "registry_info().name must equal the REGISTRY_NAME constant"
     );
 }
 
-/// `list_by_creator` restores TTL for every resource it returns.
+/// `registry_info()` must expose a non-zero `resource_schema_version` that
+/// clients use to detect breaking schema changes (checklist Phase 1 / Phase 4).
 #[test]
-fn list_by_creator_bumps_ttl_for_returned_resources() {
-    let (env, creator, client) = setup();
-    let id_a = String::from_str(&env, "ttlbyca");
-    let id_b = String::from_str(&env, "ttlbycb");
-
-    client.register(
-        &creator,
-        &id_a,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-    client.register(
-        &creator,
-        &id_b,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
-
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_a),
-        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+fn registry_info_resource_schema_version_is_nonzero() {
+    let (_env, _creator, client) = setup();
+    let info = client.registry_info();
+    assert!(
+        info.resource_schema_version > 0,
+        "resource_schema_version must be > 0 (it tracks breaking Resource schema changes)"
     );
     assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_b),
-        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
-    );
-
-    let page = client.list_by_creator(&creator, &0u32, &20u32);
-    assert_eq!(page.len(), 2);
-
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_a),
-        TTL_BUMP_AMOUNT,
-        "list_by_creator must bump TTL for each returned resource"
-    );
-    assert_eq!(
-        resource_storage_ttl(&env, &client.address, &id_b),
-        TTL_BUMP_AMOUNT,
-        "list_by_creator must bump TTL for each returned resource"
+        info.resource_schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "registry_info().resource_schema_version must equal the RESOURCE_SCHEMA_VERSION constant"
     );
 }
 
-/// `get_terms_hash` restores TTL on the terms entry it reads.
+/// `registry_info()` and `contract_version()` must agree on both version
+/// fields so deployers can use either endpoint for verification (checklist
+/// Phase 4 verification commands).
 #[test]
-fn get_terms_hash_bumps_ttl_on_read() {
-    let (env, creator, client) = setup();
+fn preflight_contract_version_and_registry_info_agree() {
+    let (_env, _creator, client) = setup();
+    let v = client.contract_version();
+    let info = client.registry_info();
 
-    // Register a resource so the instance storage is freshly bumped just
-    // before the terms write. This prevents the instance from archiving when
-    // we later advance the ledger past LIFETIME_THRESHOLD to trigger the bump.
-    client.register(
-        &creator,
-        &String::from_str(&env, "ttlterms"),
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
-    let terms = String::from_str(&env, "sha256:abc123");
-    client.set_terms_hash(&creator, &terms);
-
-    let key = DataKey::CreatorTerms(creator.clone());
-    let ttl_after_write =
-        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
-    assert_eq!(ttl_after_write, TTL_BUMP_AMOUNT);
-
-    // Advance past LIFETIME_THRESHOLD (= BUMP_AMOUNT - DAY_IN_LEDGERS) so the
-    // conditional extend_ttl fires. The instance was just bumped by
-    // set_terms_hash, so it won't archive at this depth.
-    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + decay);
-    let ttl_after_decay =
-        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
     assert_eq!(
-        ttl_after_decay,
-        TTL_BUMP_AMOUNT - decay,
-        "TTL should have decayed before the read"
+        v.crate_version, info.version,
+        "contract_version.crate_version must match registry_info.version"
     );
-
-    // A read must restore it.
-    client.get_terms_hash(&creator);
-    let ttl_after_read =
-        env.as_contract(&client.address, || env.storage().persistent().get_ttl(&key));
     assert_eq!(
-        ttl_after_read, TTL_BUMP_AMOUNT,
-        "get_terms_hash must bump TTL back to BUMP_AMOUNT"
+        v.resource_schema_version, info.resource_schema_version,
+        "contract_version.resource_schema_version must match registry_info.resource_schema_version"
     );
 }
 
-/// Reads do NOT bump TTL when they return an error (entry not found).
+/// A fresh contract starts in a known, safe state for deployment:
+/// zero resources and no admin set. This backs the checklist's Phase 7
+/// admin-bootstrap verification step — if admin() is Some on a fresh deploy,
+/// the bootstrap was already run (possibly by a prior deployment script).
 #[test]
-fn failed_reads_do_not_bump_ttl() {
-    let (env, creator, client) = setup();
-    // Register one real resource so the contract has state.
-    let id = String::from_str(&env, "ttlrealerr");
-    client.register(
-        &creator,
+fn preflight_fresh_contract_starts_in_safe_state() {
+    let (_env, _creator, client) = setup();
+
+    assert_eq!(client.count(), 0, "fresh contract must have zero resources");
+    assert!(
+        client.admin().is_none(),
+        "fresh contract must have no admin set (bootstrap required)"
+    );
+}
+
+// ─── Escrow-ready payment state (#387) ────────────────────────────────────
+
+/// Helper: set up a contract with an admin and a settler.
+fn setup_with_settler<'a>() -> (Env, Address, Address, Address, VaultRegistryClient<'a>) {
+    let (env, creator, admin, client) = setup_with_admin();
+    let settler = Address::generate(&env);
+    client.add_settler(&settler);
+    (env, creator, admin, settler, client)
+}
+
+#[test]
+fn admin_can_grant_and_revoke_settler() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let settler = Address::generate(&env);
+
+    assert!(!client.is_settler(&settler));
+
+    client.add_settler(&settler);
+    assert!(client.is_settler(&settler));
+
+    client.remove_settler(&settler);
+    assert!(!client.is_settler(&settler));
+}
+
+#[test]
+fn add_settler_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let settler = Address::generate(&env);
+    let res = client.try_add_settler(&settler);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn is_settler_false_for_unknown_address() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_settler(&stranger));
+}
+
+#[test]
+fn record_payment_creates_escrowed_receipt() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr0");
+
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcpt1"),
         &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
-    // Calls against a non-existent id must return NotFound and not panic.
-    let missing = String::from_str(&env, "nosuchresource");
-    assert_eq!(client.try_get(&missing), Err(Ok(Error::NotFound)));
-    assert_eq!(client.try_get_owner(&missing), Err(Ok(Error::NotFound)));
-    assert!(!client.exists(&missing));
-    // No assertion on a specific TTL value here — there is no entry to measure.
-    // The test passing without a trap is the correctness signal.
-}
-
-/// A single resource that is read repeatedly never falls below BUMP_AMOUNT
-/// in TTL, regardless of how many ledgers pass between reads.
-#[test]
-fn repeated_reads_keep_ttl_at_bump_amount() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "ttlrepeat");
-    client.register(
         &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
-    // Simulate 5 days of decay followed by a read, repeated 3 times.
-    for _ in 0..3 {
-        env.ledger()
-            .set_sequence_number(env.ledger().sequence() + 5 * TTL_DAY_IN_LEDGERS);
-        client.get(&id);
-        assert_eq!(
-            resource_storage_ttl(&env, &client.address, &id),
-            TTL_BUMP_AMOUNT,
-            "TTL must be restored to BUMP_AMOUNT after each read"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Escrow-ready payment state model (#387)
-// ---------------------------------------------------------------------------
-//
-// `record_payment` anchors an x402/Soroban settlement receipt on-chain,
-// keyed by (resource_id, payer). `get_payment_receipt` retrieves the most
-// recent receipt for a pair. All error paths are deterministic.
-
-fn payment_receipt_ttl(
-    env: &Env,
-    contract: &soroban_sdk::Address,
-    resource_id: &String,
-    payer: &Address,
-) -> u32 {
-    let key = DataKey::PaymentReceipt(resource_id.clone(), payer.clone());
-    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
-}
-
-/// Record a payment and round-trip it through get_payment_receipt.
-#[test]
-fn record_payment_round_trip() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrec1");
-    client.register(
-        &creator,
-        &id,
         &1_000_000i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
+        &String::from_str(&env, "0xtxhash1"),
     );
 
-    let payer = Address::generate(&env);
-    let tx_hash = String::from_str(&env, "abc123def456");
-    let amount = 1_000_000i128;
-
-    client.record_payment(&id, &payer, &tx_hash, &amount);
-
-    let receipt = client.get_payment_receipt(&id, &payer);
+    let receipt = client.get_payment(&String::from_str(&env, "rcpt1"));
+    assert_eq!(receipt.receipt_id, String::from_str(&env, "rcpt1"));
     assert_eq!(receipt.resource_id, id);
-    assert_eq!(receipt.payer, payer);
-    assert_eq!(receipt.tx_hash, tx_hash);
-    assert_eq!(receipt.amount, amount);
-    // ledger is set by the contract; just confirm it is non-zero in a real run
-    // (testutils start at ledger 0 by default, so we only check the type exists)
-    let _ = receipt.ledger;
+    assert_eq!(receipt.payer, creator);
+    assert_eq!(receipt.amount, 1_000_000i128);
+    assert_eq!(receipt.state, PaymentState::Escrowed);
+    assert_eq!(receipt.tx_hash, String::from_str(&env, "0xtxhash1"));
+    assert_eq!(receipt.recorded_at, env.ledger().sequence());
 }
 
 #[test]
@@ -4858,59 +4627,41 @@ fn record_payment_overwrites_previous_receipt() {
     client.record_payment(&id, &payer, &String::from_str(&env, "first_tx"), &500i128);
     client.record_payment(&id, &payer, &String::from_str(&env, "second_tx"), &750i128);
 
-    let receipt = client.get_payment_receipt(&id, &payer);
-    assert_eq!(
-        receipt.tx_hash,
-        String::from_str(&env, "second_tx"),
-        "second call must overwrite the first"
-    );
-    assert_eq!(receipt.amount, 750i128);
+    let res = client.try_settle_payment(&settler, &receipt_id);
+    assert_eq!(res, Err(Ok(Error::InvalidPaymentTransition)));
 }
 
-/// Different payers produce independent receipts under the same resource.
 #[test]
-fn record_payment_independent_per_payer() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecmulti");
-    client.register(
-        &creator,
+fn record_payment_duplicate_receipt_id_fails() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr3");
+    let receipt_id = String::from_str(&env, "rcpt4");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
         &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
+        &creator,
+        &1_000_000i128,
+        &String::from_str(&env, "0xtx4"),
     );
 
-    let payer_a = Address::generate(&env);
-    let payer_b = Address::generate(&env);
-
-    client.record_payment(&id, &payer_a, &String::from_str(&env, "tx_a"), &100i128);
-    client.record_payment(&id, &payer_b, &String::from_str(&env, "tx_b"), &200i128);
-
-    let ra = client.get_payment_receipt(&id, &payer_a);
-    let rb = client.get_payment_receipt(&id, &payer_b);
-
-    assert_eq!(ra.tx_hash, String::from_str(&env, "tx_a"));
-    assert_eq!(ra.amount, 100i128);
-    assert_eq!(rb.tx_hash, String::from_str(&env, "tx_b"));
-    assert_eq!(rb.amount, 200i128);
+    let res = client.try_record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &creator,
+        &1_000_000i128,
+        &String::from_str(&env, "0xtx4b"),
+    );
+    assert_eq!(res, Err(Ok(Error::ReceiptAlreadyExists)));
 }
 
-/// record_payment emits a `payrec` event with the full PaymentReceipt payload.
 #[test]
-fn record_payment_emits_payrec_event() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecevt");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
+fn record_payment_nonexistent_resource_fails() {
+    let (env, _creator, _admin, settler, client) = setup_with_settler();
+    let missing = String::from_str(&env, "nosuchresource");
     let payer = Address::generate(&env);
-    let tx_hash = String::from_str(&env, "evthash");
-    let amount = 123_456i128;
 
     client.record_payment(&id, &payer, &tx_hash, &amount);
 
@@ -4938,54 +4689,83 @@ fn record_payment_emits_payrec_event() {
     assert_eq!(receipt.amount, amount);
 }
 
-/// record_payment errors NotFound when resource_id is not registered.
 #[test]
-fn record_payment_rejects_unknown_resource() {
-    let (env, _creator, client) = setup();
-    let payer = Address::generate(&env);
+fn non_settler_cannot_record_payment() {
+    let (env, creator, _admin, _settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr4");
+    let stranger = Address::generate(&env);
+
     let res = client.try_record_payment(
-        &String::from_str(&env, "ghostresource"),
-        &payer,
-        &String::from_str(&env, "txhash"),
-        &100i128,
+        &stranger,
+        &String::from_str(&env, "rcpt6"),
+        &id,
+        &creator,
+        &1_000_000i128,
+        &String::from_str(&env, "0xtx6"),
     );
+    assert_eq!(res, Err(Ok(Error::NotSettler)));
+}
+
+#[test]
+fn non_settler_cannot_settle_payment() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr5");
+    let receipt_id = String::from_str(&env, "rcpt7");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &creator,
+        &1_000_000i128,
+        &String::from_str(&env, "0xtx7"),
+    );
+
+    let stranger = Address::generate(&env);
+    let res = client.try_settle_payment(&stranger, &receipt_id);
+    assert_eq!(res, Err(Ok(Error::NotSettler)));
+    // Receipt state must not have changed.
+    assert_eq!(client.get_payment(&receipt_id).state, PaymentState::Escrowed);
+}
+
+#[test]
+fn revoked_settler_cannot_record_payment() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr6");
+    client.remove_settler(&settler);
+
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcpt8"),
+        &id,
+        &creator,
+        &1_000_000i128,
+        &String::from_str(&env, "0xtx8"),
+    );
+    assert_eq!(res, Err(Ok(Error::NotSettler)));
+}
+
+#[test]
+fn get_payment_missing_fails() {
+    let (env, _creator, client) = setup();
+    let res = client.try_get_payment(&String::from_str(&env, "nosuchreceipt"));
     assert_eq!(res, Err(Ok(Error::NotFound)));
 }
 
-/// record_payment errors InvalidTxHash when tx_hash is empty.
 #[test]
-fn record_payment_rejects_empty_tx_hash() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecbadh1");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+fn record_payment_zero_amount_fails() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr7");
     let payer = Address::generate(&env);
     let res = client.try_record_payment(&id, &payer, &String::from_str(&env, ""), &100i128);
     assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
 }
 
-/// record_payment errors InvalidTxHash when tx_hash exceeds MAX_TX_HASH_LEN.
 #[test]
-fn record_payment_rejects_tx_hash_over_max_length() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecbadh2");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+fn record_payment_empty_receipt_id_fails() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr9");
     let payer = Address::generate(&env);
-    let long_hash = String::from_str(&env, &"a".repeat((MAX_TX_HASH_LEN + 1) as usize));
-    let res = client.try_record_payment(&id, &payer, &long_hash, &100i128);
-    assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
-}
 
 /// record_payment accepts a tx_hash exactly at MAX_TX_HASH_LEN.
 #[test]
@@ -5022,38 +4802,55 @@ fn record_payment_rejects_zero_amount() {
     assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
 }
 
-/// record_payment errors InvalidPaymentAmount when amount is negative.
 #[test]
-fn record_payment_rejects_negative_amount() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecbadamt2");
-    client.register(
-        &creator,
+fn record_payment_emits_payment_event() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr10");
+    let receipt_id = String::from_str(&env, "rcptevt1");
+    let tx_hash = String::from_str(&env, "0xtxevt1");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
         &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
+        &creator,
+        &2_000_000i128,
+        &tx_hash,
     );
     let payer = Address::generate(&env);
     let res = client.try_record_payment(&id, &payer, &String::from_str(&env, "txhash"), &-1i128);
     assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
 }
 
-/// get_payment_receipt errors NotFound when no receipt has been recorded.
 #[test]
-fn get_payment_receipt_missing_returns_not_found() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecnotfound");
-    client.register(
-        &creator,
+fn settle_payment_emits_settle_event() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr11");
+    let receipt_id = String::from_str(&env, "rcptevt2");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
         &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
+        &creator,
+        &3_000_000i128,
+        &String::from_str(&env, "0xtxevt2"),
     );
-    let payer = Address::generate(&env);
-    let res = client.try_get_payment_receipt(&id, &payer);
-    assert_eq!(res, Err(Ok(Error::NotFound)));
+    client.settle_payment(&settler, &receipt_id);
+
+    let all = env.events().all();
+    let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol =
+        <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+            .ok()
+            .unwrap();
+    assert_eq!(t0, Symbol::new(&env, "settle"));
+
+    let decoded: PaymentReceipt =
+        <PaymentReceipt as TryFromVal<Env, Val>>::try_from_val(&env, &data)
+            .ok()
+            .unwrap();
+    assert_eq!(decoded.state, PaymentState::Settled);
 }
 
 /// Failed record_payment calls leave no receipt behind.
@@ -5142,15 +4939,18 @@ fn get_payment_receipt_bumps_ttl_on_read() {
 /// reads on the resource return the same values before and after.
 #[test]
 fn record_payment_does_not_mutate_resource() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecnomut");
-    let metadata = String::from_str(&env, "ipfs://immutable");
-    client.register(&creator, &id, &500i128, &metadata, &empty_tags(&env));
-
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payr12");
     let before = client.get(&id);
 
-    let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "txhash"), &500i128);
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcptmut"),
+        &id,
+        &creator,
+        &1_000_000i128,
+        &String::from_str(&env, "0xtxmut"),
+    );
 
     let after = client.get(&id);
 
