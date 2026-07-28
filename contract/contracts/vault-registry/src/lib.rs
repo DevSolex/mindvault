@@ -94,6 +94,7 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
         "payrec",
         "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
     ),
+    ("retagidx", "new_count: u32 (topic carries repaired_id_count: u32)"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -204,6 +205,10 @@ pub enum DataKey {
     /// Keyed by (resource id string, payer Address) so escrow/lease
     /// contracts can look up a settlement without scanning event history.
     PaymentReceipt(String, Address),
+    /// Derived index mapping a normalized (lowercase) tag to the ordered list
+    /// of resource ids that carry it. Maintained by `register`, `set_tags`,
+    /// and repaired wholesale by `repair_tag_index`.
+    TagIndex(String),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -332,7 +337,7 @@ impl VaultRegistry {
             price,
             metadata: metadata.clone(),
             listed: true,
-            tags,
+            tags: tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
             updated_at: env.ledger().sequence(),
@@ -356,6 +361,9 @@ impl VaultRegistry {
 
         let cur = Self::creator_count(&env, &creator);
         Self::set_creator_count(&env, &creator, cur + 1);
+
+        // Maintain tag index: add id to each tag's index entry.
+        Self::tag_index_add(&env, &tags, &id);
 
         let event = RegisterEvent {
             id: id.clone(),
@@ -490,6 +498,10 @@ impl VaultRegistry {
         let prev_tags = resource.tags.clone();
         resource.tags = tags.clone();
         Self::save(&env, &mut resource);
+
+        // Maintain tag index: remove id from prev tags, add to new tags.
+        Self::tag_index_remove(&env, &prev_tags, &id);
+        Self::tag_index_add(&env, &tags, &id);
 
         // Emit event with both previous and next tags for indexer reconciliation
         env.events()
@@ -730,7 +742,196 @@ impl VaultRegistry {
         Self::creator_count(&env, &creator)
     }
 
-    /// Fetch a resource. Errors with `NotFound` if it does not exist.
+    /// Paginated list of resources carrying a given tag, in index insertion order.
+    ///
+    /// - `tag` is matched case-insensitively: `"Dataset"` and `"dataset"` return
+    ///   the same results. The lookup normalizes `tag` to lowercase before
+    ///   querying the index.
+    /// - `limit` is capped at `20`.
+    /// - Returns an empty `Vec` when no resources carry the tag or when `start`
+    ///   is beyond the end of the tag index.
+    /// - Each persistent `Resource` entry that is successfully read has its TTL
+    ///   bumped to keep hot resources alive.
+    pub fn list_by_tag(env: Env, tag: String, start: u32, limit: u32) -> Vec<Resource> {
+        let page_size = limit.min(20);
+        let mut result: Vec<Resource> = Vec::new(&env);
+        if page_size == 0 {
+            return result;
+        }
+
+        let normalized = Self::normalize_tag(&env, &tag);
+        let idx_key = DataKey::TagIndex(normalized);
+        let ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Vec<String>>(&idx_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let total = ids.len();
+        if start >= total {
+            return result;
+        }
+
+        let mut idx = start;
+        while result.len() < page_size && idx < total {
+            let id = ids.get(idx).unwrap();
+            let res_key = DataKey::Resource(id.clone());
+            if let Some(resource) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Resource>(&res_key)
+            {
+                Self::bump_persistent(&env, &res_key);
+                result.push_back(resource);
+            }
+            idx += 1;
+        }
+        result
+    }
+
+    /// Rebuild the tag index (`list_by_tag`) from an admin-supplied list of
+    /// resource ids. Only the admin may call this.
+    ///
+    /// For each id, the method reads the resource's current `Resource.tags`
+    /// from canonical on-chain storage and reconstructs `TagIndex` entries to
+    /// match. It never modifies `Resource` data — only the derived `TagIndex`
+    /// pointers.
+    ///
+    /// Any resource id that has no on-chain `Resource` entry errors `NotFound`
+    /// and the repair aborts with no partial write. Duplicate ids in the input
+    /// are idempotent (set semantics for tag indexes) — each id is processed
+    /// once.
+    ///
+    /// **Scope**: the repair updates only the `TagIndex` entries for tags that
+    /// the supplied ids currently carry (or previously carried in the stored
+    /// index). Resources *not* in `ids` are never touched. To fully repair a
+    /// drifted index, supply the complete list of affected resource ids.
+    ///
+    /// Emits a `retagidx` event with the count of unique ids processed.
+    ///
+    /// See `docs/tag-index-repair-design.md` for the full repair strategy.
+    pub fn repair_tag_index(env: Env, ids: Vec<String>) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let len = ids.len();
+
+        // Validate all ids exist before touching any storage.
+        for i in 0..len {
+            let id = ids.get(i).unwrap();
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::Resource(id.clone()))
+            {
+                return Err(Error::NotFound);
+            }
+        }
+
+        // Collect unique ids (duplicate inputs are allowed; process each once).
+        let mut unique_ids: Vec<String> = Vec::new(&env);
+        'outer: for i in 0..len {
+            let id = ids.get(i).unwrap();
+            for j in 0..unique_ids.len() {
+                if unique_ids.get(j).unwrap() == id {
+                    continue 'outer;
+                }
+            }
+            unique_ids.push_back(id);
+        }
+
+        // Collect all normalized tags that appear in any of the repaired resources.
+        let mut all_tags: Vec<String> = Vec::new(&env);
+        for i in 0..unique_ids.len() {
+            let id = unique_ids.get(i).unwrap();
+            let resource: Resource = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Resource(id.clone()))
+                .unwrap(); // already validated above
+            for j in 0..resource.tags.len() {
+                let raw_tag = resource.tags.get(j).unwrap();
+                let norm = Self::normalize_tag(&env, &raw_tag);
+                let mut found = false;
+                for k in 0..all_tags.len() {
+                    if all_tags.get(k).unwrap() == norm {
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    all_tags.push_back(norm);
+                }
+            }
+        }
+
+        // For each tag, rebuild its TagIndex entry:
+        //   - Retain entries for ids NOT in the repair set.
+        //   - Remove all ids in the repair set (cleared for rebuild).
+        //   - Append ids from the repair set that currently carry this tag.
+        for i in 0..all_tags.len() {
+            let tag_norm = all_tags.get(i).unwrap();
+            let idx_key = DataKey::TagIndex(tag_norm.clone());
+
+            let existing: Vec<String> = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Vec<String>>(&idx_key)
+                .unwrap_or_else(|| Vec::new(&env));
+
+            // Keep ids not in the repair set.
+            let mut new_list: Vec<String> = Vec::new(&env);
+            for j in 0..existing.len() {
+                let eid = existing.get(j).unwrap();
+                let mut in_repair = false;
+                for k in 0..unique_ids.len() {
+                    if unique_ids.get(k).unwrap() == eid {
+                        in_repair = true;
+                        break;
+                    }
+                }
+                if !in_repair {
+                    new_list.push_back(eid);
+                }
+            }
+
+            // Append repair-set ids that currently carry this tag.
+            for j in 0..unique_ids.len() {
+                let id = unique_ids.get(j).unwrap();
+                let resource: Resource = env
+                    .storage()
+                    .persistent()
+                    .get(&DataKey::Resource(id.clone()))
+                    .unwrap();
+                let mut carries_tag = false;
+                for k in 0..resource.tags.len() {
+                    let norm = Self::normalize_tag(&env, &resource.tags.get(k).unwrap());
+                    if norm == tag_norm {
+                        carries_tag = true;
+                        break;
+                    }
+                }
+                if carries_tag {
+                    new_list.push_back(id);
+                }
+            }
+
+            if new_list.is_empty() {
+                if env.storage().persistent().has(&idx_key) {
+                    env.storage().persistent().remove(&idx_key);
+                }
+            } else {
+                env.storage().persistent().set(&idx_key, &new_list);
+                Self::bump_persistent(&env, &idx_key);
+            }
+        }
+
+        let unique_count = unique_ids.len();
+        env.events()
+            .publish((symbol_short!("retagidx"),), unique_count);
+        Ok(())
+    }
+
     pub fn get(env: Env, id: String) -> Result<Resource, Error> {
         Self::validate_resource_id(&id)?;
         Self::load(&env, &id)
@@ -1256,6 +1457,83 @@ impl VaultRegistry {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::AdminNotSet)
+    }
+
+    /// Normalize a tag for index keying: lowercase ASCII.
+    /// `Resource.tags` stores tags as submitted (no mutation); only the index
+    /// key is normalized so lookups are case-insensitive.
+    fn normalize_tag(env: &Env, tag: &String) -> String {
+        let len = tag.len() as usize;
+        let mut buf = alloc::vec![0u8; len];
+        tag.copy_into_slice(&mut buf);
+        for b in buf.iter_mut() {
+            if b.is_ascii_uppercase() {
+                *b = b.to_ascii_lowercase();
+            }
+        }
+        // Build a Soroban String from the lowercased bytes via the &str path.
+        // All tag bytes are ASCII (validated by validate_tags), so from_utf8
+        // is infallible in practice.
+        match core::str::from_utf8(&buf) {
+            Ok(s) => String::from_str(env, s),
+            Err(_) => tag.clone(), // fallback: return original (should never happen)
+        }
+    }
+
+    /// Add `id` to the `TagIndex` entry for each tag in `tags`.
+    fn tag_index_add(env: &Env, tags: &Vec<String>, id: &String) {
+        for i in 0..tags.len() {
+            let raw_tag = tags.get(i).unwrap();
+            let norm = Self::normalize_tag(env, &raw_tag);
+            let idx_key = DataKey::TagIndex(norm);
+            let mut list: Vec<String> = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Vec<String>>(&idx_key)
+                .unwrap_or_else(|| Vec::new(env));
+            // Avoid duplicates: only add if not already present.
+            let mut already = false;
+            for j in 0..list.len() {
+                if list.get(j).unwrap() == *id {
+                    already = true;
+                    break;
+                }
+            }
+            if !already {
+                list.push_back(id.clone());
+                env.storage().persistent().set(&idx_key, &list);
+                Self::bump_persistent(env, &idx_key);
+            }
+        }
+    }
+
+    /// Remove `id` from the `TagIndex` entry for each tag in `tags`.
+    fn tag_index_remove(env: &Env, tags: &Vec<String>, id: &String) {
+        for i in 0..tags.len() {
+            let raw_tag = tags.get(i).unwrap();
+            let norm = Self::normalize_tag(env, &raw_tag);
+            let idx_key = DataKey::TagIndex(norm);
+            let existing: Vec<String> = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Vec<String>>(&idx_key)
+                .unwrap_or_else(|| Vec::new(env));
+            let mut new_list: Vec<String> = Vec::new(env);
+            for j in 0..existing.len() {
+                let v = existing.get(j).unwrap();
+                if v != *id {
+                    new_list.push_back(v);
+                }
+            }
+            if new_list.is_empty() {
+                if env.storage().persistent().has(&idx_key) {
+                    env.storage().persistent().remove(&idx_key);
+                }
+            } else {
+                env.storage().persistent().set(&idx_key, &new_list);
+                Self::bump_persistent(env, &idx_key);
+            }
+        }
     }
 }
 

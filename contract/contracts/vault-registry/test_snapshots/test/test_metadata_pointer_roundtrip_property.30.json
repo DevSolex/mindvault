@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "83lp"
+                  "string": "z6vvaj3job799e5"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 654291282538
+                    "lo": 361742601385
                   }
                 },
                 {
-                  "string": "ipfs://.\\\\/RjJtIvmm.QLca\\\\a1CyGPVa\\\\\\\\lj_A___cRHV9Y"
+                  "string": "ipfs://4-wyqlL2-\\\\i_\\\\rn8\\\\\\\\K_b.l4W\\\\dODb1_heS_nzmO_s1P_Z9h\\\\__\\\\V\\\\9\\\\bJWSSt_\\\\O./jaOa37\\\\nAM:0HBi.\\\\\\\\RrleJ\\\\KU\\\\__tg_H\\\\rw_.:6:EVS\\\\__QN_5\\\\n:\\\\\\\\k\\\\5H\\\\MF:p\\\\\\\\AAGvB\\\\EO5_Ea-fb\\\\/70P"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "83lp"
+                  "string": "z6vvaj3job799e5"
                 },
                 {
-                  "string": "https://G0N\\\\/7Q_p9a\\\\Yqj_\\\\4rUZdsYR\\\\__9RS\\\\Cz5g\\\\"
+                  "string": "https://.A_z_\\\\il\\\\y6h_v3jzS\\\\\\\\\\\\g5QEp_aseq.Oh_.w1S_7\\\\N\\\\k\\\\_yB.Y\\\\h0OG__r\\\\:f1U:A__8E3\\\\y\\\\X\\\\\\\\Ej:xn65jk___3a\\\\\\\\x_AJ3Zo5\\\\_\\\\\\\\z_S\\\\R.1\\\\Esp_JCEq\\\\5"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "83lp"
+                  "string": "z6vvaj3job799e5"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 506865260383
+                    "lo": 223690857413
                   }
                 }
               ]
@@ -99,7 +99,7 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "83lp"
+                  "string": "z6vvaj3job799e5"
                 },
                 {
                   "bool": true
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "83lp"
+                      "string": "z6vvaj3job799e5"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "83lp"
+                  "string": "z6vvaj3job799e5"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "83lp"
+                  "string": "z6vvaj3job799e5"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "83lp"
+                      "string": "z6vvaj3job799e5"
                     }
                   ]
                 },
@@ -275,7 +275,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "83lp"
+                        "string": "z6vvaj3job799e5"
                       }
                     },
                     {
@@ -291,7 +291,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://G0N\\\\/7Q_p9a\\\\Yqj_\\\\4rUZdsYR\\\\__9RS\\\\Cz5g\\\\"
+                        "string": "https://.A_z_\\\\il\\\\y6h_v3jzS\\\\\\\\\\\\g5QEp_aseq.Oh_.w1S_7\\\\N\\\\k\\\\_yB.Y\\\\h0OG__r\\\\:f1U:A__8E3\\\\y\\\\X\\\\\\\\Ej:xn65jk___3a\\\\\\\\x_AJ3Zo5\\\\_\\\\\\\\z_S\\\\R.1\\\\Esp_JCEq\\\\5"
                       }
                     },
                     {
@@ -301,7 +301,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 506865260383
+                          "lo": 223690857413
                         }
                       }
                     },

@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "l0400bizio98l"
+                  "string": "judw8lx94qe16v"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 881222285493
+                    "lo": 181628463887
                   }
                 },
                 {
-                  "string": "ipfs://N3tWk\\\\\\\\/48EWoJUqCF_O_Z5PzU\\\\\\\\\\\\BHH:3\\\\NgW_/xP./.y_sF\\\\\\\\-x\\\\bHt\\\\:\\\\rc:Jf:zrjF\\\\vq2LRLF5_kId.5Bs:Hij3_gGGaSbS8:F2\\\\__GL8sXDD-\\\\Ij_\\\\aHE.\\\\e_UN\\\\K_t_yQtHV.Xhk_:u_7.grvXV\\\\\\\\9Y_/5\\\\:.\\\\pCwWY_7\\\\\\\\_/\\\\\\\\Z:YX_\\\\\\\\\\\\:a0h0j\\\\_pDnUB\\\\zUC:p__2z\\\\g20WW0/UR\\\\.:\\\\05\\\\89wGXG_SlN\\\\ky23CV_TdY_Tq_\\\\NG_j_8\\\\_:Q_h\\\\DTE4NR\\\\._BXVxive\\\\:_fW\\\\c\\\\7xXlia\\\\zv2vG\\\\_m3HR53l-\\\\._PXP\\\\tywL1D2:_sp\\\\x_8v\\\\"
+                  "string": "ipfs://z/4c.v\\\\HpO:jG:\\\\6NtZ\\\\AN.en_J\\\\.-7ZR3\\\\Zmp2/T4l_v98\\\\Ryv_4du3W\\\\H_U\\\\_:e-_\\\\:__/_e_\\\\h_\\\\\\\\.Wy2_c__iN\\\\\\\\LRPoQ51O\\\\_\\\\h_u_zzW5___W/7.IK_Ev\\\\y/i:\\\\cS\\\\H7/\\\\\\\\_7c3_jNr\\\\-UX2t_H/H_:_.JBo6:47f/__i\\\\8s\\\\__v1:R__ox6:_C_\\\\7/_:Z/4j_au/M2Cv:::Ht:M_ye6:3__::6/F\\\\1\\\\u3_\\\\FKeZ_.UQ\\\\:E\\\\2Y6y7\\\\RLy\\\\/j_l_KQ/w.Ig6F\\\\_N2_\\\\BtHL___\\\\a.QXY::z_ZRv\\\\\\\\\\\\_Ckc\\\\OiC7:R\\\\0__4\\\\J_LY.Q\\\\\\\\:/qEYmR8f/_b_\\\\b_\\\\_-vs1VMN_\\\\iO\\\\w__J/odeJ3_\\\\Kkl\\\\\\\\4Lg06I-_-w-_ll:q4_VZvRn0A:"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "l0400bizio98l"
+                  "string": "judw8lx94qe16v"
                 },
                 {
-                  "string": "https://0\\\\_fat_\\\\X_mMxP\\\\_J.c.Ft0o3xrE:.-Q4-diKNEIDg_Ww._8Y.\\\\hOu\\\\O3_0l\\\\3_6c__pUb/:/LZ:__yK\\\\5__k\\\\\\\\bZkl:Kn\\\\yu_H_\\\\B_8H\\\\_R-\\\\uQcY\\\\K0_-Mk\\\\6.8R/H\\\\7\\\\:9__dqTWA\\\\\\\\4_\\\\BWghL7pxp\\\\/I\\\\V//3O:-:_hF_:\\\\_"
+                  "string": "https://4/YZcnp.\\\\Sv_/\\\\GP.a.\\\\9uR_lP4.M__O\\\\\\\\/enX\\\\m\\\\uCh_KbE.1JW\\\\S5\\\\J.UIJx0Y:Cb8h_b_i_\\\\\\\\Su:mS-2\\\\\\\\\\\\\\\\__Tw2l5aE.mb/\\\\S5s\\\\_/w:-u0\\\\GAnZ__8_/_ocot\\\\w\\\\\\\\4\\\\_jH:_hZG4/:\\\\6PmmnbQdD0__/dmzup1Q.d\\\\QU_AF\\\\SkbNy4hM5hzR\\\\\\\\.4A0vh7MEWVn\\\\p/0vu\\\\oi\\\\:cpW9\\\\CY:\\\\50\\\\/6N7t\\\\dS_c\\\\b5\\\\AC__wU/3.q_c2i\\\\\\\\b._0VR81/JG\\\\EV\\\\i7f-h"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "l0400bizio98l"
+                  "string": "judw8lx94qe16v"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 72438666467
+                    "lo": 56127379059
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "l0400bizio98l"
+                  "string": "judw8lx94qe16v"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "l0400bizio98l"
+                      "string": "judw8lx94qe16v"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "l0400bizio98l"
+                  "string": "judw8lx94qe16v"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "l0400bizio98l"
+                  "string": "judw8lx94qe16v"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "l0400bizio98l"
+                      "string": "judw8lx94qe16v"
                     }
                   ]
                 },
@@ -275,7 +275,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "l0400bizio98l"
+                        "string": "judw8lx94qe16v"
                       }
                     },
                     {
@@ -283,7 +283,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": false
+                        "bool": true
                       }
                     },
                     {
@@ -291,7 +291,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://0\\\\_fat_\\\\X_mMxP\\\\_J.c.Ft0o3xrE:.-Q4-diKNEIDg_Ww._8Y.\\\\hOu\\\\O3_0l\\\\3_6c__pUb/:/LZ:__yK\\\\5__k\\\\\\\\bZkl:Kn\\\\yu_H_\\\\B_8H\\\\_R-\\\\uQcY\\\\K0_-Mk\\\\6.8R/H\\\\7\\\\:9__dqTWA\\\\\\\\4_\\\\BWghL7pxp\\\\/I\\\\V//3O:-:_hF_:\\\\_"
+                        "string": "https://4/YZcnp.\\\\Sv_/\\\\GP.a.\\\\9uR_lP4.M__O\\\\\\\\/enX\\\\m\\\\uCh_KbE.1JW\\\\S5\\\\J.UIJx0Y:Cb8h_b_i_\\\\\\\\Su:mS-2\\\\\\\\\\\\\\\\__Tw2l5aE.mb/\\\\S5s\\\\_/w:-u0\\\\GAnZ__8_/_ocot\\\\w\\\\\\\\4\\\\_jH:_hZG4/:\\\\6PmmnbQdD0__/dmzup1Q.d\\\\QU_AF\\\\SkbNy4hM5hzR\\\\\\\\.4A0vh7MEWVn\\\\p/0vu\\\\oi\\\\:cpW9\\\\CY:\\\\50\\\\/6N7t\\\\dS_c\\\\b5\\\\AC__wU/3.q_c2i\\\\\\\\b._0VR81/JG\\\\EV\\\\i7f-h"
                       }
                     },
                     {
@@ -301,7 +301,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 72438666467
+                          "lo": 56127379059
                         }
                       }
                     },
