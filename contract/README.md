@@ -209,16 +209,12 @@ Three roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `18` | `AdminNotSet`                   | No admin has been set yet (`nominate_new_admin` never called).                          |
 | `19` | `NotVerifier`                   | Caller does not hold the verifier role.                                                 |
 | `20` | `InvalidVerificationTransition` | Verification status transition is not allowed (self-transition or revert to `Pending`). |
-| `21` | `AlreadyFrozen`                 | `freeze_metadata` was already called on this resource.                                  |
-| `22` | `MetadataFrozen`                | `update_metadata` rejected because the metadata pointer is frozen.                      |
-| `23` | `DuplicateInRepair`             | `repair_index` received a duplicate id in the supplied list.                            |
-| `24` | `InvalidTxHash`                 | `tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes).        |
-| `25` | `InvalidPaymentAmount`          | `amount` in `record_payment` is `<= 0`.                                                 |
-| `26` | `NotModerator`                  | Caller does not hold the moderator role.                                                |
-| `27` | `AlreadyFlagged`                | Resource is already flagged as disputed.                                                |
-| `28` | `NotFlagged`                    | Resource is not currently flagged as disputed.                                          |
-| `29` | `InvalidLifecycleTransition`    | The requested lifecycle transition is not allowed from the current state.               |
-| `30` | `ResourceNotMutable`            | A frozen, disputed, or tombstoned resource cannot be changed by its creator.            |
+| `21` | `AlreadyFrozen`          | `freeze_metadata` was already called on this resource.                |
+| `22` | `MetadataFrozen`         | `update_metadata` rejected because the metadata pointer is frozen.    |
+| `23` | `DuplicateInRepair`      | `repair_index` received a duplicate id in the supplied list.          |
+| `24` | `InvalidTxHash`          | `tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes). |
+| `25` | `InvalidPaymentAmount`   | `amount` in `record_payment` is `<= 0`.                               |
+| `26` | `ContractPaused`         | The contract is currently paused; all mutations are blocked until an admin calls `set_paused(false)`. |
 
 ### Events
 
@@ -230,30 +226,27 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
 
-| Event       | Payload                                                            | Triggered by                                               |
-| ----------- | ------------------------------------------------------------------ | ---------------------------------------------------------- |
-| `register`  | `Resource` (full resource record)                                  | `register()` succeeds                                      |
-| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`               | `set_price()` succeeds                                     |
-| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`           | `update_metadata()` succeeds                               |
-| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`                 | `set_tags()` succeeds                                      |
-| `transfer`  | `(previous_owner: Address, new_owner: Address)`                    | `transfer_ownership()` or `accept_transfer()` succeeds     |
-| `propose`   | `(owner: Address, proposed: Address)`                              | `propose_transfer()` succeeds                              |
-| `cancel`    | `owner: Address`                                                   | `cancel_transfer()` succeeds                               |
-| `setlisted` | `(old_listed: bool, new_listed: bool)`                             | `set_listed()` (and `delist()`) succeeds                   |
-| `setterms`  | `terms_hash: String`                                               | `set_terms_hash()` succeeds                                |
-| `setadmin`  | `new_admin: Address`                                               | The first (bootstrap) `nominate_new_admin()` call succeeds |
-| `nomadmin`  | `new_admin: Address`                                               | A subsequent `nominate_new_admin()` call succeeds          |
-| `accadmin`  | `new_admin: Address`                                               | `accept_admin()` succeeds                                  |
-| `freeze`    | `()`                                                               | `freeze_metadata()` succeeds                               |
-| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds                       |
-| `addverif`  | `true`                                                             | `add_verifier()` succeeds                                  |
-| `rmverif`   | `false`                                                            | `remove_verifier()` succeeds                               |
-| `reindex`   | `new_count: u32 (topic carries old_count: u32)`                    | `repair_index()` succeeds                                  |
-| `payrec`    | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }`   | `record_payment()` succeeds                                |
-| `addmod`    | `true`                                                             | `add_moderator()` succeeds                                 |
-| `rmmod`     | `false`                                                            | `remove_moderator()` succeeds                              |
-| `flagdisp`  | `moderator: Address`                                               | `flag_dispute()` succeeds                                  |
-| `unflgdisp` | `moderator: Address`                                               | `unflag_dispute()` succeeds                                |
+| Event       | Payload                                                  | Triggered by                                               |
+| ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
+| `register`  | `Resource` (full resource record)                        | `register()` succeeds                                      |
+| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`     | `set_price()` succeeds                                     |
+| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds                               |
+| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`       | `set_tags()` succeeds                                      |
+| `transfer`  | `(previous_owner: Address, new_owner: Address)`          | `transfer_ownership()` or `accept_transfer()` succeeds     |
+| `propose`   | `(owner: Address, proposed: Address)`                    | `propose_transfer()` succeeds                              |
+| `cancel`    | `owner: Address`                                         | `cancel_transfer()` succeeds                               |
+| `setlisted` | `(old_listed: bool, new_listed: bool)`                   | `set_listed()` (and `delist()`) succeeds                   |
+| `setterms`  | `terms_hash: String`                                     | `set_terms_hash()` succeeds                                |
+| `setadmin`  | `new_admin: Address`                                     | The first (bootstrap) `nominate_new_admin()` call succeeds |
+| `nomadmin`  | `new_admin: Address`                                     | A subsequent `nominate_new_admin()` call succeeds          |
+| `accadmin`  | `new_admin: Address`                                     | `accept_admin()` succeeds                                  |
+| `freeze`    | `()`                                                     | `freeze_metadata()` succeeds                               |
+| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds           |
+| `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
+| `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
+| `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
+| `payrec`    | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }` | `record_payment()` succeeds                        |
+| `pause`     | `(paused: bool, admin: Address)`                         | `set_paused()` succeeds                                    |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
@@ -355,9 +348,24 @@ explain the growth in your PR description.
 
 ### Emergency pause
 
-See [`docs/contract-registry-pause-decision.md`](../docs/contract-registry-pause-decision.md)
-for the architecture spike on admin pause/unpause. **v1 does not implement pause**
-(creator-scoped writes + off-chain ops are sufficient for the current trust model).
+The contract supports an admin-controlled emergency pause via `set_paused(admin, bool)`.
+
+When paused, every write method (`register`, `set_price`, `update_metadata`,
+`freeze_metadata`, `set_verification_status`, `set_tags`, `transfer_ownership`,
+`propose_transfer`, `accept_transfer`, `cancel_transfer`, `set_listed`, `delist`,
+`repair_index`, `set_terms_hash`, `record_payment`) returns `Error::ContractPaused`
+(code `26`) without modifying any state.
+
+Read-only methods (`get`, `exists`, `list*`, `count`, `get_owner`, `registry_info`,
+`contract_version`, `get_terms_hash`, `get_payment_receipt`, `is_paused`,
+`is_verifier`, `admin`, `pending_admin`) remain available while paused.
+
+`is_paused()` returns the current pause state. `set_paused` emits a `pause` event
+with data `(paused: bool, admin: Address)` on every call, including no-op
+transitions, so off-chain monitors can detect rapid pause/unpause cycles.
+
+Only the current admin can call `set_paused`. Errors `AdminNotSet` if no admin
+has been set, or `Unauthorized` if the caller does not match the stored admin.
 
 ### Generating bindings
 
@@ -423,6 +431,19 @@ record/read resources on this contract.
 > This deployment predates `registry_info()`, `creator_resource_count()`,
 > `list_by_creator()`, and the two-step admin model. Redeploy and update this
 > table's Contract ID / Wasm Hash after shipping those changes to testnet.
+
+### Emergency pause
+
+See [contract-registry-pause-decision.md](../docs/contract-registry-pause-decision.md)
+for the original architecture spike. The pause feature is now implemented — see the
+**Emergency pause** section above for the full API.
+
+> **Note:** the deployment above predates `tags`, the two-step admin/transfer
+> flows, `creator_resource_count`, terms hashes, the verifier role, the
+> on-chain verification mirror, metadata freezing, and index repair
+> described in this README. Redeploy from current source and update this
+> table (plus `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
+> `pnpm contract:bindings`) to pick them up.
 
 ### Ideas for contributors
 

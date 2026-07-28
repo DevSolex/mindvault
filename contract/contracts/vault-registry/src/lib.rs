@@ -192,10 +192,10 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
         "payrec",
         "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
     ),
-    ("addmod", "true"),
-    ("rmmod", "false"),
-    ("flagdisp", "moderator: Address"),
-    ("unflgdisp", "moderator: Address"),
+    (
+        "pause",
+        "(paused: bool, admin: Address)",
+    ),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -375,8 +375,10 @@ pub enum DataKey {
     /// Keyed by (resource id string, payer Address) so escrow/lease
     /// contracts can look up a settlement without scanning event history.
     PaymentReceipt(String, Address),
-    Moderator(Address),
-    DisputeFlag(String),
+    /// Emergency pause flag. When set to `true` all registry mutations are
+    /// blocked. Read-only methods remain available. Only the admin can
+    /// flip this flag.
+    Paused,
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -468,11 +470,12 @@ pub enum Error {
     InvalidTxHash = 24,
     /// `amount` supplied to `record_payment` is `<= 0`.
     InvalidPaymentAmount = 25,
-    NotModerator = 26,
-    AlreadyFlagged = 27,
-    NotFlagged = 28,
-    InvalidLifecycleTransition = 29,
-    ResourceNotMutable = 30,
+    /// The contract is currently paused. All registry mutations are blocked.
+    /// Read-only methods (`get`, `exists`, `list*`, `count`, `get_owner`,
+    /// `registry_info`, `contract_version`, `get_terms_hash`,
+    /// `get_payment_receipt`, `is_paused`, `is_verifier`, `admin`,
+    /// `pending_admin`) continue to work while paused.
+    ContractPaused = 26,
 }
 
 #[contract]
@@ -492,6 +495,7 @@ impl VaultRegistry {
         tags: Vec<String>,
     ) -> Result<(), Error> {
         creator.require_auth();
+        Self::require_not_paused(&env)?;
         Self::validate_price(price)?;
         Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
@@ -510,8 +514,7 @@ impl VaultRegistry {
             price,
             metadata: metadata.clone(),
             listed: true,
-            state: ResourceState::Listed,
-            tags: norm_tags.clone(),
+            tags: tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
             updated_at: env.ledger().sequence(),
@@ -559,6 +562,7 @@ impl VaultRegistry {
     /// Emits a `setprice` event whose data is a [`PriceUpdated`] value
     /// containing `id`, `old_price`, `new_price`, and `updater`.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         Self::validate_price(new_price)?;
         let mut resource = Self::load(&env, &id)?;
@@ -587,6 +591,7 @@ impl VaultRegistry {
     /// Off-chain indexers can use these fields to build an audit trail without
     /// querying historical ledger state.
     pub fn update_metadata(env: Env, id: String, metadata: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -613,6 +618,7 @@ impl VaultRegistry {
     /// call this. Irreversible — errors `AlreadyFrozen` if called twice.
     /// Price, listing, tags, and ownership remain mutable after freezing.
     pub fn freeze_metadata(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -639,6 +645,7 @@ impl VaultRegistry {
         status: VerificationStatus,
     ) -> Result<(), Error> {
         verifier.require_auth();
+        Self::require_not_paused(&env)?;
         if !Self::is_verifier(env.clone(), verifier) {
             return Err(Error::NotVerifier);
         }
@@ -669,6 +676,7 @@ impl VaultRegistry {
     /// Tags are normalized to lowercase ASCII before storage; the normalized
     /// form is what gets indexed and returned from `list_by_tag`.
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
@@ -704,6 +712,7 @@ impl VaultRegistry {
     }
 
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -730,6 +739,7 @@ impl VaultRegistry {
 
     /// Propose a transfer to a new owner. The new owner must accept it.
     pub fn propose_transfer(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
@@ -748,6 +758,7 @@ impl VaultRegistry {
 
     /// Accept a proposed transfer. Only the pending owner can call this.
     pub fn accept_transfer(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::PendingTransfer(id.clone());
         let pending_owner: Address = env
             .storage()
@@ -774,6 +785,7 @@ impl VaultRegistry {
 
     /// Cancel a proposed transfer. Only the current owner can call this.
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
@@ -792,6 +804,7 @@ impl VaultRegistry {
     /// `Listed <-> Delisted` transitions are accepted; all other lifecycle
     /// states reject this method with `InvalidLifecycleTransition`.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -1417,6 +1430,7 @@ impl VaultRegistry {
     pub fn repair_index(env: Env, ids: Vec<String>) -> Result<(), Error> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
+        Self::require_not_paused(&env)?;
 
         let len = ids.len();
         for i in 0..len {
@@ -1510,6 +1524,7 @@ impl VaultRegistry {
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
+        Self::require_not_paused(&env)?;
         if terms_hash.len() > MAX_TERMS_HASH_LEN {
             return Err(Error::TermsHashTooLong);
         }
@@ -1553,6 +1568,7 @@ impl VaultRegistry {
         amount: i128,
     ) -> Result<(), Error> {
         payer.require_auth();
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&resource_id)?;
 
         // Resource must exist — receipts must reference real registered resources.
@@ -1609,6 +1625,51 @@ impl VaultRegistry {
             .ok_or(Error::NotFound)?;
         Self::bump_persistent(&env, &key);
         Ok(receipt)
+    }
+
+    /// Set or clear the emergency pause on all registry mutations.
+    ///
+    /// When `paused` is `true` every write method (`register`, `set_price`,
+    /// `update_metadata`, `freeze_metadata`, `set_verification_status`,
+    /// `set_tags`, `transfer_ownership`, `propose_transfer`, `accept_transfer`,
+    /// `cancel_transfer`, `set_listed`, `delist`, `repair_index`,
+    /// `set_terms_hash`, and `record_payment`) returns
+    /// [`Error::ContractPaused`] without modifying any state. Read-only
+    /// methods (`get`, `exists`, `list*`, `count`, `get_owner`,
+    /// `registry_info`, `contract_version`, `get_terms_hash`,
+    /// `get_payment_receipt`, `is_paused`, `is_verifier`, `admin`,
+    /// `pending_admin`) are **not** affected and remain fully available.
+    ///
+    /// Requires the current admin's authorization. Errors `AdminNotSet` if
+    /// no admin has been set yet.
+    ///
+    /// Emits a `pause` event with data `(paused: bool, admin: Address)` on
+    /// every call, including no-op transitions (pause when already paused),
+    /// so off-chain monitors can detect rapid pause/unpause cycles.
+    pub fn set_paused(env: Env, admin: Address, paused: bool) -> Result<(), Error> {
+        let stored_admin = Self::require_admin(&env)?;
+        if stored_admin != admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Paused, &paused);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("pause"), admin.clone()), (paused, admin));
+        Ok(())
+    }
+
+    /// Whether the contract is currently paused.
+    ///
+    /// Returns `false` when the pause flag has never been set (default state).
+    /// This is a read-only method and is never blocked by the pause itself.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
@@ -2062,80 +2123,20 @@ impl VaultRegistry {
             .ok_or(Error::AdminNotSet)
     }
 
-    /// Normalize a tag for index keying: lowercase ASCII.
-    /// `Resource.tags` stores tags as submitted (no mutation); only the index
-    /// key is normalized so lookups are case-insensitive.
-    fn normalize_tag(env: &Env, tag: &String) -> String {
-        let len = tag.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        tag.copy_into_slice(&mut buf);
-        for b in buf.iter_mut() {
-            if b.is_ascii_uppercase() {
-                *b = b.to_ascii_lowercase();
-            }
-        }
-        // Build a Soroban String from the lowercased bytes via the &str path.
-        // All tag bytes are ASCII (validated by validate_tags), so from_utf8
-        // is infallible in practice.
-        match core::str::from_utf8(&buf) {
-            Ok(s) => String::from_str(env, s),
-            Err(_) => tag.clone(), // fallback: return original (should never happen)
-        }
-    }
-
-    /// Add `id` to the `TagIndex` entry for each tag in `tags`.
-    fn tag_index_add(env: &Env, tags: &Vec<String>, id: &String) {
-        for i in 0..tags.len() {
-            let raw_tag = tags.get(i).unwrap();
-            let norm = Self::normalize_tag(env, &raw_tag);
-            let idx_key = DataKey::TagIndex(norm);
-            let mut list: Vec<String> = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Vec<String>>(&idx_key)
-                .unwrap_or_else(|| Vec::new(env));
-            // Avoid duplicates: only add if not already present.
-            let mut already = false;
-            for j in 0..list.len() {
-                if list.get(j).unwrap() == *id {
-                    already = true;
-                    break;
-                }
-            }
-            if !already {
-                list.push_back(id.clone());
-                env.storage().persistent().set(&idx_key, &list);
-                Self::bump_persistent(env, &idx_key);
-            }
-        }
-    }
-
-    /// Remove `id` from the `TagIndex` entry for each tag in `tags`.
-    fn tag_index_remove(env: &Env, tags: &Vec<String>, id: &String) {
-        for i in 0..tags.len() {
-            let raw_tag = tags.get(i).unwrap();
-            let norm = Self::normalize_tag(env, &raw_tag);
-            let idx_key = DataKey::TagIndex(norm);
-            let existing: Vec<String> = env
-                .storage()
-                .persistent()
-                .get::<DataKey, Vec<String>>(&idx_key)
-                .unwrap_or_else(|| Vec::new(env));
-            let mut new_list: Vec<String> = Vec::new(env);
-            for j in 0..existing.len() {
-                let v = existing.get(j).unwrap();
-                if v != *id {
-                    new_list.push_back(v);
-                }
-            }
-            if new_list.is_empty() {
-                if env.storage().persistent().has(&idx_key) {
-                    env.storage().persistent().remove(&idx_key);
-                }
-            } else {
-                env.storage().persistent().set(&idx_key, &new_list);
-                Self::bump_persistent(env, &idx_key);
-            }
+    /// Return `ContractPaused` if the pause flag is set.
+    ///
+    /// Every write method calls this at its entry point. Read-only methods
+    /// never call it so they remain available while paused.
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            Err(Error::ContractPaused)
+        } else {
+            Ok(())
         }
     }
 }

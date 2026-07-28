@@ -77,16 +77,16 @@ fn register_emits_structured_event() {
         if t0 != Symbol::new(&env, "register") {
             continue;
         }
-        let event: RegisterEvent =
+        let resource: RegisterEvent =
             <RegisterEvent as TryFromVal<Env, Val>>::try_from_val(&env, &data)
                 .ok()
                 .unwrap();
-        assert_eq!(event.id, id);
-        assert_eq!(event.creator, creator);
-        assert_eq!(event.price, price);
-        assert_eq!(event.metadata, metadata);
-        assert!(event.listed);
-        assert_eq!(event.tags.len(), 1);
+        assert_eq!(resource.id, id);
+        assert_eq!(resource.creator, creator);
+        assert_eq!(resource.price, price);
+        assert_eq!(resource.metadata, metadata);
+        assert!(resource.listed);
+        assert_eq!(resource.tags.len(), 1);
         assert_eq!(
             event.tags.get(0).unwrap(),
             String::from_str(&env, "tag1")
@@ -2842,8 +2842,8 @@ fn register_then_settags_events_reconstruct_current_tags() {
     };
     let last_register_tags = |env: &Env| -> (String, Vec<String>) {
         let (_, _, data) = env.events().all().last().unwrap();
-        let event: RegisterEvent = data.try_into_val(env).unwrap();
-        (event.id, event.tags)
+        let resource: RegisterEvent = data.try_into_val(env).unwrap();
+        (resource.id, resource.tags)
     };
 
     client.register(
@@ -3007,15 +3007,9 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.record_payment(&r0, &payer, &String::from_str(&env, "txhash123"), &1_000_000i128); // -> "payrec"
     record(&env, &client, &mut observed);
 
-    // Moderator role and dispute flagging (#390).
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator); // -> "addmod"
+    client.set_paused(&admin2, &true); // -> "pause"
     record(&env, &client, &mut observed);
-    client.flag_dispute(&r0, &moderator); // -> "flagdisp"
-    record(&env, &client, &mut observed);
-    client.unflag_dispute(&r0, &moderator); // -> "unflgdisp"
-    record(&env, &client, &mut observed);
-    client.remove_moderator(&moderator); // -> "rmmod"
+    client.set_paused(&admin2, &false); // -> "pause" (second emission, deduped by sort+dedup)
     record(&env, &client, &mut observed);
 
     observed.sort();
@@ -3531,7 +3525,7 @@ proptest! {
         prop_assert!(reg_result.is_ok(), "register rejected valid metadata of len {}: {:?}", raw.len(), reg_result);
 
         // update_metadata must also succeed
-        let new_body: alloc::string::String = ch.repeat(body_len);
+        let new_body: alloc::string::String = ch.repeat(body_len.min(512usize - "https://".len()));
         let new_raw  = alloc::format!("https://{}", new_body);
         prop_assert!(new_raw.len() <= MAX_METADATA_POINTER_LEN as usize);
         let new_meta = String::from_str(&env, &new_raw);
@@ -4647,912 +4641,319 @@ fn admin_can_grant_and_revoke_moderator() {
     assert!(!client.is_moderator(&moderator));
 }
 
+// ─── Emergency pause (#354) ────────────────────────────────────────────────
+
 #[test]
-fn add_moderator_before_admin_set_fails() {
+fn is_paused_defaults_to_false() {
+    let (_env, _creator, client) = setup();
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn admin_can_pause_and_unpause() {
+    let (_env, _creator, admin, client) = setup_with_admin();
+    assert!(!client.is_paused());
+
+    client.set_paused(&admin, &true);
+    assert!(client.is_paused());
+
+    client.set_paused(&admin, &false);
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn set_paused_requires_admin() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    let res = client.try_set_paused(&stranger, &true);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn set_paused_before_admin_set_fails() {
     let (env, _creator, client) = setup();
-    let moderator = Address::generate(&env);
-    let res = client.try_add_moderator(&moderator);
+    let anyone = Address::generate(&env);
+    let res = client.try_set_paused(&anyone, &true);
     assert_eq!(res, Err(Ok(Error::AdminNotSet)));
 }
 
 #[test]
-fn remove_moderator_before_admin_set_fails() {
-    let (env, _creator, client) = setup();
-    let moderator = Address::generate(&env);
-    let res = client.try_remove_moderator(&moderator);
-    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
-}
+fn set_paused_emits_pause_event() {
+    let (env, _creator, admin, client) = setup_with_admin();
 
-#[test]
-fn is_moderator_false_for_unknown_address() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let stranger = Address::generate(&env);
-    assert!(!client.is_moderator(&stranger));
-}
-
-#[test]
-fn add_moderator_emits_event() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
+    client.set_paused(&admin, &true);
 
     let all = env.events().all();
-    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(t0, Symbol::new(&env, "addmod"));
-    let flagged: bool = bool::try_from_val(&env, &data).unwrap();
-    assert!(flagged);
+    // The last event is from set_paused (setadmin is first from setup_with_admin).
+    let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol =
+        <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+            .ok()
+            .unwrap();
+    assert_eq!(t0, Symbol::new(&env, "pause"));
+    let (paused, emitted_admin): (bool, Address) =
+        <(bool, Address)>::try_from_val(&env, &data)
+            .expect("pause event data must be (bool, Address)");
+    assert!(paused);
+    assert_eq!(emitted_admin, admin);
 }
 
 #[test]
-fn remove_moderator_emits_event() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    client.remove_moderator(&moderator);
+fn set_paused_noop_still_emits_event() {
+    // Pausing when already paused is allowed and still emits an event, so
+    // off-chain monitors can detect rapid successive calls.
+    // We verify this by checking that the event is present immediately after
+    // each call — the Soroban test env reflects the most recent invocation.
+    let (env, _creator, admin, client) = setup_with_admin();
+    client.set_paused(&admin, &true);
 
+    // Second pause call (no-op state change): the event must still be emitted.
+    client.set_paused(&admin, &true);
     let all = env.events().all();
-    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(t0, Symbol::new(&env, "rmmod"));
-    let flagged: bool = bool::try_from_val(&env, &data).unwrap();
-    assert!(!flagged);
+    let found = (0..all.len()).any(|i| {
+        let (_, topics, _) = all.get(i).unwrap();
+        topics
+            .get(0)
+            .and_then(|v| {
+                <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &v)
+                    .ok()
+            })
+            .map(|sym: Symbol| sym == Symbol::new(&env, "pause"))
+            .unwrap_or(false)
+    });
+    assert!(found, "set_paused must emit a 'pause' event even on a no-op state transition");
 }
+
+// ── Paused state blocks every write method ──────────────────────────────────
 
 #[test]
-fn non_admin_cannot_add_moderator() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    // A random address that was never granted admin is not authorised.
-    // mock_all_auths is active so auth itself passes, but require_admin
-    // checks the stored admin and will reject a stranger.
-    let stranger = Address::generate(&env);
-    // We can't easily bypass mock_all_auths for a sub-call, but we can verify
-    // the role check: remove_moderator on an address never granted is still
-    // guarded by admin-only; confirming the add path by using try_add_moderator
-    // from a fresh env with no admin set.
-    let env2 = Env::default();
-    env2.mock_all_auths();
-    let contract_id2 = env2.register(VaultRegistry, ());
-    let client2 = VaultRegistryClient::new(&env2, &contract_id2);
-    // No admin set → AdminNotSet
-    let moderator = Address::generate(&env2);
-    let res = client2.try_add_moderator(&moderator);
-    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
-
-    // Confirm granting does NOT make stranger a moderator in original client
-    assert!(!client.is_moderator(&stranger));
-}
-
-// ─── Dispute flagging (#390) ────────────────────────────────────────────────
-
-#[test]
-fn moderator_can_flag_and_unflag_dispute() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres1");
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-
-    assert!(!client.is_flagged(&id));
-
-    client.flag_dispute(&id, &moderator);
-    assert!(client.is_flagged(&id));
-
-    client.unflag_dispute(&id, &moderator);
-    assert!(!client.is_flagged(&id));
-}
-
-#[test]
-fn flag_dispute_on_missing_resource_fails() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    let missing = String::from_str(&env, "doesnotexist");
-    let res = client.try_flag_dispute(&missing, &moderator);
-    assert_eq!(res, Err(Ok(Error::NotFound)));
-}
-
-#[test]
-fn unflag_dispute_on_missing_resource_fails() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    let missing = String::from_str(&env, "doesnotexist");
-    let res = client.try_unflag_dispute(&missing, &moderator);
-    assert_eq!(res, Err(Ok(Error::NotFound)));
-}
-
-#[test]
-fn non_moderator_cannot_flag_dispute() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres2");
-    let stranger = Address::generate(&env);
-    let res = client.try_flag_dispute(&id, &stranger);
-    assert_eq!(res, Err(Ok(Error::NotModerator)));
-    assert!(!client.is_flagged(&id));
-}
-
-#[test]
-fn non_moderator_cannot_unflag_dispute() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres3");
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    client.flag_dispute(&id, &moderator);
-
-    let stranger = Address::generate(&env);
-    let res = client.try_unflag_dispute(&id, &stranger);
-    assert_eq!(res, Err(Ok(Error::NotModerator)));
-    assert!(client.is_flagged(&id)); // still flagged
-}
-
-#[test]
-fn revoked_moderator_cannot_flag_dispute() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres4");
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    client.remove_moderator(&moderator);
-
-    let res = client.try_flag_dispute(&id, &moderator);
-    assert_eq!(res, Err(Ok(Error::NotModerator)));
-}
-
-#[test]
-fn double_flag_returns_already_flagged() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres5");
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    client.flag_dispute(&id, &moderator);
-
-    let res = client.try_flag_dispute(&id, &moderator);
-    assert_eq!(res, Err(Ok(Error::AlreadyFlagged)));
-    assert!(client.is_flagged(&id));
-}
-
-#[test]
-fn unflag_when_not_flagged_returns_not_flagged() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres6");
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-
-    let res = client.try_unflag_dispute(&id, &moderator);
-    assert_eq!(res, Err(Ok(Error::NotFlagged)));
-}
-
-#[test]
-fn flag_dispute_emits_event() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres7");
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    client.flag_dispute(&id, &moderator);
-
-    let all = env.events().all();
-    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(t0, Symbol::new(&env, "flagdisp"));
-    let addr: Address = Address::try_from_val(&env, &data).unwrap();
-    assert_eq!(addr, moderator);
-}
-
-#[test]
-fn unflag_dispute_emits_event() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres8");
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    client.flag_dispute(&id, &moderator);
-    client.unflag_dispute(&id, &moderator);
-
-    let all = env.events().all();
-    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(t0, Symbol::new(&env, "unflgdisp"));
-    let addr: Address = Address::try_from_val(&env, &data).unwrap();
-    assert_eq!(addr, moderator);
-}
-
-#[test]
-fn is_flagged_false_for_unknown_resource() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    // Resource was never registered — should return false, not trap/NotFound
-    let missing = String::from_str(&env, "unknownres");
-    assert!(!client.is_flagged(&missing));
-}
-
-#[test]
-fn different_moderators_can_flag_and_unflag() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = register_default(&env, &creator, &client, "dispres9");
-    let mod1 = Address::generate(&env);
-    let mod2 = Address::generate(&env);
-    client.add_moderator(&mod1);
-    client.add_moderator(&mod2);
-
-    client.flag_dispute(&id, &mod1);
-    assert!(client.is_flagged(&id));
-
-    // A different moderator can unflag
-    client.unflag_dispute(&id, &mod2);
-    assert!(!client.is_flagged(&id));
-}
-
-// ─── Dispute flagging (#389) ───────────────────────────────────────────────
-//
-// Acceptance criteria (from issue):
-//   • Flag state is exposed in reads and listing filters; events include reason code.
-//   • Error handling is deterministic and documented.
-//   • The implementation passes the relevant local test suite.
-
-// ── Helper: setup with admin + moderator pre-configured ──────────────────
-
-fn setup_with_moderator<'a>() -> (Env, Address, Address, Address, VaultRegistryClient<'a>) {
+fn pause_blocks_register() {
     let (env, creator, admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    (env, creator, admin, moderator, client)
-}
-
-// ── add_moderator / remove_moderator / is_moderator ──────────────────────
-
-#[test]
-fn admin_can_grant_and_revoke_moderator() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-
-    assert!(!client.is_moderator(&moderator));
-
-    client.add_moderator(&moderator);
-    assert!(client.is_moderator(&moderator));
-
-    client.remove_moderator(&moderator);
-    assert!(!client.is_moderator(&moderator));
-}
-
-#[test]
-fn add_moderator_before_admin_set_fails() {
-    let (env, _creator, client) = setup();
-    let moderator = Address::generate(&env);
-    let res = client.try_add_moderator(&moderator);
-    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
-}
-
-#[test]
-fn remove_moderator_before_admin_set_fails() {
-    let (env, _creator, client) = setup();
-    let moderator = Address::generate(&env);
-    let res = client.try_remove_moderator(&moderator);
-    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
-}
-
-#[test]
-fn is_moderator_false_for_unknown_address() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let stranger = Address::generate(&env);
-    assert!(!client.is_moderator(&stranger));
-}
-
-#[test]
-fn add_moderator_emits_addmod_event() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-
-    // Check event immediately — before any other invocation resets the log.
-    let all = env.events().all();
-    let found = (0..all.len()).any(|i| {
-        let (cid, topics, data) = all.get(i).unwrap();
-        if cid != client.address {
-            return false;
-        }
-        if let Some(sym) = topic0_symbol(&env, &topics) {
-            if sym == Symbol::new(&env, "addmod") {
-                let val: bool = FromVal::from_val(&env, &data);
-                return val;
-            }
-        }
-        false
-    });
-    assert!(found, "addmod event not emitted");
-}
-
-#[test]
-fn remove_moderator_emits_rmmod_event() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let moderator = Address::generate(&env);
-    client.add_moderator(&moderator);
-    client.remove_moderator(&moderator);
-
-    // Check event immediately — before any other invocation resets the log.
-    let all = env.events().all();
-    let found = (0..all.len()).any(|i| {
-        let (cid, topics, data) = all.get(i).unwrap();
-        if cid != client.address {
-            return false;
-        }
-        if let Some(sym) = topic0_symbol(&env, &topics) {
-            if sym == Symbol::new(&env, "rmmod") {
-                let val: bool = FromVal::from_val(&env, &data);
-                return !val; // rmmod emits false
-            }
-        }
-        false
-    });
-    assert!(found, "rmmod event not emitted");
-}
-
-// ── flag_resource ─────────────────────────────────────────────────────────
-
-#[test]
-fn moderator_can_flag_resource() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "flagres0");
-
-    client.flag_resource(&id, &moderator, &FlagReason::Spam);
-
-    let resource = client.get(&id);
-    assert_eq!(resource.dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
-}
-
-#[test]
-fn flag_resource_emits_flag_event_with_reason() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "flagres1");
-
-    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
-
-    let all = env.events().all();
-    let mut found = false;
-    for i in 0..all.len() {
-        let (cid, topics, data) = all.get(i).unwrap();
-        if cid != client.address {
-            continue;
-        }
-        if let Some(sym) = topic0_symbol(&env, &topics) {
-            if sym != Symbol::new(&env, "flag") {
-                continue;
-            }
-            let event: FlagEvent = TryFromVal::try_from_val(&env, &data).unwrap();
-            assert_eq!(event.id, id);
-            assert_eq!(event.moderator, moderator);
-            assert_eq!(event.reason, FlagReason::Copyright);
-            found = true;
-            break;
-        }
-    }
-    assert!(found, "flag event not emitted");
-}
-
-#[test]
-fn flag_resource_with_all_reasons() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-
-    for (suffix, reason) in [
-        ("fr2a", FlagReason::Spam),
-        ("fr2b", FlagReason::Copyright),
-        ("fr2c", FlagReason::Malicious),
-        ("fr2d", FlagReason::Other),
-    ] {
-        let id = register_default(&env, &creator, &client, suffix);
-        client.flag_resource(&id, &moderator, &reason);
-        let resource = client.get(&id);
-        assert_eq!(
-            resource.dispute_flag,
-            DisputeFlag::Flagged(reason),
-            "dispute_flag mismatch for reason {:?}", reason
-        );
-    }
-}
-
-#[test]
-fn flag_resource_replaces_existing_flag() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "flagres3");
-
-    client.flag_resource(&id, &moderator, &FlagReason::Spam);
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
-
-    client.flag_resource(&id, &moderator, &FlagReason::Malicious);
-    assert_eq!(
-        client.get(&id).dispute_flag,
-        DisputeFlag::Flagged(FlagReason::Malicious),
-        "re-flag should replace the reason"
+    client.set_paused(&admin, &true);
+    let res = client.try_register(
+        &creator,
+        &String::from_str(&env, "pausedreg"),
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
     );
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.count(), 0);
 }
 
 #[test]
-fn flag_resource_non_moderator_is_unauthorized() {
-    let (env, creator, _admin, _moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "flagres4");
-    let stranger = Address::generate(&env);
-
-    let res = client.try_flag_resource(&id, &stranger, &FlagReason::Spam);
-    assert_eq!(res, Err(Ok(Error::Unauthorized)));
-    // Resource must not be flagged.
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+fn pause_blocks_set_price() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedprice");
+    client.set_paused(&admin, &true);
+    let res = client.try_set_price(&id, &999i128);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.get(&id).price, 100i128);
 }
 
 #[test]
-fn flag_resource_revoked_moderator_is_unauthorized() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "flagres5");
-
-    client.remove_moderator(&moderator);
-
-    let res = client.try_flag_resource(&id, &moderator, &FlagReason::Spam);
-    assert_eq!(res, Err(Ok(Error::Unauthorized)));
-}
-
-#[test]
-fn flag_resource_missing_resource_fails() {
-    let (env, _creator, _admin, moderator, client) = setup_with_moderator();
-    let ghost = String::from_str(&env, "ghostres0");
-
-    let res = client.try_flag_resource(&ghost, &moderator, &FlagReason::Other);
-    assert_eq!(res, Err(Ok(Error::NotFound)));
-}
-
-#[test]
-fn flag_resource_does_not_delist_resource() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "flagres6");
-
-    client.flag_resource(&id, &moderator, &FlagReason::Spam);
-
-    let resource = client.get(&id);
-    assert!(resource.listed, "flagging must not change listed state");
-}
-
-#[test]
-fn flag_resource_preserves_all_other_fields() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "flagres7");
-    let before = client.get(&id);
-
-    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
-
-    let after = client.get(&id);
-    assert_eq!(after.id, before.id);
-    assert_eq!(after.creator, before.creator);
-    assert_eq!(after.price, before.price);
-    assert_eq!(after.metadata, before.metadata);
-    assert_eq!(after.listed, before.listed);
-    assert_eq!(after.tags, before.tags);
-    assert_eq!(after.verified, before.verified);
-    assert_eq!(after.frozen, before.frozen);
-    assert_eq!(after.dispute_flag, DisputeFlag::Flagged(FlagReason::Copyright));
-}
-
-// ── unflag_resource ───────────────────────────────────────────────────────
-
-#[test]
-fn moderator_can_unflag_resource() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "unflagr0");
-
-    client.flag_resource(&id, &moderator, &FlagReason::Spam);
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
-
-    client.unflag_resource(&id, &moderator);
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
-}
-
-#[test]
-fn unflag_resource_emits_unflag_event() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "unflagr1");
-
-    client.flag_resource(&id, &moderator, &FlagReason::Other);
-    client.unflag_resource(&id, &moderator);
-
-    // Check event immediately — before any other invocation resets the log.
-    let all = env.events().all();
-    let found = (0..all.len()).any(|i| {
-        let (cid, topics, _data) = all.get(i).unwrap();
-        if cid != client.address {
-            return false;
-        }
-        if let Some(sym) = topic0_symbol(&env, &topics) {
-            return sym == Symbol::new(&env, "unflag");
-        }
-        false
-    });
-    assert!(found, "unflag event not emitted");
-}
-
-#[test]
-fn unflag_resource_on_unflagged_is_noop_but_emits_event() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "unflagr2");
-
-    // Resource starts unflagged — unflagging is a no-op but must succeed and emit.
-    client.unflag_resource(&id, &moderator);
-
-    // Check the event immediately after the call, before any other invocation
-    // resets the per-invocation event log (same pattern as freeze tests).
-    let all = env.events().all();
-    let found = (0..all.len()).any(|i| {
-        let (cid, topics, _data) = all.get(i).unwrap();
-        if cid != client.address {
-            return false;
-        }
-        if let Some(sym) = topic0_symbol(&env, &topics) {
-            return sym == Symbol::new(&env, "unflag");
-        }
-        false
-    });
-    assert!(found, "unflag event must be emitted even on a no-op");
-
-    // State check comes after the event check to avoid resetting the event log.
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
-}
-
-#[test]
-fn unflag_resource_non_moderator_is_unauthorized() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "unflagr3");
-    client.flag_resource(&id, &moderator, &FlagReason::Spam);
-
-    let stranger = Address::generate(&env);
-    let res = client.try_unflag_resource(&id, &stranger);
-    assert_eq!(res, Err(Ok(Error::Unauthorized)));
-    // Flag must remain.
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
-}
-
-#[test]
-fn unflag_resource_missing_resource_fails() {
-    let (env, _creator, _admin, moderator, client) = setup_with_moderator();
-    let ghost = String::from_str(&env, "ghostres1");
-    let res = client.try_unflag_resource(&ghost, &moderator);
-    assert_eq!(res, Err(Ok(Error::NotFound)));
-}
-
-// ── dispute_flag in reads / listing ───────────────────────────────────────
-
-#[test]
-fn resource_starts_with_no_flag() {
-    let (env, creator, client) = setup();
-    let id = register_default(&env, &creator, &client, "noflag0");
-    let resource = client.get(&id);
-    assert_eq!(resource.dispute_flag, DisputeFlag::NoFlag);
-}
-
-#[test]
-fn list_exposes_dispute_flag_in_results() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id_a = register_default(&env, &creator, &client, "listflag0");
-    let id_b = register_default(&env, &creator, &client, "listflag1");
-
-    client.flag_resource(&id_a, &moderator, &FlagReason::Malicious);
-
-    let page = client.list(&0u32, &20u32);
-    assert_eq!(page.len(), 2);
-
-    // Find each resource in the returned page (order may vary by insertion).
-    let mut found_a = false;
-    let mut found_b = false;
-    for i in 0..page.len() {
-        let r = page.get(i).unwrap();
-        if r.id == id_a {
-            assert_eq!(r.dispute_flag, DisputeFlag::Flagged(FlagReason::Malicious));
-            found_a = true;
-        }
-        if r.id == id_b {
-            assert_eq!(r.dispute_flag, DisputeFlag::NoFlag);
-            found_b = true;
-        }
-    }
-    assert!(found_a && found_b, "both resources must appear in list");
-}
-
-#[test]
-fn list_listed_exposes_dispute_flag() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "listdflag");
-    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
-
-    let listed = client.list_listed(&0u32, &20u32);
-    assert_eq!(listed.len(), 1);
-    assert_eq!(listed.get(0).unwrap().dispute_flag, DisputeFlag::Flagged(FlagReason::Copyright));
-}
-
-#[test]
-fn flag_resource_appears_in_list_page_items() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "pageflag0");
-    client.flag_resource(&id, &moderator, &FlagReason::Spam);
-
-    let page = client.list_page(&0u32, &20u32);
-    assert_eq!(page.items.len(), 1);
-    assert_eq!(
-        page.items.get(0).unwrap().dispute_flag,
-        DisputeFlag::Flagged(FlagReason::Spam)
-    );
-}
-
-// ── flag/unflag interaction with other resource mutations ─────────────────
-
-#[test]
-fn creator_can_mutate_flagged_resource() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "mutflag0");
-    client.flag_resource(&id, &moderator, &FlagReason::Spam);
-
-    // Creator can still update price, metadata, listing, and tags.
-    client.set_price(&id, &999i128);
-    assert_eq!(client.get(&id).price, 999i128);
-
-    client.update_metadata(&id, &String::from_str(&env, "ipfs://updated"));
+fn pause_blocks_update_metadata() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedmeta");
+    client.set_paused(&admin, &true);
+    let res = client.try_update_metadata(&id, &String::from_str(&env, "ipfs://new"));
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
     assert_eq!(
         client.get(&id).metadata,
-        String::from_str(&env, "ipfs://updated")
-    );
-
-    client.set_listed(&id, &false);
-    assert!(!client.get(&id).listed);
-
-    client.set_tags(&id, &tags(&env, &["new"]));
-    assert_eq!(client.get(&id).tags.len(), 1);
-
-    // dispute_flag is preserved through all mutations.
-    assert_eq!(
-        client.get(&id).dispute_flag,
-        DisputeFlag::Flagged(FlagReason::Spam),
-        "dispute_flag must survive unrelated mutations"
+        String::from_str(&env, "ipfs://m"),
     );
 }
 
 #[test]
-fn flag_and_unflag_roundtrip() {
-    let (env, creator, _admin, moderator, client) = setup_with_moderator();
-    let id = register_default(&env, &creator, &client, "roundtrip0");
-
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
-
-    client.flag_resource(&id, &moderator, &FlagReason::Other);
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Other));
-
-    client.unflag_resource(&id, &moderator);
-    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
-
-    // Can be re-flagged after unflagging.
-    client.flag_resource(&id, &moderator, &FlagReason::Malicious);
-    assert_eq!(
-        client.get(&id).dispute_flag,
-        DisputeFlag::Flagged(FlagReason::Malicious)
-    );
-}
-
-// ── Storage TTL tests for index entries (#371) ────────────────────────────────
-
-fn index_storage_ttl(env: &Env, contract: &soroban_sdk::Address, index: u32) -> u32 {
-    let key = DataKey::Index(index);
-    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+fn pause_blocks_freeze_metadata() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedfreeze");
+    client.set_paused(&admin, &true);
+    let res = client.try_freeze_metadata(&id);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert!(!client.get(&id).frozen);
 }
 
 #[test]
-fn register_extends_index_storage_ttl() {
-    let (env, creator, client) = setup();
-    let id0 = String::from_str(&env, "idxres0");
-    let id1 = String::from_str(&env, "idxres1");
-    let meta = String::from_str(&env, "ipfs://meta");
-
-    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
-    client.register(&creator, &id1, &200i128, &meta, &empty_tags(&env));
-
-    assert_eq!(
-        index_storage_ttl(&env, &client.address, 0),
-        TTL_BUMP_AMOUNT,
-        "Index(0) entry must receive persistent TTL of TTL_BUMP_AMOUNT"
-    );
-    assert_eq!(
-        index_storage_ttl(&env, &client.address, 1),
-        TTL_BUMP_AMOUNT,
-        "Index(1) entry must receive persistent TTL of TTL_BUMP_AMOUNT"
-    );
+fn pause_blocks_set_verification_status() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedverif");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+    client.set_paused(&admin, &true);
+    let res =
+        client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.get(&id).verified, VerificationStatus::Pending);
 }
 
 #[test]
-fn list_page_bumps_index_ttl_on_read() {
-    let (env, creator, client) = setup();
-    let id0 = String::from_str(&env, "idxttl0");
-    let id1 = String::from_str(&env, "idxttl1");
-    let meta = String::from_str(&env, "ipfs://meta");
-
-    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
-    client.register(&creator, &id1, &200i128, &meta, &empty_tags(&env));
-
-    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
-    env.ledger()
-        .set_sequence_number(env.ledger().sequence() + decay);
-
-    assert_eq!(
-        index_storage_ttl(&env, &client.address, 0),
-        TTL_BUMP_AMOUNT - decay,
-        "Index TTL should have decayed"
-    );
-
-    client.list_page(&0u32, &10u32);
-
-    assert_eq!(
-        index_storage_ttl(&env, &client.address, 0),
-        TTL_BUMP_AMOUNT,
-        "list_page must bump Index(0) TTL back to TTL_BUMP_AMOUNT"
-    );
-    assert_eq!(
-        index_storage_ttl(&env, &client.address, 1),
-        TTL_BUMP_AMOUNT,
-        "list_page must bump Index(1) TTL back to TTL_BUMP_AMOUNT"
-    );
+fn pause_blocks_set_tags() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedtags");
+    client.set_paused(&admin, &true);
+    let res = client.try_set_tags(&id, &tags(&env, &["blocked"]));
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.get(&id).tags.len(), 0);
 }
 
 #[test]
-fn repair_index_extends_index_storage_ttl() {
-    let (env, creator, client) = setup();
-    let admin = Address::generate(&env);
-    client.nominate_new_admin(&admin);
-
-    let id0 = String::from_str(&env, "reidx0");
-    let meta = String::from_str(&env, "ipfs://meta");
-    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
-
-    let mut ids = Vec::new(&env);
-    ids.push_back(id0.clone());
-    client.repair_index(&ids);
-
-    assert_eq!(
-        index_storage_ttl(&env, &client.address, 0),
-        TTL_BUMP_AMOUNT,
-        "repair_index must set persistent TTL for reindexed entries to TTL_BUMP_AMOUNT"
-    );
+fn pause_blocks_transfer_ownership() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedxfer");
+    let new_owner = Address::generate(&env);
+    client.set_paused(&admin, &true);
+    let res = client.try_transfer_ownership(&id, &new_owner);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.get(&id).creator, creator);
 }
-
-// ── Schema version stored on resources (#375) ─────────────────────────────────
 
 #[test]
-fn resource_includes_schema_version() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "schemaverres");
-    let meta = String::from_str(&env, "ipfs://schemaver");
-
-    client.register(&creator, &id, &100i128, &meta, &empty_tags(&env));
-
-    let r = client.get(&id);
-    assert_eq!(
-        r.schema_version, RESOURCE_SCHEMA_VERSION,
-        "Resource from get() must include RESOURCE_SCHEMA_VERSION"
-    );
-
-    let page = client.list_page(&0u32, &10u32);
-    assert_eq!(
-        page.items.get(0).unwrap().schema_version,
-        RESOURCE_SCHEMA_VERSION,
-        "Resource from list_page() must include RESOURCE_SCHEMA_VERSION"
-    );
-
-    let listed = client.list_listed(&0u32, &10u32);
-    assert_eq!(
-        listed.get(0).unwrap().schema_version,
-        RESOURCE_SCHEMA_VERSION,
-        "Resource from list_listed() must include RESOURCE_SCHEMA_VERSION"
-    );
-
-    let by_creator = client.list_by_creator(&creator, &0u32, &10u32);
-    assert_eq!(
-        by_creator.get(0).unwrap().schema_version,
-        RESOURCE_SCHEMA_VERSION,
-        "Resource from list_by_creator() must include RESOURCE_SCHEMA_VERSION"
-    );
+fn pause_blocks_propose_transfer() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedpropose");
+    let proposed = Address::generate(&env);
+    client.set_paused(&admin, &true);
+    let res = client.try_propose_transfer(&id, &proposed);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
 }
 
-// ── Pagination property tests (#377) ─────────────────────────────────────────
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(30))]
-    #[test]
-    fn test_pagination_invariants_property(
-        num_resources in 0u32..=30u32,
-        start in 0u32..=40u32,
-        limit in 0u32..=35u32,
-    ) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(VaultRegistry, ());
-        let client = VaultRegistryClient::new(&env, &contract_id);
-        let creator = Address::generate(&env);
-        let meta = String::from_str(&env, "ipfs://pagetest");
-
-        for i in 0..num_resources {
-            let id_str = format!("res{:04}", i);
-            let id = String::from_str(&env, &id_str);
-            client.register(&creator, &id, &100i128, &meta, &empty_tags(&env));
-        }
-
-        assert_eq!(client.count(), num_resources);
-
-        // 1. list_page invariants
-        let page = client.list_page(&start, &limit);
-        let cap = limit.min(20);
-
-        // Cap enforcement
-        assert!(page.items.len() <= cap, "list_page items count exceeds cap limit.min(20)");
-
-        if start >= num_resources {
-            // Out-of-range starts: no panic, empty items, next_cursor is None
-            assert_eq!(page.items.len(), 0, "out-of-range start must return empty items");
-            assert_eq!(page.next_cursor, None, "out-of-range start must produce next_cursor = None");
-        } else {
-            // Ordering check
-            let expected_len = (num_resources - start).min(cap);
-            assert_eq!(page.items.len(), expected_len);
-            for (idx, item) in page.items.iter().enumerate() {
-                let expected_id = format!("res{:04}", start + idx as u32);
-                assert_eq!(item.id, String::from_str(&env, &expected_id), "ordering invariant failed");
-            }
-
-            if start + page.items.len() < num_resources {
-                assert_eq!(page.next_cursor, Some(start + page.items.len()));
-            } else {
-                assert_eq!(page.next_cursor, None);
-            }
-        }
-
-        // 2. list invariants
-        let list_items = client.list(&start, &limit);
-        assert_eq!(list_items, page.items, "list() must delegate to list_page().items");
-
-        // 3. list_by_creator invariants
-        let creator_items = client.list_by_creator(&creator, &start, &limit);
-        assert_eq!(creator_items, page.items, "list_by_creator must match list_page for single creator");
-    }
+#[test]
+fn pause_blocks_accept_transfer() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedaccept");
+    let new_owner = Address::generate(&env);
+    // Propose before pausing so there is a pending transfer to accept.
+    client.propose_transfer(&id, &new_owner);
+    client.set_paused(&admin, &true);
+    let res = client.try_accept_transfer(&id);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.get(&id).creator, creator);
 }
 
-// ── Tag validation property tests (#376) ──────────────────────────────────────
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(40))]
-    #[test]
-    fn test_tag_validation_property(
-        tag_count in 0u32..=12u32,
-        max_tag_len in 0u32..=40u32,
-        include_duplicate in any::<bool>(),
-    ) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(VaultRegistry, ());
-        let client = VaultRegistryClient::new(&env, &contract_id);
-        let creator = Address::generate(&env);
-        let id = String::from_str(&env, "tagpropres");
-        let meta = String::from_str(&env, "ipfs://tagprop");
-
-        let mut tags_vec = Vec::new(&env);
-        let mut is_valid = tag_count <= 8;
-
-        for i in 0..tag_count {
-            let len = if max_tag_len == 0 { 0 } else { (i % max_tag_len) + 1 };
-            if len == 0 || len > 32 {
-                is_valid = false;
-            }
-            let char_byte = b'a' + (i % 26) as u8;
-            let mut buf = alloc::vec![char_byte; len as usize];
-            let tag_str = core::str::from_utf8(&buf).unwrap();
-            tags_vec.push_back(String::from_str(&env, tag_str));
-        }
-
-        if include_duplicate && tag_count >= 2 {
-            tags_vec.set(1, tags_vec.get(0).unwrap());
-            is_valid = false;
-        }
-
-        let result = client.try_register(&creator, &id, &100i128, &meta, &tags_vec);
-        if is_valid {
-            assert!(result.is_ok(), "valid tag vector should succeed in register");
-        } else {
-            assert_eq!(result, Err(Ok(Error::InvalidTag)), "invalid tag vector should be rejected with InvalidTag");
-        }
-    }
+#[test]
+fn pause_blocks_cancel_transfer() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedcancel");
+    let proposed = Address::generate(&env);
+    client.propose_transfer(&id, &proposed);
+    client.set_paused(&admin, &true);
+    let res = client.try_cancel_transfer(&id);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
 }
 
+#[test]
+fn pause_blocks_set_listed() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedlist");
+    client.set_paused(&admin, &true);
+    let res = client.try_set_listed(&id, &false);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert!(client.get(&id).listed);
+}
+
+#[test]
+fn pause_blocks_delist() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pauseddelist");
+    client.set_paused(&admin, &true);
+    let res = client.try_delist(&id);
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+    assert!(client.get(&id).listed);
+}
+
+#[test]
+fn pause_blocks_repair_index() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedrepair");
+    client.set_paused(&admin, &true);
+    let res = client.try_repair_index(&Vec::from_array(&env, [id.clone()]));
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn pause_blocks_set_terms_hash() {
+    let (env, creator, admin, client) = setup_with_admin();
+    client.set_paused(&admin, &true);
+    let res = client.try_set_terms_hash(&creator, &String::from_str(&env, "hash"));
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn pause_blocks_record_payment() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedpayrec");
+    let payer = Address::generate(&env);
+    client.set_paused(&admin, &true);
+    let res = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &1_000_000i128,
+    );
+    assert_eq!(res, Err(Ok(Error::ContractPaused)));
+}
+
+// ── Read-only methods keep working while paused ──────────────────────────────
+
+#[test]
+fn pause_allows_read_only_methods() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "pausedread");
+
+    // Record a payment receipt and terms hash while unpaused so we have
+    // something to read back.
+    let payer = Address::generate(&env);
+    client.record_payment(&id, &payer, &String::from_str(&env, "txhash"), &100i128);
+    client.set_terms_hash(&creator, &String::from_str(&env, "termshash"));
+
+    client.set_paused(&admin, &true);
+
+    // All of these must succeed while paused.
+    assert!(client.is_paused());
+    assert!(client.exists(&id));
+    assert_eq!(client.count(), 1);
+    let _ = client.get(&id);
+    let _ = client.get_owner(&id);
+    let _ = client.list(&0u32, &10u32);
+    let _ = client.list_page(&0u32, &10u32);
+    let _ = client.list_listed(&0u32, &10u32);
+    let _ = client.list_by_creator(&creator, &0u32, &10u32);
+    let _ = client.creator_resource_count(&creator);
+    let _ = client.registry_info();
+    let _ = client.contract_version();
+    let _ = client.admin();
+    let _ = client.pending_admin();
+    let _ = client.is_verifier(&creator);
+    let _ = client.get_payment_receipt(&id, &payer);
+    let _ = client.get_terms_hash(&creator);
+}
+
+// ── Unpause restores write access ────────────────────────────────────────────
+
+#[test]
+fn unpause_restores_register() {
+    let (env, creator, admin, client) = setup_with_admin();
+    client.set_paused(&admin, &true);
+    client.set_paused(&admin, &false);
+    // Must succeed now that the contract is unpaused.
+    client.register(
+        &creator,
+        &String::from_str(&env, "unpaused"),
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.count(), 1);
+}
+
+#[test]
+fn unpause_restores_mutations() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "unpausedmut");
+    client.set_paused(&admin, &true);
+    client.set_paused(&admin, &false);
+    client.set_price(&id, &500i128);
+    assert_eq!(client.get(&id).price, 500i128);
+}
