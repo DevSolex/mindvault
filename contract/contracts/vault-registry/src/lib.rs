@@ -46,6 +46,12 @@ pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
 /// it (e.g. the tags field added in schema version 2).
 pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 
+/// Maximum byte length of a settlement transaction hash stored in a
+/// [`PaymentReceipt`]. Stellar transaction hashes are 64 hex characters
+/// (32 bytes), but we allow up to 128 to accommodate future hash formats
+/// (e.g. a `sha256:` prefixed hex string).
+pub const MAX_TX_HASH_LEN: u32 = 128;
+
 /// Canonical list of every event topic this contract emits, paired with a
 /// human-readable description of its payload shape. This is the single
 /// source of truth for event schemas: `contract/README.md`'s Events table
@@ -84,6 +90,10 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("addverif", "true"),
     ("rmverif", "false"),
     ("reindex", "new_count: u32 (topic carries old_count: u32)"),
+    (
+        "payrec",
+        "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
+    ),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -175,6 +185,10 @@ pub enum DataKey {
     CreatorCount(Address),
     PendingTransfer(String),
     Verifier(Address),
+    /// Most-recent payment receipt for `(resource_id, payer)`.
+    /// Keyed by (resource id string, payer Address) so escrow/lease
+    /// contracts can look up a settlement without scanning event history.
+    PaymentReceipt(String, Address),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -200,6 +214,39 @@ pub struct PriceUpdated {
     pub old_price: i128,
     pub new_price: i128,
     pub updater: Address,
+}
+
+/// On-chain record of a single x402/Soroban payment settlement for a resource.
+///
+/// This is the escrow-ready payment state model: recording a settlement receipt
+/// on-chain gives future escrow and lease contracts a canonical, verifiable
+/// reference to a real payment without requiring those contracts to custody
+/// funds or replay the x402 flow themselves.
+///
+/// `tx_hash` is the Stellar transaction hash of the USDC settlement (up to
+/// [`MAX_TX_HASH_LEN`] bytes). `amount` is the amount paid in USDC stroops
+/// (must be `> 0`). `ledger` is the ledger sequence at which the receipt was
+/// recorded — set by the contract at write time from `env.ledger().sequence()`
+/// so callers cannot forge it.
+///
+/// Receipts are stored under `DataKey::PaymentReceipt(resource_id, payer)`.
+/// Recording a second payment for the same `(resource_id, payer)` pair
+/// overwrites the previous receipt, so the stored value always reflects the
+/// most recent settlement for that pair. Use the `payrec` event stream to
+/// reconstruct the full history.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaymentReceipt {
+    /// The resource id this payment is for.
+    pub resource_id: String,
+    /// Stellar address of the buyer/payer.
+    pub payer: Address,
+    /// Stellar transaction hash of the USDC settlement (hex or `sha256:`-prefixed hex).
+    pub tx_hash: String,
+    /// Amount paid in USDC stroops (`> 0`).
+    pub amount: i128,
+    /// Ledger sequence at which this receipt was recorded (set by the contract).
+    pub ledger: u32,
 }
 
 #[contracterror]
@@ -229,6 +276,10 @@ pub enum Error {
     AlreadyFrozen = 21,
     MetadataFrozen = 22,
     DuplicateInRepair = 23,
+    /// `tx_hash` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes).
+    InvalidTxHash = 24,
+    /// `amount` supplied to `record_payment` is `<= 0`.
+    InvalidPaymentAmount = 25,
 }
 
 #[contract]
@@ -879,10 +930,99 @@ impl VaultRegistry {
         Ok(())
     }
 
+    /// Record a payment receipt for a resource after x402/Soroban settlement.
+    ///
+    /// This is the escrow-ready payment hook: after the x402 facilitator
+    /// settles a USDC transfer on-chain, the server (or the payer directly)
+    /// calls this to anchor the settlement reference inside the registry.
+    /// Future escrow and lease contracts can look up `(resource_id, payer)`
+    /// without scanning event history.
+    ///
+    /// Requires the **payer's** authorization so receipts cannot be fabricated
+    /// by a third party.
+    ///
+    /// `tx_hash` must be non-empty and at most [`MAX_TX_HASH_LEN`] bytes.
+    /// `amount` must be `> 0` (USDC stroops).
+    ///
+    /// Recording a receipt for a `(resource_id, payer)` pair that already has
+    /// one **overwrites** the previous entry — the stored value always reflects
+    /// the most recent settlement. The full history is available from the
+    /// `payrec` event stream.
+    ///
+    /// Errors deterministically:
+    /// - [`Error::NotFound`] — `resource_id` is not registered
+    /// - [`Error::InvalidResourceId`] — `resource_id` fails format validation
+    /// - [`Error::InvalidTxHash`] — `tx_hash` is empty or exceeds [`MAX_TX_HASH_LEN`]
+    /// - [`Error::InvalidPaymentAmount`] — `amount <= 0`
+    pub fn record_payment(
+        env: Env,
+        resource_id: String,
+        payer: Address,
+        tx_hash: String,
+        amount: i128,
+    ) -> Result<(), Error> {
+        payer.require_auth();
+        Self::validate_resource_id(&resource_id)?;
+
+        // Resource must exist — receipts must reference real registered resources.
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Resource(resource_id.clone()))
+        {
+            return Err(Error::NotFound);
+        }
+
+        // Validate tx_hash
+        let hash_len = tx_hash.len();
+        if hash_len == 0 || hash_len > MAX_TX_HASH_LEN {
+            return Err(Error::InvalidTxHash);
+        }
+
+        // Validate amount
+        if amount <= 0 {
+            return Err(Error::InvalidPaymentAmount);
+        }
+
+        let receipt = PaymentReceipt {
+            resource_id: resource_id.clone(),
+            payer: payer.clone(),
+            tx_hash,
+            amount,
+            ledger: env.ledger().sequence(),
+        };
+
+        let key = DataKey::PaymentReceipt(resource_id.clone(), payer.clone());
+        env.storage().persistent().set(&key, &receipt);
+        Self::bump_persistent(&env, &key);
+
+        env.events()
+            .publish((symbol_short!("payrec"), resource_id), receipt);
+        Ok(())
+    }
+
+    /// Fetch the most recent payment receipt for `(resource_id, payer)`.
+    /// Errors with [`Error::NotFound`] if no receipt has been recorded for
+    /// this pair. Bumps the entry's TTL on a successful read.
+    pub fn get_payment_receipt(
+        env: Env,
+        resource_id: String,
+        payer: Address,
+    ) -> Result<PaymentReceipt, Error> {
+        Self::validate_resource_id(&resource_id)?;
+        let key = DataKey::PaymentReceipt(resource_id, payer);
+        let receipt = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        Self::bump_persistent(&env, &key);
+        Ok(receipt)
+    }
+
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     /// Bumps the entry's TTL on a successful read.
-    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
-        let key = DataKey::CreatorTerms(creator);
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {        let key = DataKey::CreatorTerms(creator);
         let hash = env
             .storage()
             .persistent()
