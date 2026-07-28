@@ -79,6 +79,30 @@ Clients should paginate by passing `next_cursor` back as `cursor`/`start` instea
 recomputing offsets from `items.len()`. `list(start, limit)` remains available and
 returns only the `items` body for existing callers.
 
+### Fee / royalty configuration
+
+```rust
+pub struct FeeConfig {
+    pub platform_fee_bps: u32,        // platform cut (0–MAX_FEE_BPS = 5 000 bp)
+    pub royalty_bps: u32,             // creator royalty (0–MAX_FEE_BPS = 5 000 bp)
+    pub fee_recipient: Option<Address>, // where platform fee is routed; None = no platform fee
+}
+```
+
+The registry stores a single `FeeConfig` at registry scope (not per-resource).
+`set_fee_config` enforces:
+
+- `platform_fee_bps ≤ MAX_FEE_BPS` (else `FeeBpsTooHigh`)
+- `royalty_bps ≤ MAX_FEE_BPS` (else `FeeBpsTooHigh`)
+- `platform_fee_bps + royalty_bps ≤ MAX_FEE_BPS` (else `TotalFeeTooHigh`)
+
+This guarantees a creator always receives at least 50 % of any sale price.
+The contract does **not** collect fees itself — it stores the agreed split so
+off-chain settlement (x402 facilitator, future settlement contracts) can read
+and apply it.
+
+See [`docs/adr-fee-config.md`](../docs/adr-fee-config.md) for the full design rationale.
+
 ### Methods
 
 | Function                                        | Auth                                                     | Args                                                                                                                                                                                                                                                 | Returns                   | Description                                                                                                                                                                                                                                                                                              |
@@ -98,6 +122,7 @@ returns only the `items` body for existing callers.
 | `list_page(cursor, limit)`                      | —                                                        | `cursor: u32`; `limit: u32` — capped at 20                                                                                                                                                                                                           | `CatalogPage`             | Paginated page with `items` + `next_cursor`.                                                                                                                                                                                                                                                             |
 | `list_listed(start, limit)`                     | —                                                        | `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                                                            | `Vec<Resource>`           | Paginated list of listed-only resources. Delisted resources are skipped; relisted resources reappear.                                                                                                                                                                                                    |
 | `list_by_creator(creator, start, limit)`        | —                                                        | `creator: Address`; `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                                        | `Vec<Resource>`           | Paginated list of resources currently owned by `creator`, in registration order.                                                                                                                                                                                                                         |
+| `list_by_tag(tag, start, limit)`                | —                                                        | `tag: String` (normalized to lowercase); `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                   | `Vec<Resource>`           | Paginated list of resources carrying `tag`, in tag-index insertion order. The lookup tag is normalized to lowercase before querying. Returns an empty vec for unknown tags (not `NotFound`). Each resource entry read has its TTL bumped.                                                                  |
 | `get(id)`                                       | —                                                        | `id: String`                                                                                                                                                                                                                                         | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent.                                                                                                                                                                                                                                                     |
 | `exists(id)`                                    | —                                                        | `id: String`                                                                                                                                                                                                                                         | `bool`                    | Whether a resource is registered.                                                                                                                                                                                                                                                                        |
 | `get_owner(id)`                                 | —                                                        | `id: String`                                                                                                                                                                                                                                         | `Result<Address, Error>`  | Fetch the resource's current owner. Errors `NotFound` if absent.                                                                                                                                                                                                                                         |
@@ -109,17 +134,20 @@ returns only the `items` body for existing callers.
 | `accept_admin(new_admin)`                       | pending admin                                            | `new_admin: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Accept a pending admin nomination. Errors `PendingAdminNotSet` if `new_admin` doesn't match the pending nomination.                                                                                                                                                                                      |
 | `set_terms_hash(creator, terms_hash)`           | `creator`                                                | `creator: Address`; `terms_hash: String` — max 64 bytes                                                                                                                                                                                              | `Result<(), Error>`       | Store a hash of the creator's accepted marketplace terms.                                                                                                                                                                                                                                                |
 | `get_terms_hash(creator)`                       | —                                                        | `creator: Address`                                                                                                                                                                                                                                   | `Result<String, Error>`   | Fetch a creator's terms hash. Errors `NotFound` if absent.                                                                                                                                                                                                                                               |
+| `set_fee_config(config)`                        | `admin`                                                  | `config: FeeConfig` — `platform_fee_bps` and `royalty_bps` each ≤ `MAX_FEE_BPS` (5 000 bp); their sum ≤ `MAX_FEE_BPS` too                                                                                                                           | `Result<(), Error>`       | Set the registry-level fee / royalty split. Errors `FeeBpsTooHigh` if either individual field exceeds 50 %, `TotalFeeTooHigh` if the combined sum exceeds 50 %, or `AdminNotSet` if no admin has been set. Emits `setfee` carrying the previous and new `FeeConfig`.                                     |
+| `get_fee_config()`                              | —                                                        | —                                                                                                                                                                                                                                                    | `Option<FeeConfig>`       | Return the current fee / royalty configuration, or `None` if `set_fee_config` has never been called.                                                                                                                                                                                                     |
 | `set_verification_status(id, verifier, status)` | `verifier`                                               | `id: String`; `verifier: Address`; `status: VerificationStatus`                                                                                                                                                                                      | `Result<(), Error>`       | Mirror off-chain verification status on-chain. Only `Pending→Verified`, `Pending→Rejected`, `Verified→Rejected`, and `Rejected→Verified` are allowed; other transitions (including no-ops and reverting to `Pending`) error `InvalidVerificationTransition`. Emits `verify` with the old and new status. |
 | `add_verifier(verifier)`                        | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                                       |
 | `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
 | `is_verifier(address)`                          | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the verifier role.                                                                                                                                                                                                                                                     |
 | `repair_index(ids)`                             | `admin`                                                  | `ids: Vec<String>` — authoritative ordered id list                                                                                                                                                                                                   | `Result<(), Error>`       | Rebuild the `list`/`list_page`/`count` pagination index from `ids`. Every id must already be a registered `Resource` (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md).                                  |
+| `repair_tag_index(ids)`                         | `admin`                                                  | `ids: Vec<String>` — resource ids to re-index                                                                                                                                                                                                        | `Result<(), Error>`       | Rebuild the `DataKey::TagIndex` entries for each listed id by reading `Resource.tags` directly from storage. Every id must already exist (else `NotFound`); duplicate ids in input are silently de-duplicated (idempotent). Never writes `Resource` storage — see [`docs/tag-index-repair-design.md`](../docs/tag-index-repair-design.md). |
 
 ### Roles
 
 Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 
-- **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`) and repair the pagination index (`repair_index`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
+- **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`), repair the pagination index (`repair_index`) or tag index (`repair_tag_index`), and set the registry fee config (`set_fee_config`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
 - **verifier** — zero or more addresses granted by the admin. Can only call `set_verification_status`. Cannot touch price, metadata, listing, tags, ownership, or the admin/verifier role list itself.
 
 ### Error codes
@@ -143,6 +171,15 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `15` | `ReservedId`             | Resource id collides with a reserved word (e.g. `admin`, `registry`). |
 | `16` | `PriceExceedsMax`        | Price exceeds `MAX_PRICE`.                                            |
 | `17` | `EmptyMetadata`          | Metadata pointer is empty.                                            |
+| `18` | `AdminNotSet`            | An admin-only operation was called but no admin has been set yet.     |
+| `19` | `NotVerifier`            | Caller does not hold the verifier role.                               |
+| `20` | `InvalidVerificationTransition` | The requested `VerificationStatus` transition is not allowed.  |
+| `21` | `AlreadyFrozen`          | `freeze_metadata` was called on a resource that is already frozen.    |
+| `22` | `MetadataFrozen`         | `update_metadata` was called on a resource whose metadata is frozen.  |
+| `23` | `DuplicateInRepair`      | `repair_index` received a duplicate id in the input list.             |
+| `24` | `TooManyTagResults`      | Reserved for callers that pass a limit exceeding the cap; currently the cap is enforced silently. |
+| `25` | `FeeBpsTooHigh`          | `platform_fee_bps` or `royalty_bps` individually exceeds `MAX_FEE_BPS` (50 %, 5 000 bp).        |
+| `26` | `TotalFeeTooHigh`        | `platform_fee_bps + royalty_bps` exceeds `MAX_FEE_BPS`. Each field is individually valid but their sum exceeds 50 %. |
 
 ### Events
 
@@ -173,6 +210,8 @@ apart, so update all three together.
 | `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
 | `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
 | `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
+| `retagidx`  | `count: u32 (number of ids re-indexed)`                  | `repair_tag_index()` succeeds                              |
+| `setfee`    | `FeeConfigUpdated { old_config: Option<FeeConfig>, new_config: FeeConfig }` | `set_fee_config()` succeeds          |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
@@ -227,6 +266,8 @@ separate config lookup. It always succeeds; there is no error case.
 | `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
 | `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
+| `MAX_FEE_BPS`              | `5_000`                      | Maximum fee in basis points (50 %). Neither `platform_fee_bps` nor `royalty_bps` may exceed this individually, and their sum may not either. |
+| `FEE_BPS_DENOM`            | `10_000`                     | Basis-point denominator. `amount * fee_bps / FEE_BPS_DENOM` converts a fee to a USDC stroop amount. |
 
 `price` is an `i128` in **USDC stroops** (7 decimal places).
 Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
