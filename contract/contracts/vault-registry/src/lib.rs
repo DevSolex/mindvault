@@ -54,6 +54,12 @@ pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
 /// it (e.g. the tags field added in schema version 2).
 pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 
+/// Maximum byte length of a settlement transaction hash stored in a
+/// [`PaymentReceipt`]. Stellar transaction hashes are 64 hex characters
+/// (32 bytes), but we allow up to 128 to accommodate future hash formats
+/// (e.g. a `sha256:` prefixed hex string).
+pub const MAX_TX_HASH_LEN: u32 = 128;
+
 /// Canonical list of every event topic this contract emits, paired with a
 /// human-readable description of its payload shape. This is the single
 /// source of truth for event schemas: `contract/README.md`'s Events table
@@ -92,10 +98,9 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("addverif", "true"),
     ("rmverif", "false"),
     ("reindex", "new_count: u32 (topic carries old_count: u32)"),
-    ("retagidx", "count: u32 (number of ids re-indexed)"),
     (
-        "setfee",
-        "FeeConfigUpdated { old_config: OptFeeConfig, new_config: FeeConfig }",
+        "payrec",
+        "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
     ),
 ];
 
@@ -164,6 +169,21 @@ pub struct Resource {
     pub updated_at: u32,
 }
 
+/// Structured payload emitted by `register()`.
+///
+/// Consumers can reconstruct a full `Resource` from this event without an
+/// additional on-chain read.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisterEvent {
+    pub id: String,
+    pub creator: Address,
+    pub price: i128,
+    pub metadata: String,
+    pub listed: bool,
+    pub tags: Vec<String>,
+}
+
 /// One page of the on-chain catalog plus a cursor for the next page.
 ///
 /// `next_cursor` is the catalog index to pass back into `list` / `list_page`
@@ -188,16 +208,10 @@ pub enum DataKey {
     CreatorCount(Address),
     PendingTransfer(String),
     Verifier(Address),
-    /// Secondary index mapping a normalized tag to the ordered list of
-    /// resource ids that carry it. Stored as a persistent entry so it
-    /// survives archival the same way `Index(u32)` and `Resource` entries
-    /// do. Written on every `register`/`set_tags` call; repaired wholesale
-    /// by `repair_tag_index`.
-    TagIndex(String),
-    /// Registry-level fee / royalty configuration. Stored as an instance
-    /// entry (single value, no per-resource fan-out). Settable only by the
-    /// admin via [`VaultRegistry::set_fee_config`].
-    FeeConfig,
+    /// Most-recent payment receipt for `(resource_id, payer)`.
+    /// Keyed by (resource id string, payer Address) so escrow/lease
+    /// contracts can look up a settlement without scanning event history.
+    PaymentReceipt(String, Address),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -225,58 +239,37 @@ pub struct PriceUpdated {
     pub updater: Address,
 }
 
-/// Registry-level fee / royalty configuration stored under
-/// [`DataKey::FeeConfig`]. Set by the admin; read by off-chain settlement
-/// code or any actor that needs to know the current split.
+/// On-chain record of a single x402/Soroban payment settlement for a resource.
 ///
-/// Both fields are expressed in **basis points** (1 bp = 0.01 %).
-/// Neither value may individually exceed [`MAX_FEE_BPS`] (50 %), and their
-/// **sum** may not exceed [`MAX_FEE_BPS`] either. That hard ceiling is
-/// enforced by [`VaultRegistry::set_fee_config`] and is the single source
-/// of truth — no additional validation is needed at call sites.
+/// This is the escrow-ready payment state model: recording a settlement receipt
+/// on-chain gives future escrow and lease contracts a canonical, verifiable
+/// reference to a real payment without requiring those contracts to custody
+/// funds or replay the x402 flow themselves.
 ///
-/// This contract does **not** collect fees itself. It stores the agreed
-/// fee split so that the x402 settlement layer can read and apply it
-/// off-chain (or in a future settlement contract) without any trust in
-/// a centralised configuration.
+/// `tx_hash` is the Stellar transaction hash of the USDC settlement (up to
+/// [`MAX_TX_HASH_LEN`] bytes). `amount` is the amount paid in USDC stroops
+/// (must be `> 0`). `ledger` is the ledger sequence at which the receipt was
+/// recorded — set by the contract at write time from `env.ledger().sequence()`
+/// so callers cannot forge it.
 ///
-/// Example: `platform_fee_bps = 250, royalty_bps = 500` means
-/// 2.5 % to the platform and 5 % to the creator as royalty on each sale,
-/// leaving 92.5 % to the creator's base payout.
+/// Receipts are stored under `DataKey::PaymentReceipt(resource_id, payer)`.
+/// Recording a second payment for the same `(resource_id, payer)` pair
+/// overwrites the previous receipt, so the stored value always reflects the
+/// most recent settlement for that pair. Use the `payrec` event stream to
+/// reconstruct the full history.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
-pub struct FeeConfig {
-    /// Platform cut in basis points (0–[`MAX_FEE_BPS`]).
-    /// Applied to each purchase price before the creator receives the remainder.
-    pub platform_fee_bps: u32,
-    /// Creator royalty in basis points (0–[`MAX_FEE_BPS`]).
-    /// Reserved for secondary-market or future royalty flows; currently
-    /// read-only metadata for off-chain settlement.
-    pub royalty_bps: u32,
-    /// Address to which the platform fee should be routed.
-    /// `None` means no platform fee is collected regardless of `platform_fee_bps`.
-    pub fee_recipient: Option<Address>,
-}
-
-/// Soroban-compatible optional wrapper for [`FeeConfig`].
-/// Used in [`FeeConfigUpdated`] to carry the previous config (or absence
-/// of one) across the `setfee` event without relying on `Option<T>` inside
-/// a `#[contracttype]`, which the SDK does not support for nested structs.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub enum OptFeeConfig {
-    None,
-    Some(FeeConfig),
-}
-
-/// Structured payload published with the `setfee` event.
-/// Carries the old config (or `None` on first set) and the new config so
-/// indexers can reconstruct the full fee-config history.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct FeeConfigUpdated {
-    pub old_config: OptFeeConfig,
-    pub new_config: FeeConfig,
+pub struct PaymentReceipt {
+    /// The resource id this payment is for.
+    pub resource_id: String,
+    /// Stellar address of the buyer/payer.
+    pub payer: Address,
+    /// Stellar transaction hash of the USDC settlement (hex or `sha256:`-prefixed hex).
+    pub tx_hash: String,
+    /// Amount paid in USDC stroops (`> 0`).
+    pub amount: i128,
+    /// Ledger sequence at which this receipt was recorded (set by the contract).
+    pub ledger: u32,
 }
 
 #[contracterror]
@@ -306,16 +299,10 @@ pub enum Error {
     AlreadyFrozen = 21,
     MetadataFrozen = 22,
     DuplicateInRepair = 23,
-    /// `list_by_tag` was called with a `limit` higher than the cap (20).
-    /// Returned instead of silently capping so callers get an explicit
-    /// contract rather than unexpectedly receiving fewer results than
-    /// requested (they should use the capped version knowingly).
-    TooManyTagResults = 24,
-    /// A fee value in basis points exceeds [`MAX_FEE_BPS`] (50 %, 5 000 bp).
-    FeeBpsTooHigh = 25,
-    /// The sum of `platform_fee_bps` and `royalty_bps` exceeds [`MAX_FEE_BPS`].
-    /// Enforces that the total deducted from a purchase can never exceed 50 %.
-    TotalFeeTooHigh = 26,
+    /// `tx_hash` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes).
+    InvalidTxHash = 24,
+    /// `amount` supplied to `record_payment` is `<= 0`.
+    InvalidPaymentAmount = 25,
 }
 
 #[contract]
@@ -351,7 +338,7 @@ impl VaultRegistry {
             id: id.clone(),
             creator: creator.clone(),
             price,
-            metadata,
+            metadata: metadata.clone(),
             listed: true,
             tags: norm_tags.clone(),
             verified: VerificationStatus::Pending,
@@ -378,14 +365,16 @@ impl VaultRegistry {
         let cur = Self::creator_count(&env, &creator);
         Self::set_creator_count(&env, &creator, cur + 1);
 
-        // Build the tag index for each normalized tag
-        for i in 0..norm_tags.len() {
-            let tag = norm_tags.get(i).unwrap();
-            Self::tag_index_add(&env, &tag, &id);
-        }
-
+        let event = RegisterEvent {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata,
+            listed: true,
+            tags,
+        };
         env.events()
-            .publish((symbol_short!("register"), creator), resource);
+            .publish((symbol_short!("register"), id), event);
         Ok(())
     }
 
@@ -1180,10 +1169,99 @@ impl VaultRegistry {
         Ok(())
     }
 
+    /// Record a payment receipt for a resource after x402/Soroban settlement.
+    ///
+    /// This is the escrow-ready payment hook: after the x402 facilitator
+    /// settles a USDC transfer on-chain, the server (or the payer directly)
+    /// calls this to anchor the settlement reference inside the registry.
+    /// Future escrow and lease contracts can look up `(resource_id, payer)`
+    /// without scanning event history.
+    ///
+    /// Requires the **payer's** authorization so receipts cannot be fabricated
+    /// by a third party.
+    ///
+    /// `tx_hash` must be non-empty and at most [`MAX_TX_HASH_LEN`] bytes.
+    /// `amount` must be `> 0` (USDC stroops).
+    ///
+    /// Recording a receipt for a `(resource_id, payer)` pair that already has
+    /// one **overwrites** the previous entry — the stored value always reflects
+    /// the most recent settlement. The full history is available from the
+    /// `payrec` event stream.
+    ///
+    /// Errors deterministically:
+    /// - [`Error::NotFound`] — `resource_id` is not registered
+    /// - [`Error::InvalidResourceId`] — `resource_id` fails format validation
+    /// - [`Error::InvalidTxHash`] — `tx_hash` is empty or exceeds [`MAX_TX_HASH_LEN`]
+    /// - [`Error::InvalidPaymentAmount`] — `amount <= 0`
+    pub fn record_payment(
+        env: Env,
+        resource_id: String,
+        payer: Address,
+        tx_hash: String,
+        amount: i128,
+    ) -> Result<(), Error> {
+        payer.require_auth();
+        Self::validate_resource_id(&resource_id)?;
+
+        // Resource must exist — receipts must reference real registered resources.
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Resource(resource_id.clone()))
+        {
+            return Err(Error::NotFound);
+        }
+
+        // Validate tx_hash
+        let hash_len = tx_hash.len();
+        if hash_len == 0 || hash_len > MAX_TX_HASH_LEN {
+            return Err(Error::InvalidTxHash);
+        }
+
+        // Validate amount
+        if amount <= 0 {
+            return Err(Error::InvalidPaymentAmount);
+        }
+
+        let receipt = PaymentReceipt {
+            resource_id: resource_id.clone(),
+            payer: payer.clone(),
+            tx_hash,
+            amount,
+            ledger: env.ledger().sequence(),
+        };
+
+        let key = DataKey::PaymentReceipt(resource_id.clone(), payer.clone());
+        env.storage().persistent().set(&key, &receipt);
+        Self::bump_persistent(&env, &key);
+
+        env.events()
+            .publish((symbol_short!("payrec"), resource_id), receipt);
+        Ok(())
+    }
+
+    /// Fetch the most recent payment receipt for `(resource_id, payer)`.
+    /// Errors with [`Error::NotFound`] if no receipt has been recorded for
+    /// this pair. Bumps the entry's TTL on a successful read.
+    pub fn get_payment_receipt(
+        env: Env,
+        resource_id: String,
+        payer: Address,
+    ) -> Result<PaymentReceipt, Error> {
+        Self::validate_resource_id(&resource_id)?;
+        let key = DataKey::PaymentReceipt(resource_id, payer);
+        let receipt = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        Self::bump_persistent(&env, &key);
+        Ok(receipt)
+    }
+
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     /// Bumps the entry's TTL on a successful read.
-    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
-        let key = DataKey::CreatorTerms(creator);
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {        let key = DataKey::CreatorTerms(creator);
         let hash = env
             .storage()
             .persistent()

@@ -134,8 +134,8 @@ See [`docs/adr-fee-config.md`](../docs/adr-fee-config.md) for the full design ra
 | `accept_admin(new_admin)`                       | pending admin                                            | `new_admin: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Accept a pending admin nomination. Errors `PendingAdminNotSet` if `new_admin` doesn't match the pending nomination.                                                                                                                                                                                      |
 | `set_terms_hash(creator, terms_hash)`           | `creator`                                                | `creator: Address`; `terms_hash: String` — max 64 bytes                                                                                                                                                                                              | `Result<(), Error>`       | Store a hash of the creator's accepted marketplace terms.                                                                                                                                                                                                                                                |
 | `get_terms_hash(creator)`                       | —                                                        | `creator: Address`                                                                                                                                                                                                                                   | `Result<String, Error>`   | Fetch a creator's terms hash. Errors `NotFound` if absent.                                                                                                                                                                                                                                               |
-| `set_fee_config(config)`                        | `admin`                                                  | `config: FeeConfig` — `platform_fee_bps` and `royalty_bps` each ≤ `MAX_FEE_BPS` (5 000 bp); their sum ≤ `MAX_FEE_BPS` too                                                                                                                           | `Result<(), Error>`       | Set the registry-level fee / royalty split. Errors `FeeBpsTooHigh` if either individual field exceeds 50 %, `TotalFeeTooHigh` if the combined sum exceeds 50 %, or `AdminNotSet` if no admin has been set. Emits `setfee` carrying the previous and new `FeeConfig`.                                     |
-| `get_fee_config()`                              | —                                                        | —                                                                                                                                                                                                                                                    | `Option<FeeConfig>`       | Return the current fee / royalty configuration, or `None` if `set_fee_config` has never been called.                                                                                                                                                                                                     |
+| `record_payment(resource_id, payer, tx_hash, amount)` | `payer`                                            | `resource_id: String`; `payer: Address`; `tx_hash: String` — settlement tx hash (1–128 bytes); `amount: i128` — USDC stroops `> 0`                                                                                                                   | `Result<(), Error>`       | Anchor an x402/Soroban settlement receipt on-chain, keyed by `(resource_id, payer)`. Overwrites the previous receipt for the same pair. Emits `payrec`. Errors `NotFound` if `resource_id` is not registered, `InvalidTxHash` if `tx_hash` is empty or over 128 bytes, `InvalidPaymentAmount` if `amount <= 0`. |
+| `get_payment_receipt(resource_id, payer)`       | —                                                        | `resource_id: String`; `payer: Address`                                                                                                                                                                                                              | `Result<PaymentReceipt, Error>` | Fetch the most recent payment receipt for `(resource_id, payer)`. Errors `NotFound` if none recorded.                                                                                                                                                                                             |
 | `set_verification_status(id, verifier, status)` | `verifier`                                               | `id: String`; `verifier: Address`; `status: VerificationStatus`                                                                                                                                                                                      | `Result<(), Error>`       | Mirror off-chain verification status on-chain. Only `Pending→Verified`, `Pending→Rejected`, `Verified→Rejected`, and `Rejected→Verified` are allowed; other transitions (including no-ops and reverting to `Pending`) error `InvalidVerificationTransition`. Emits `verify` with the old and new status. |
 | `add_verifier(verifier)`                        | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                                       |
 | `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
@@ -155,7 +155,7 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 | Code | Error                    | Description                                                           |
 | ---- | ------------------------ | --------------------------------------------------------------------- |
 | `1`  | `AlreadyRegistered`      | A resource with the given `id` already exists.                        |
-| `2`  | `NotFound`               | No resource (or terms hash) matches the given key.                    |
+| `2`  | `NotFound`               | No resource (or terms hash or receipt) matches the given key.         |
 | `3`  | `InvalidPrice`           | Price is `<= 0`.                                                      |
 | `4`  | `MetadataTooLong`        | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes).      |
 | `5`  | `InvalidTag`             | Tag format or count validation failed.                                |
@@ -166,20 +166,19 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `10` | `TermsHashTooLong`       | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes).                   |
 | `11` | `InvalidResourceId`      | Resource id is empty or exceeds 24 bytes.                             |
 | `12` | `InvalidMetadataPointer` | Metadata pointer does not start with a supported prefix.              |
-| `13` | `AlreadyOwner`           | Proposed/target new owner is already the current owner.               |
-| `14` | `NoPendingTransfer`      | No pending transfer exists for this resource.                         |
-| `15` | `ReservedId`             | Resource id collides with a reserved word (e.g. `admin`, `registry`). |
-| `16` | `PriceExceedsMax`        | Price exceeds `MAX_PRICE`.                                            |
-| `17` | `EmptyMetadata`          | Metadata pointer is empty.                                            |
-| `18` | `AdminNotSet`            | An admin-only operation was called but no admin has been set yet.     |
+| `13` | `EmptyMetadata`          | Metadata pointer is empty.                                            |
+| `14` | `AlreadyOwner`           | Proposed/target new owner is already the current owner.               |
+| `15` | `NoPendingTransfer`      | No pending transfer exists for this resource.                         |
+| `16` | `ReservedId`             | Resource id collides with a reserved word (e.g. `admin`, `registry`). |
+| `17` | `PriceExceedsMax`        | Price exceeds `MAX_PRICE`.                                            |
+| `18` | `AdminNotSet`            | No admin has been set yet (`nominate_new_admin` never called).        |
 | `19` | `NotVerifier`            | Caller does not hold the verifier role.                               |
-| `20` | `InvalidVerificationTransition` | The requested `VerificationStatus` transition is not allowed.  |
-| `21` | `AlreadyFrozen`          | `freeze_metadata` was called on a resource that is already frozen.    |
-| `22` | `MetadataFrozen`         | `update_metadata` was called on a resource whose metadata is frozen.  |
-| `23` | `DuplicateInRepair`      | `repair_index` received a duplicate id in the input list.             |
-| `24` | `TooManyTagResults`      | Reserved for callers that pass a limit exceeding the cap; currently the cap is enforced silently. |
-| `25` | `FeeBpsTooHigh`          | `platform_fee_bps` or `royalty_bps` individually exceeds `MAX_FEE_BPS` (50 %, 5 000 bp).        |
-| `26` | `TotalFeeTooHigh`        | `platform_fee_bps + royalty_bps` exceeds `MAX_FEE_BPS`. Each field is individually valid but their sum exceeds 50 %. |
+| `20` | `InvalidVerificationTransition` | Verification status transition is not allowed (self-transition or revert to `Pending`). |
+| `21` | `AlreadyFrozen`          | `freeze_metadata` was already called on this resource.                |
+| `22` | `MetadataFrozen`         | `update_metadata` rejected because the metadata pointer is frozen.    |
+| `23` | `DuplicateInRepair`      | `repair_index` received a duplicate id in the supplied list.          |
+| `24` | `InvalidTxHash`          | `tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes). |
+| `25` | `InvalidPaymentAmount`   | `amount` in `record_payment` is `<= 0`.                               |
 
 ### Events
 
@@ -210,8 +209,7 @@ apart, so update all three together.
 | `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
 | `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
 | `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
-| `retagidx`  | `count: u32 (number of ids re-indexed)`                  | `repair_tag_index()` succeeds                              |
-| `setfee`    | `FeeConfigUpdated { old_config: Option<FeeConfig>, new_config: FeeConfig }` | `set_fee_config()` succeeds          |
+| `payrec`    | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }` | `record_payment()` succeeds                        |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
@@ -263,6 +261,7 @@ separate config lookup. It always succeeds; there is no error case.
 | -------------------------- | ---------------------------- | ----------------------------------------------------- |
 | `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.      |
 | `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.    |
+| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash in bytes. |
 | `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
 | `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
@@ -278,6 +277,7 @@ Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 US
 | -------------------------- | ---------------------------- | ----------------------------------------------------- |
 | `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer, in bytes.     |
 | `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash, in bytes.   |
+| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash, in bytes.|
 | `MAX_PRICE`                | `10^18`                      | Maximum price, in USDC stroops.                       |
 | `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |

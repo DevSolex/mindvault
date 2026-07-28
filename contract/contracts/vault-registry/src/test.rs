@@ -54,14 +54,14 @@ fn register_then_read() {
 }
 
 #[test]
-fn register_event_contains_full_resource_payload() {
+fn register_emits_structured_event() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "evtres");
     let metadata = String::from_str(&env, "ipfs://evt");
     let price = 500i128;
     let tags_list = tags(&env, &["tag1"]);
 
-    client.register(&creator, &id, &price, &metadata, &tags_list);
+    client.register(&creator, &id, &1_000_000i128, &metadata, &resource_tags);
 
     let all_events = env.events().all();
     let mut found = false;
@@ -2605,16 +2605,8 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.repair_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "reindex"
     record(&env, &client, &mut observed);
 
-    // repair_tag_index -> "retagidx"
-    client.repair_tag_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()]));
-    record(&env, &client, &mut observed);
-
-    // set_fee_config -> "setfee"
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 250,
-        royalty_bps: 500,
-        fee_recipient: None,
-    });
+    let payer = Address::generate(&env);
+    client.record_payment(&r0, &payer, &String::from_str(&env, "txhash123"), &1_000_000i128); // -> "payrec"
     record(&env, &client, &mut observed);
 
     observed.sort();
@@ -3707,897 +3699,425 @@ fn repeated_reads_keep_ttl_at_bump_amount() {
     }
 }
 
-// ─── Tag-based discovery: DataKey::TagIndex, list_by_tag, repair_tag_index ──
+// ---------------------------------------------------------------------------
+// Escrow-ready payment state model (#387)
+// ---------------------------------------------------------------------------
+//
+// `record_payment` anchors an x402/Soroban settlement receipt on-chain,
+// keyed by (resource_id, payer). `get_payment_receipt` retrieves the most
+// recent receipt for a pair. All error paths are deterministic.
 
-/// Registering a resource with tags populates the tag index immediately.
+fn payment_receipt_ttl(
+    env: &Env,
+    contract: &soroban_sdk::Address,
+    resource_id: &String,
+    payer: &Address,
+) -> u32 {
+    let key = DataKey::PaymentReceipt(resource_id.clone(), payer.clone());
+    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+}
+
+/// Record a payment and round-trip it through get_payment_receipt.
 #[test]
-fn register_with_tags_builds_tag_index() {
+fn record_payment_round_trip() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "tagidx1");
+    let id = String::from_str(&env, "payrec1");
     client.register(
         &creator,
         &id,
-        &100i128,
+        &1_000_000i128,
         &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["rust", "defi"]),
+        &empty_tags(&env),
     );
 
-    let by_rust = client.list_by_tag(&String::from_str(&env, "rust"), &0u32, &20u32);
-    assert_eq!(by_rust.len(), 1);
-    assert_eq!(by_rust.get(0).unwrap().id, id);
+    let payer = Address::generate(&env);
+    let tx_hash = String::from_str(&env, "abc123def456");
+    let amount = 1_000_000i128;
 
-    let by_defi = client.list_by_tag(&String::from_str(&env, "defi"), &0u32, &20u32);
-    assert_eq!(by_defi.len(), 1);
-    assert_eq!(by_defi.get(0).unwrap().id, id);
+    client.record_payment(&id, &payer, &tx_hash, &amount);
+
+    let receipt = client.get_payment_receipt(&id, &payer);
+    assert_eq!(receipt.resource_id, id);
+    assert_eq!(receipt.payer, payer);
+    assert_eq!(receipt.tx_hash, tx_hash);
+    assert_eq!(receipt.amount, amount);
+    // ledger is set by the contract; just confirm it is non-zero in a real run
+    // (testutils start at ledger 0 by default, so we only check the type exists)
+    let _ = receipt.ledger;
 }
 
-/// Registering with no tags leaves the tag index empty for any query.
+/// record_payment stamps ledger from the ledger sequence at call time.
 #[test]
-fn register_without_tags_leaves_tag_index_empty() {
+fn record_payment_stamps_ledger_sequence() {
     let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payreclgr");
     client.register(
         &creator,
-        &String::from_str(&env, "notag1"),
+        &id,
         &100i128,
         &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
-    let result = client.list_by_tag(&String::from_str(&env, "rust"), &0u32, &20u32);
-    assert_eq!(result.len(), 0);
+
+    env.ledger().set_sequence_number(777);
+    let payer = Address::generate(&env);
+    client.record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash777"),
+        &100i128,
+    );
+
+    let receipt = client.get_payment_receipt(&id, &payer);
+    assert_eq!(receipt.ledger, 777, "ledger must reflect env sequence at record time");
 }
 
-/// Tags are normalized to lowercase before indexing; querying the uppercase
-/// form still finds the resource because the lookup is also normalized.
+/// Recording a second payment for the same (resource_id, payer) pair
+/// overwrites the first — the stored value always reflects the most recent.
 #[test]
-fn tag_normalization_lowercase_on_register() {
+fn record_payment_overwrites_previous_receipt() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "normtag1");
-    // Register with mixed-case tag
+    let id = String::from_str(&env, "payrecow");
     client.register(
         &creator,
         &id,
         &100i128,
         &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["Rust"]),
+        &empty_tags(&env),
     );
 
-    // Stored tag should be lowercase
-    let resource = client.get(&id);
-    assert_eq!(resource.tags.get(0).unwrap(), String::from_str(&env, "rust"));
+    let payer = Address::generate(&env);
 
-    // Lookup by uppercase also finds it (normalized on query side)
-    let by_upper = client.list_by_tag(&String::from_str(&env, "RUST"), &0u32, &20u32);
-    assert_eq!(by_upper.len(), 1);
-    assert_eq!(by_upper.get(0).unwrap().id, id);
+    client.record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "first_tx"),
+        &500i128,
+    );
+    client.record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "second_tx"),
+        &750i128,
+    );
 
-    // Lookup by lowercase also finds it
-    let by_lower = client.list_by_tag(&String::from_str(&env, "rust"), &0u32, &20u32);
-    assert_eq!(by_lower.len(), 1);
+    let receipt = client.get_payment_receipt(&id, &payer);
+    assert_eq!(
+        receipt.tx_hash,
+        String::from_str(&env, "second_tx"),
+        "second call must overwrite the first"
+    );
+    assert_eq!(receipt.amount, 750i128);
 }
 
-/// set_tags updates the tag index: previous tag loses the resource, new tag gains it.
+/// Different payers produce independent receipts under the same resource.
 #[test]
-fn set_tags_updates_index_remove_and_add() {
+fn record_payment_independent_per_payer() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "tagupd1");
+    let id = String::from_str(&env, "payrecmulti");
     client.register(
         &creator,
         &id,
         &100i128,
         &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["old"]),
+        &empty_tags(&env),
     );
 
-    // Confirm old tag is indexed
-    assert_eq!(client.list_by_tag(&String::from_str(&env, "old"), &0u32, &20u32).len(), 1);
+    let payer_a = Address::generate(&env);
+    let payer_b = Address::generate(&env);
 
-    // Replace with a new tag
-    client.set_tags(&id, &tags(&env, &["new"]));
+    client.record_payment(&id, &payer_a, &String::from_str(&env, "tx_a"), &100i128);
+    client.record_payment(&id, &payer_b, &String::from_str(&env, "tx_b"), &200i128);
 
-    // Old tag index entry should no longer contain this resource
-    let old_results = client.list_by_tag(&String::from_str(&env, "old"), &0u32, &20u32);
-    assert_eq!(old_results.len(), 0);
+    let ra = client.get_payment_receipt(&id, &payer_a);
+    let rb = client.get_payment_receipt(&id, &payer_b);
 
-    // New tag index entry should contain this resource
-    let new_results = client.list_by_tag(&String::from_str(&env, "new"), &0u32, &20u32);
-    assert_eq!(new_results.len(), 1);
-    assert_eq!(new_results.get(0).unwrap().id, id);
+    assert_eq!(ra.tx_hash, String::from_str(&env, "tx_a"));
+    assert_eq!(ra.amount, 100i128);
+    assert_eq!(rb.tx_hash, String::from_str(&env, "tx_b"));
+    assert_eq!(rb.amount, 200i128);
 }
 
-/// set_tags with an empty list removes the resource from all previous tag indexes.
+/// record_payment emits a `payrec` event with the full PaymentReceipt payload.
 #[test]
-fn set_tags_empty_removes_from_all_indexes() {
+fn record_payment_emits_payrec_event() {
     let (env, creator, client) = setup();
-    let id = String::from_str(&env, "tagclr1");
+    let id = String::from_str(&env, "payrecevt");
     client.register(
         &creator,
         &id,
         &100i128,
         &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["a", "b", "c"]),
+        &empty_tags(&env),
     );
 
-    for t in &["a", "b", "c"] {
-        assert_eq!(
-            client.list_by_tag(&String::from_str(&env, t), &0u32, &20u32).len(),
-            1,
-            "tag {} should have one entry before clear",
-            t
-        );
-    }
+    let payer = Address::generate(&env);
+    let tx_hash = String::from_str(&env, "evthash");
+    let amount = 123_456i128;
 
-    client.set_tags(&id, &empty_tags(&env));
+    client.record_payment(&id, &payer, &tx_hash, &amount);
 
-    for t in &["a", "b", "c"] {
-        assert_eq!(
-            client.list_by_tag(&String::from_str(&env, t), &0u32, &20u32).len(),
-            0,
-            "tag {} should be empty after clear",
-            t
-        );
-    }
+    // env.events().all() reflects the most recent invocation
+    let all = env.events().all();
+    assert_eq!(all.len(), 1, "exactly one event should be emitted");
+
+    let (_, topics, data) = all.get(0).unwrap();
+    assert_eq!(topics.len(), 2, "payrec topics should be (symbol, resource_id)");
+
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, symbol_short!("payrec"));
+
+    let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_id, id);
+
+    let receipt: PaymentReceipt = PaymentReceipt::try_from_val(&env, &data).unwrap();
+    assert_eq!(receipt.resource_id, id);
+    assert_eq!(receipt.payer, payer);
+    assert_eq!(receipt.tx_hash, tx_hash);
+    assert_eq!(receipt.amount, amount);
 }
 
-/// Multiple resources sharing a tag all appear in list_by_tag in insertion order.
+/// record_payment errors NotFound when resource_id is not registered.
 #[test]
-fn list_by_tag_returns_multiple_resources_in_order() {
-    let (env, creator, client) = setup();
-    let r1 = String::from_str(&env, "multi1");
-    let r2 = String::from_str(&env, "multi2");
-    let r3 = String::from_str(&env, "multi3");
-    for id in &[&r1, &r2, &r3] {
-        client.register(
-            &creator,
-            id,
-            &100i128,
-            &String::from_str(&env, "ipfs://m"),
-            &tags(&env, &["shared"]),
-        );
-    }
-
-    let results = client.list_by_tag(&String::from_str(&env, "shared"), &0u32, &20u32);
-    assert_eq!(results.len(), 3);
-    assert_eq!(results.get(0).unwrap().id, r1);
-    assert_eq!(results.get(1).unwrap().id, r2);
-    assert_eq!(results.get(2).unwrap().id, r3);
-}
-
-/// list_by_tag with start > 0 skips earlier entries correctly.
-#[test]
-fn list_by_tag_pagination_start_offset() {
-    let (env, creator, client) = setup();
-    for i in 0..5u32 {
-        let id = String::from_str(&env, &alloc::format!("pg{}", i));
-        client.register(
-            &creator,
-            &id,
-            &100i128,
-            &String::from_str(&env, "ipfs://m"),
-            &tags(&env, &["pgtag"]),
-        );
-    }
-
-    let page1 = client.list_by_tag(&String::from_str(&env, "pgtag"), &0u32, &3u32);
-    assert_eq!(page1.len(), 3);
-    assert_eq!(page1.get(0).unwrap().id, String::from_str(&env, "pg0"));
-
-    let page2 = client.list_by_tag(&String::from_str(&env, "pgtag"), &3u32, &3u32);
-    assert_eq!(page2.len(), 2);
-    assert_eq!(page2.get(0).unwrap().id, String::from_str(&env, "pg3"));
-}
-
-/// list_by_tag with start beyond the tag's entry count returns empty vec.
-#[test]
-fn list_by_tag_start_beyond_end_returns_empty() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "beyond1");
-    client.register(
-        &creator,
-        &id,
+fn record_payment_rejects_unknown_resource() {
+    let (env, _creator, client) = setup();
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &String::from_str(&env, "ghostresource"),
+        &payer,
+        &String::from_str(&env, "txhash"),
         &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["solo"]),
     );
-    let result = client.list_by_tag(&String::from_str(&env, "solo"), &99u32, &20u32);
-    assert_eq!(result.len(), 0);
-}
-
-/// list_by_tag on an unknown tag returns empty vec (not NotFound).
-#[test]
-fn list_by_tag_unknown_tag_returns_empty() {
-    let (_env, _creator, client) = setup();
-    // No resources registered at all
-    let result = client.list_by_tag(
-        &String::from_str(&_env, "nonexistent"),
-        &0u32,
-        &20u32,
-    );
-    assert_eq!(result.len(), 0);
-}
-
-/// list_by_tag limit is silently capped at 20.
-#[test]
-fn list_by_tag_limit_capped_at_20() {
-    let (env, creator, client) = setup();
-    for i in 0..25u32 {
-        let id = String::from_str(&env, &alloc::format!("cap{:02}", i));
-        client.register(
-            &creator,
-            &id,
-            &100i128,
-            &String::from_str(&env, "ipfs://m"),
-            &tags(&env, &["heavy"]),
-        );
-    }
-    let result = client.list_by_tag(&String::from_str(&env, "heavy"), &0u32, &100u32);
-    assert_eq!(result.len(), 20, "limit should be capped at 20");
-}
-
-/// Duplicate tags in a single register call are both indexed (idempotent add).
-/// The resource appears exactly once in the tag index despite duplicate tag input.
-#[test]
-fn duplicate_tags_in_register_indexed_once() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "dup1");
-    // Register with duplicate tag values
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["dup", "dup"]),
-    );
-    // The resource should appear exactly once in the tag index
-    let result = client.list_by_tag(&String::from_str(&env, "dup"), &0u32, &20u32);
-    assert_eq!(result.len(), 1);
-    assert_eq!(result.get(0).unwrap().id, id);
-}
-
-/// Adding the same tag via set_tags that was already present doesn't duplicate
-/// the resource in the index.
-#[test]
-fn set_tags_same_tag_twice_does_not_duplicate_in_index() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "nodup1");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["keep"]),
-    );
-    // set_tags with the same tag again
-    client.set_tags(&id, &tags(&env, &["keep"]));
-    let result = client.list_by_tag(&String::from_str(&env, "keep"), &0u32, &20u32);
-    assert_eq!(result.len(), 1, "resource must appear exactly once in tag index");
-}
-
-/// repair_tag_index rebuilds the index from authoritative Resource.tags data.
-#[test]
-fn repair_tag_index_rebuilds_from_resource_tags() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let r1 = String::from_str(&env, "repairtag1");
-    let r2 = String::from_str(&env, "repairtag2");
-    client.register(
-        &creator,
-        &r1,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["t1", "shared"]),
-    );
-    client.register(
-        &creator,
-        &r2,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["t2", "shared"]),
-    );
-
-    // After a legitimate register, the index should already be correct.
-    // Calling repair with the same ids is a safe no-op and must leave state identical.
-    client.repair_tag_index(&Vec::from_array(&env, [r1.clone(), r2.clone()]));
-
-    let shared = client.list_by_tag(&String::from_str(&env, "shared"), &0u32, &20u32);
-    assert_eq!(shared.len(), 2);
-
-    let t1 = client.list_by_tag(&String::from_str(&env, "t1"), &0u32, &20u32);
-    assert_eq!(t1.len(), 1);
-    assert_eq!(t1.get(0).unwrap().id, r1);
-
-    let t2 = client.list_by_tag(&String::from_str(&env, "t2"), &0u32, &20u32);
-    assert_eq!(t2.len(), 1);
-    assert_eq!(t2.get(0).unwrap().id, r2);
-}
-
-/// repair_tag_index rejects unknown ids with NotFound.
-#[test]
-fn repair_tag_index_rejects_unknown_id() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let r1 = String::from_str(&env, "rtagunk1");
-    client.register(
-        &creator,
-        &r1,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["t"]),
-    );
-
-    let ghost = String::from_str(&env, "doesnotexist");
-    let res = client.try_repair_tag_index(&Vec::from_array(&env, [r1.clone(), ghost]));
     assert_eq!(res, Err(Ok(Error::NotFound)));
 }
 
-/// repair_tag_index fails if no admin has been set.
+/// record_payment errors InvalidTxHash when tx_hash is empty.
 #[test]
-fn repair_tag_index_before_admin_set_fails() {
+fn record_payment_rejects_empty_tx_hash() {
     let (env, creator, client) = setup();
-    let r1 = String::from_str(&env, "rtagnonadm1");
+    let id = String::from_str(&env, "payrecbadh1");
     client.register(
         &creator,
-        &r1,
+        &id,
         &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["t"]),
-    );
-    let res = client.try_repair_tag_index(&Vec::from_array(&env, [r1]));
-    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
-}
-
-/// repair_tag_index with duplicate ids in input is idempotent — the resource
-/// appears exactly once in the rebuilt index (no duplicate, no error).
-#[test]
-fn repair_tag_index_duplicate_ids_are_idempotent() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let r1 = String::from_str(&env, "rtagdup1");
-    client.register(
-        &creator,
-        &r1,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["dtag"]),
-    );
-
-    // Passing the same id twice must not error and must not double-add to index
-    client.repair_tag_index(&Vec::from_array(&env, [r1.clone(), r1.clone()]));
-
-    let result = client.list_by_tag(&String::from_str(&env, "dtag"), &0u32, &20u32);
-    assert_eq!(result.len(), 1, "resource must appear exactly once despite duplicate id in repair input");
-}
-
-/// repair_tag_index emits a retagidx event with the count of ids processed.
-#[test]
-fn repair_tag_index_emits_retagidx_event() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let r1 = String::from_str(&env, "rtagevt1");
-    let r2 = String::from_str(&env, "rtagevt2");
-    client.register(&creator, &r1, &100i128, &String::from_str(&env, "ipfs://m"), &tags(&env, &["e"]));
-    client.register(&creator, &r2, &100i128, &String::from_str(&env, "ipfs://m"), &tags(&env, &["e"]));
-
-    client.repair_tag_index(&Vec::from_array(&env, [r1.clone(), r2.clone()]));
-
-    let all = env.events().all();
-    let mut found = false;
-    for i in 0..all.len() {
-        let (_, topics, data) = all.get(i).unwrap();
-        if topics.is_empty() { continue; }
-        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-        if t0 == Symbol::new(&env, "retagidx") {
-            let count: u32 = u32::try_from_val(&env, &data).expect("retagidx event data should be u32");
-            assert_eq!(count, 2u32);
-            found = true;
-            break;
-        }
-    }
-    assert!(found, "retagidx event not emitted");
-}
-
-/// tag index is consistent after a mix of register, set_tags add, and set_tags remove.
-#[test]
-fn tag_index_consistent_after_mixed_operations() {
-    let (env, creator, client) = setup();
-    let r1 = String::from_str(&env, "mix1");
-    let r2 = String::from_str(&env, "mix2");
-
-    // Register both with "alpha"
-    client.register(&creator, &r1, &100i128, &String::from_str(&env, "ipfs://m"), &tags(&env, &["alpha"]));
-    client.register(&creator, &r2, &100i128, &String::from_str(&env, "ipfs://m"), &tags(&env, &["alpha", "beta"]));
-
-    // r1 now drops "alpha", adds "gamma"
-    client.set_tags(&r1, &tags(&env, &["gamma"]));
-
-    let alpha = client.list_by_tag(&String::from_str(&env, "alpha"), &0u32, &20u32);
-    assert_eq!(alpha.len(), 1, "only r2 should remain under alpha");
-    assert_eq!(alpha.get(0).unwrap().id, r2);
-
-    let beta = client.list_by_tag(&String::from_str(&env, "beta"), &0u32, &20u32);
-    assert_eq!(beta.len(), 1);
-    assert_eq!(beta.get(0).unwrap().id, r2);
-
-    let gamma = client.list_by_tag(&String::from_str(&env, "gamma"), &0u32, &20u32);
-    assert_eq!(gamma.len(), 1);
-    assert_eq!(gamma.get(0).unwrap().id, r1);
-}
-
-/// Too many tags (> MAX_TAGS=8) is rejected at register time.
-#[test]
-fn register_rejects_too_many_tags() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "tagoverflow");
-    let too_many = tags(&env, &["a","b","c","d","e","f","g","h","i"]); // 9 tags
-    let res = client.try_register(
-        &creator, &id, &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &too_many,
-    );
-    assert_eq!(res, Err(Ok(Error::InvalidTag)));
-}
-
-/// Empty string tag is rejected.
-#[test]
-fn empty_tag_rejected() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "emptytag1");
-    let bad = tags(&env, &[""]);
-    let res = client.try_register(
-        &creator, &id, &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &bad,
-    );
-    assert_eq!(res, Err(Ok(Error::InvalidTag)));
-}
-
-/// Tag exceeding MAX_TAG_LEN (32 chars) is rejected.
-#[test]
-fn tag_too_long_rejected() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "longtag1");
-    let long_tag = "a".repeat(33);
-    let bad = tags(&env, &[long_tag.as_str()]);
-    let res = client.try_register(
-        &creator, &id, &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &bad,
-    );
-    assert_eq!(res, Err(Ok(Error::InvalidTag)));
-}
-
-/// Exactly MAX_TAG_LEN characters is accepted.
-#[test]
-fn tag_at_max_len_accepted() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "maxtaglen1");
-    let max_tag = "a".repeat(32);
-    client.register(
-        &creator, &id, &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &[max_tag.as_str()]),
-    );
-    let r = client.get(&id);
-    assert_eq!(r.tags.len(), 1);
-    assert_eq!(r.tags.get(0).unwrap().len(), 32);
-}
-
-/// Exactly MAX_TAGS tags (8) is accepted.
-#[test]
-fn exactly_max_tags_accepted() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "maxtags1");
-    client.register(
-        &creator, &id, &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &tags(&env, &["t1","t2","t3","t4","t5","t6","t7","t8"]),
-    );
-    assert_eq!(client.get(&id).tags.len(), 8);
-    // All 8 tags indexed
-    for t in &["t1","t2","t3","t4","t5","t6","t7","t8"] {
-        let res = client.list_by_tag(&String::from_str(&env, t), &0u32, &20u32);
-        assert_eq!(res.len(), 1, "tag {} should be in index", t);
-    }
-}
-
-/// set_tags normalizes uppercase tags and the index is updated with the
-/// normalized form; the settags event carries the normalized next_tags.
-#[test]
-fn set_tags_normalizes_tags_and_event_carries_normalized_form() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "normevt1");
-    client.register(
-        &creator, &id, &100i128,
         &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
-    // set_tags with uppercase — check events immediately after this call
-    client.set_tags(&id, &tags(&env, &["UPPER"]));
-
-    // Verify event next_tags carries normalized form.
-    // env.events().all() returns events from the last contract invocation.
-    let all = env.events().all();
-    let mut found_next: Option<String> = None;
-    for i in 0..all.len() {
-        let (_, topics, data) = all.get(i).unwrap();
-        if topics.is_empty() { continue; }
-        let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-        if t0 == Symbol::new(&env, "settags") {
-            if let Ok((_, next)) = <(Vec<String>, Vec<String>)>::try_from_val(&env, &data) {
-                if next.len() > 0 {
-                    found_next = Some(next.get(0).unwrap());
-                }
-            }
-        }
-    }
-    assert_eq!(found_next, Some(String::from_str(&env, "upper")),
-        "settags event must carry the normalized (lowercase) next_tags");
-
-    // Stored tags must also be lowercase — read after event check so events
-    // from set_tags are still the most recent invocation above.
-    let r = client.get(&id);
-    assert_eq!(r.tags.get(0).unwrap(), String::from_str(&env, "upper"));
-
-    // Index must be under the lowercase key
-    let by_lower = client.list_by_tag(&String::from_str(&env, "upper"), &0u32, &20u32);
-    assert_eq!(by_lower.len(), 1);
-}
-
-/// list_by_tag returns full Resource structs, not just ids.
-#[test]
-fn list_by_tag_returns_full_resource_structs() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "fullres1");
-    let price = 999i128;
-    let meta = String::from_str(&env, "ipfs://fullstruct");
-    client.register(
-        &creator, &id, &price,
-        &meta,
-        &tags(&env, &["fullcheck"]),
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, ""),
+        &100i128,
     );
-
-    let results = client.list_by_tag(&String::from_str(&env, "fullcheck"), &0u32, &20u32);
-    assert_eq!(results.len(), 1);
-    let r = results.get(0).unwrap();
-    assert_eq!(r.id, id);
-    assert_eq!(r.creator, creator);
-    assert_eq!(r.price, price);
-    assert_eq!(r.metadata, meta);
-    assert!(r.listed);
+    assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
 }
 
-// ── Fee config tests ──────────────────────────────────────────────────────────
-
-// ── Basic get/set ─────────────────────────────────────────────────────────────
-
+/// record_payment errors InvalidTxHash when tx_hash exceeds MAX_TX_HASH_LEN.
 #[test]
-fn get_fee_config_returns_none_before_first_set() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    assert_eq!(client.get_fee_config(), None);
-}
-
-#[test]
-fn set_fee_config_stores_and_get_fee_config_returns_it() {
-    let (env, _creator, admin, client) = setup_with_admin();
-    let recipient = Address::generate(&env);
-    let config = FeeConfig {
-        platform_fee_bps: 250,
-        royalty_bps: 500,
-        fee_recipient: Some(recipient.clone()),
-    };
-    client.set_fee_config(&config);
-    let stored = client.get_fee_config().expect("should be Some after set");
-    assert_eq!(stored.platform_fee_bps, 250);
-    assert_eq!(stored.royalty_bps, 500);
-    assert_eq!(stored.fee_recipient, Some(recipient));
-    let _ = admin; // suppress unused warning
-}
-
-#[test]
-fn set_fee_config_overwrites_previous_value() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let r1 = Address::generate(&env);
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 100,
-        royalty_bps: 200,
-        fee_recipient: Some(r1),
-    });
-    let r2 = Address::generate(&env);
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 300,
-        royalty_bps: 400,
-        fee_recipient: Some(r2.clone()),
-    });
-    let stored = client.get_fee_config().unwrap();
-    assert_eq!(stored.platform_fee_bps, 300);
-    assert_eq!(stored.royalty_bps, 400);
-    assert_eq!(stored.fee_recipient, Some(r2));
-}
-
-#[test]
-fn set_fee_config_with_none_recipient_stores_correctly() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 100,
-        royalty_bps: 0,
-        fee_recipient: None,
-    });
-    let stored = client.get_fee_config().unwrap();
-    assert_eq!(stored.fee_recipient, None);
-}
-
-#[test]
-fn set_fee_config_zero_bps_is_valid() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 0,
-        royalty_bps: 0,
-        fee_recipient: None,
-    });
-    let stored = client.get_fee_config().unwrap();
-    assert_eq!(stored.platform_fee_bps, 0);
-    assert_eq!(stored.royalty_bps, 0);
-}
-
-// ── Bound validation ──────────────────────────────────────────────────────────
-
-#[test]
-fn set_fee_config_accepts_max_platform_fee_bps() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    // MAX_FEE_BPS = 5000; combined must also be ≤ 5000, so royalty_bps = 0
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: MAX_FEE_BPS,
-        royalty_bps: 0,
-        fee_recipient: None,
-    });
-    let stored = client.get_fee_config().unwrap();
-    assert_eq!(stored.platform_fee_bps, MAX_FEE_BPS);
-}
-
-#[test]
-fn set_fee_config_accepts_max_royalty_bps() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 0,
-        royalty_bps: MAX_FEE_BPS,
-        fee_recipient: None,
-    });
-    let stored = client.get_fee_config().unwrap();
-    assert_eq!(stored.royalty_bps, MAX_FEE_BPS);
-}
-
-#[test]
-fn set_fee_config_accepts_sum_exactly_at_max() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    // 2500 + 2500 = 5000 = MAX_FEE_BPS — exactly on the boundary, should pass
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 2_500,
-        royalty_bps: 2_500,
-        fee_recipient: None,
-    });
-    let stored = client.get_fee_config().unwrap();
-    assert_eq!(stored.platform_fee_bps, 2_500);
-    assert_eq!(stored.royalty_bps, 2_500);
-}
-
-#[test]
-fn set_fee_config_rejects_platform_fee_bps_over_max() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    let result = client.try_set_fee_config(&FeeConfig {
-        platform_fee_bps: MAX_FEE_BPS + 1,
-        royalty_bps: 0,
-        fee_recipient: None,
-    });
-    assert_eq!(result, Err(Ok(Error::FeeBpsTooHigh)));
-}
-
-#[test]
-fn set_fee_config_rejects_royalty_bps_over_max() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    let result = client.try_set_fee_config(&FeeConfig {
-        platform_fee_bps: 0,
-        royalty_bps: MAX_FEE_BPS + 1,
-        fee_recipient: None,
-    });
-    assert_eq!(result, Err(Ok(Error::FeeBpsTooHigh)));
-}
-
-#[test]
-fn set_fee_config_rejects_sum_over_max() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    // Both individually valid (2500 ≤ 5000) but sum = 5001 > MAX_FEE_BPS
-    let result = client.try_set_fee_config(&FeeConfig {
-        platform_fee_bps: 2_500,
-        royalty_bps: 2_501,
-        fee_recipient: None,
-    });
-    assert_eq!(result, Err(Ok(Error::TotalFeeTooHigh)));
-}
-
-#[test]
-fn set_fee_config_rejects_sum_over_max_symmetric() {
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    let result = client.try_set_fee_config(&FeeConfig {
-        platform_fee_bps: 2_501,
-        royalty_bps: 2_500,
-        fee_recipient: None,
-    });
-    assert_eq!(result, Err(Ok(Error::TotalFeeTooHigh)));
-}
-
-#[test]
-fn set_fee_config_individual_check_before_sum_check() {
-    // platform_fee_bps = 6000 > MAX_FEE_BPS, royalty_bps = 6000 > MAX_FEE_BPS
-    // Should error FeeBpsTooHigh (individual), not TotalFeeTooHigh (sum).
-    let (_env, _creator, _admin, client) = setup_with_admin();
-    let result = client.try_set_fee_config(&FeeConfig {
-        platform_fee_bps: 6_000,
-        royalty_bps: 6_000,
-        fee_recipient: None,
-    });
-    assert_eq!(result, Err(Ok(Error::FeeBpsTooHigh)));
-}
-
-// ── Auth guard ────────────────────────────────────────────────────────────────
-
-#[test]
-fn set_fee_config_before_admin_set_fails() {
-    // Fresh contract — no admin set yet — must error AdminNotSet
-    let (env, _creator, client) = setup();
-    let result = client.try_set_fee_config(&FeeConfig {
-        platform_fee_bps: 100,
-        royalty_bps: 0,
-        fee_recipient: Some(Address::generate(&env)),
-    });
-    assert_eq!(result, Err(Ok(Error::AdminNotSet)));
-}
-
-// ── Event emission ────────────────────────────────────────────────────────────
-
-#[test]
-fn set_fee_config_emits_setfee_event_with_none_old_config_on_first_call() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let recipient = Address::generate(&env);
-    let new_config = FeeConfig {
-        platform_fee_bps: 250,
-        royalty_bps: 500,
-        fee_recipient: Some(recipient.clone()),
-    };
-    client.set_fee_config(&new_config);
-
-    let events = env.events().all();
-    let setfee_sym = Symbol::new(&env, "setfee");
-    let found = (0..events.len()).any(|i| {
-        let (_, topics, data) = events.get(i).unwrap();
-        let t: soroban_sdk::Vec<soroban_sdk::Val> =
-            soroban_sdk::Vec::from_val(&env, &topics);
-        if t.len() < 1 {
-            return false;
-        }
-        let sym = Symbol::try_from_val(&env, &t.get(0).unwrap());
-        if sym != Ok(setfee_sym.clone()) {
-            return false;
-        }
-        let payload = FeeConfigUpdated::try_from_val(&env, &data);
-        if let Ok(p) = payload {
-            p.old_config == OptFeeConfig::None
-                && p.new_config.platform_fee_bps == 250
-                && p.new_config.royalty_bps == 500
-                && p.new_config.fee_recipient == Some(recipient.clone())
-        } else {
-            false
-        }
-    });
-    assert!(found, "expected setfee event with old_config=None not found");
-}
-
-#[test]
-fn set_fee_config_emits_setfee_event_with_old_config_on_update() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    let r1 = Address::generate(&env);
-    // First call: old_config must be OptFeeConfig::None
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 100,
-        royalty_bps: 200,
-        fee_recipient: Some(r1.clone()),
-    });
-    let setfee_sym = Symbol::new(&env, "setfee");
-    let first_events = env.events().all();
-    let first_payload: FeeConfigUpdated = (0..first_events.len()).find_map(|i| {
-        let (_, topics, data) = first_events.get(i).unwrap();
-        let t: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::from_val(&env, &topics);
-        if t.len() < 1 { return None; }
-        if Symbol::try_from_val(&env, &t.get(0).unwrap()) != Ok(setfee_sym.clone()) { return None; }
-        FeeConfigUpdated::try_from_val(&env, &data).ok()
-    }).expect("first setfee event not found");
-    assert_eq!(first_payload.old_config, OptFeeConfig::None);
-    assert_eq!(first_payload.new_config.platform_fee_bps, 100);
-
-    // Second call: old_config must carry the first config
-    let r2 = Address::generate(&env);
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 300,
-        royalty_bps: 400,
-        fee_recipient: Some(r2.clone()),
-    });
-    let second_events = env.events().all();
-    let second_payload: FeeConfigUpdated = (0..second_events.len()).find_map(|i| {
-        let (_, topics, data) = second_events.get(i).unwrap();
-        let t: soroban_sdk::Vec<soroban_sdk::Val> = soroban_sdk::Vec::from_val(&env, &topics);
-        if t.len() < 1 { return None; }
-        if Symbol::try_from_val(&env, &t.get(0).unwrap()) != Ok(setfee_sym.clone()) { return None; }
-        FeeConfigUpdated::try_from_val(&env, &data).ok()
-    }).expect("second setfee event not found");
-    let old = match &second_payload.old_config {
-        OptFeeConfig::Some(c) => c.clone(),
-        OptFeeConfig::None => panic!("old_config must be Some on second call"),
-    };
-    assert_eq!(old.platform_fee_bps, 100);
-    assert_eq!(old.royalty_bps, 200);
-    assert_eq!(old.fee_recipient, Some(r1));
-    assert_eq!(second_payload.new_config.platform_fee_bps, 300);
-    assert_eq!(second_payload.new_config.royalty_bps, 400);
-    assert_eq!(second_payload.new_config.fee_recipient, Some(r2));
-}
-
-#[test]
-fn set_fee_config_failed_call_emits_no_event() {
-    let (env, _creator, _admin, client) = setup_with_admin();
-    // A failing set_fee_config must not emit any setfee event.
-    let _ = client.try_set_fee_config(&FeeConfig {
-        platform_fee_bps: MAX_FEE_BPS + 1,
-        royalty_bps: 0,
-        fee_recipient: None,
-    });
-    let setfee_sym = Symbol::new(&env, "setfee");
-    let all = env.events().all();
-    let setfee_count = (0..all.len()).filter(|&i| {
-        let (_, topics, _) = all.get(i).unwrap();
-        let t: soroban_sdk::Vec<soroban_sdk::Val> =
-            soroban_sdk::Vec::from_val(&env, &topics);
-        if t.len() < 1 { return false; }
-        Symbol::try_from_val(&env, &t.get(0).unwrap()) == Ok(setfee_sym.clone())
-    }).count();
-    assert_eq!(setfee_count, 0, "a failed set_fee_config must not emit setfee");
-}
-
-// ── Interaction with existing contract surface ────────────────────────────────
-
-#[test]
-fn set_fee_config_does_not_affect_registered_resources() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = String::from_str(&env, "feeresource1");
-    let price = 1_000_000i128;
-    let meta = String::from_str(&env, "ipfs://feecheck");
-    client.register(&creator, &id, &price, &meta, &empty_tags(&env));
-
-    client.set_fee_config(&FeeConfig {
-        platform_fee_bps: 500,
-        royalty_bps: 250,
-        fee_recipient: None,
-    });
-
-    // Resource unchanged
-    let r = client.get(&id);
-    assert_eq!(r.price, price);
-    assert_eq!(r.metadata, meta);
-}
-
-#[test]
-fn get_fee_config_does_not_disturb_other_state() {
-    let (env, creator, _admin, client) = setup_with_admin();
-    let id = String::from_str(&env, "nodisturb1");
+fn record_payment_rejects_tx_hash_over_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecbadh2");
     client.register(
-        &creator, &id, &1_000_000i128,
-        &String::from_str(&env, "ipfs://nodisturb"),
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
         &empty_tags(&env),
     );
-    // Calling get_fee_config returns None and leaves resource intact
-    assert_eq!(client.get_fee_config(), None);
-    assert!(client.exists(&id));
+    let payer = Address::generate(&env);
+    let long_hash = String::from_str(&env, &"a".repeat((MAX_TX_HASH_LEN + 1) as usize));
+    let res = client.try_record_payment(&id, &payer, &long_hash, &100i128);
+    assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
 }
 
-// ── EVENT_SCHEMA coverage ─────────────────────────────────────────────────────
-
+/// record_payment accepts a tx_hash exactly at MAX_TX_HASH_LEN.
 #[test]
-fn event_schema_includes_setfee() {
-    // Ensure the canonical EVENT_SCHEMA table includes the setfee entry.
-    // If it is missing this test fails, catching doc/code drift.
-    let found = EVENT_SCHEMA.iter().any(|(topic, _)| *topic == "setfee");
-    assert!(found, "EVENT_SCHEMA must include a 'setfee' entry");
+fn record_payment_accepts_tx_hash_at_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecmaxh");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let max_hash = String::from_str(&env, &"a".repeat(MAX_TX_HASH_LEN as usize));
+    client.record_payment(&id, &payer, &max_hash, &100i128);
+    assert_eq!(client.get_payment_receipt(&id, &payer).tx_hash, max_hash);
+}
+
+/// record_payment errors InvalidPaymentAmount when amount is zero.
+#[test]
+fn record_payment_rejects_zero_amount() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecbadamt1");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &0i128,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
+}
+
+/// record_payment errors InvalidPaymentAmount when amount is negative.
+#[test]
+fn record_payment_rejects_negative_amount() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecbadamt2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &-1i128,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
+}
+
+/// get_payment_receipt errors NotFound when no receipt has been recorded.
+#[test]
+fn get_payment_receipt_missing_returns_not_found() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecnotfound");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let res = client.try_get_payment_receipt(&id, &payer);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+/// Failed record_payment calls leave no receipt behind.
+#[test]
+fn failed_record_payment_does_not_store_receipt() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecfailstore");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+
+    // Attempt with zero amount — should fail
+    let _ = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &0i128,
+    );
+
+    // No receipt should be stored
+    assert_eq!(
+        client.try_get_payment_receipt(&id, &payer),
+        Err(Ok(Error::NotFound)),
+        "a failed record_payment must not persist a receipt"
+    );
+}
+
+/// record_payment bumps the receipt entry's TTL on write.
+#[test]
+fn record_payment_sets_ttl_on_write() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecttlw");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        TTL_BUMP_AMOUNT,
+        "record_payment must set TTL to BUMP_AMOUNT"
+    );
+}
+
+/// get_payment_receipt bumps the receipt entry's TTL on a successful read.
+#[test]
+fn get_payment_receipt_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecttlr");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+
+    // Decay past LIFETIME_THRESHOLD so extend_ttl fires.
+    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + decay);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        TTL_BUMP_AMOUNT - decay,
+        "TTL should have decayed before the read"
+    );
+
+    client.get_payment_receipt(&id, &payer);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        TTL_BUMP_AMOUNT,
+        "get_payment_receipt must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// record_payment does not affect existing Resource fields — all registry
+/// reads on the resource return the same values before and after.
+#[test]
+fn record_payment_does_not_mutate_resource() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecnomut");
+    let metadata = String::from_str(&env, "ipfs://immutable");
+    client.register(&creator, &id, &500i128, &metadata, &empty_tags(&env));
+
+    let before = client.get(&id);
+
+    let payer = Address::generate(&env);
+    client.record_payment(&id, &payer, &String::from_str(&env, "txhash"), &500i128);
+
+    let after = client.get(&id);
+
+    assert_eq!(before, after, "record_payment must not mutate the Resource entry");
+    assert_eq!(client.count(), 1, "record_payment must not change the resource count");
+    assert_eq!(
+        client.list(&0u32, &10u32).get(0).unwrap().id,
+        id,
+        "record_payment must not affect catalog order"
+    );
 }

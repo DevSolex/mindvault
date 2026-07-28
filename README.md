@@ -178,6 +178,7 @@ Wallet helpers live in `server/scripts/generate-wallet.ts` (run via `make wallet
 
 - **Reconciliation**: see [docs/reconciliation.md](docs/reconciliation.md) — detects and reports drift between the DB and the on-chain [vault registry](docs/GLOSSARY.md#vault-registry); run with `pnpm reconcile` from `server/`.
 - **Deployment runbook**: see [docs/deployment-runbook.md](docs/deployment-runbook.md) — step-by-step guide to deploy the full stack (contract + server + frontend + MCP) to a new Stellar network.
+- **Contract upgrade checklist**: see [docs/contract-upgrade-checklist.md](docs/contract-upgrade-checklist.md) — preflight checks before deploying a new vault-registry WASM (build, optimize, test, network, contract ID, binding regeneration).
 - **Reconciliation**: see [docs/reconciliation.md](docs/reconciliation.md) — detects and reports drift between the DB and the on-chain vault registry; run with `pnpm reconcile` from `server/`.
 
 ## Testing the 402 Flow
