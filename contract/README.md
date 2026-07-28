@@ -154,25 +154,25 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
 
-| Event       | Payload                                                  | Triggered by                                               |
-| ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
-| `register`  | `Resource` (full resource record)                        | `register()` succeeds                                      |
-| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`     | `set_price()` succeeds                                     |
-| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds                               |
-| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`       | `set_tags()` succeeds                                      |
-| `transfer`  | `(previous_owner: Address, new_owner: Address)`          | `transfer_ownership()` or `accept_transfer()` succeeds     |
-| `propose`   | `(owner: Address, proposed: Address)`                    | `propose_transfer()` succeeds                              |
-| `cancel`    | `owner: Address`                                         | `cancel_transfer()` succeeds                               |
-| `setlisted` | `(old_listed: bool, new_listed: bool)`                   | `set_listed()` (and `delist()`) succeeds                   |
-| `setterms`  | `terms_hash: String`                                     | `set_terms_hash()` succeeds                                |
-| `setadmin`  | `new_admin: Address`                                     | The first (bootstrap) `nominate_new_admin()` call succeeds |
-| `nomadmin`  | `new_admin: Address`                                     | A subsequent `nominate_new_admin()` call succeeds          |
-| `accadmin`  | `new_admin: Address`                                     | `accept_admin()` succeeds                                  |
-| `freeze`    | `()`                                                     | `freeze_metadata()` succeeds                               |
-| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds           |
-| `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
-| `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
-| `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
+| Event       | Payload                                                            | Triggered by                                               |
+| ----------- | ------------------------------------------------------------------ | ---------------------------------------------------------- |
+| `register`  | `Resource` (full resource record)                                  | `register()` succeeds                                      |
+| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`               | `set_price()` succeeds                                     |
+| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`           | `update_metadata()` succeeds                               |
+| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`                 | `set_tags()` succeeds                                      |
+| `transfer`  | `(previous_owner: Address, new_owner: Address)`                    | `transfer_ownership()` or `accept_transfer()` succeeds     |
+| `propose`   | `(owner: Address, proposed: Address)`                              | `propose_transfer()` succeeds                              |
+| `cancel`    | `owner: Address`                                                   | `cancel_transfer()` succeeds                               |
+| `setlisted` | `(old_listed: bool, new_listed: bool)`                             | `set_listed()` (and `delist()`) succeeds                   |
+| `setterms`  | `terms_hash: String`                                               | `set_terms_hash()` succeeds                                |
+| `setadmin`  | `new_admin: Address`                                               | The first (bootstrap) `nominate_new_admin()` call succeeds |
+| `nomadmin`  | `new_admin: Address`                                               | A subsequent `nominate_new_admin()` call succeeds          |
+| `accadmin`  | `new_admin: Address`                                               | `accept_admin()` succeeds                                  |
+| `freeze`    | `()`                                                               | `freeze_metadata()` succeeds                               |
+| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds                       |
+| `addverif`  | `true`                                                             | `add_verifier()` succeeds                                  |
+| `rmverif`   | `false`                                                            | `remove_verifier()` succeeds                               |
+| `reindex`   | `new_count: u32 (topic carries old_count: u32)`                    | `repair_index()` succeeds                                  |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
@@ -217,6 +217,24 @@ pub struct RegistryInfo {
 `registry_info()` lets an agent/client discover which registry it's talking to —
 and confirm it's the network it expects — without hardcoding assumptions or a
 separate config lookup. It always succeeds; there is no error case.
+
+### Deployment network guard
+
+Before a deployment is used, call
+`initialize_network(env.ledger().network_id())` once. The contract records the
+value only when it matches the executing ledger's network ID. This prevents a
+deployment script from accidentally configuring a testnet contract with a
+mainnet identifier (or the reverse).
+
+- `initialize_network(network_id: BytesN<32>)` returns `NetworkIdMismatch` if
+  the supplied ID differs from the current ledger, and
+  `NetworkAlreadyInitialized` on any later call.
+- `network_id()` returns the stored ID, or `NetworkNotInitialized` until the
+  one-time initialization succeeds.
+
+`registry_info().network_id` remains available before initialization as a
+read-only observation of the current ledger; use `network_id()` when a client
+must require an explicit deployment guard.
 
 ### Constants
 

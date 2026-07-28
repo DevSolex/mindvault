@@ -175,6 +175,7 @@ pub enum DataKey {
     CreatorCount(Address),
     PendingTransfer(String),
     Verifier(Address),
+    NetworkId,
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -229,6 +230,9 @@ pub enum Error {
     AlreadyFrozen = 21,
     MetadataFrozen = 22,
     DuplicateInRepair = 23,
+    NetworkAlreadyInitialized = 24,
+    NetworkIdMismatch = 25,
+    NetworkNotInitialized = 26,
 }
 
 #[contract]
@@ -687,6 +691,32 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Store the intended network identifier once. The supplied ID must match
+    /// the ledger this contract is executing on, preventing a deployment
+    /// script from accidentally recording a different Stellar network.
+    pub fn initialize_network(env: Env, network_id: BytesN<32>) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::NetworkId) {
+            return Err(Error::NetworkAlreadyInitialized);
+        }
+        if network_id != env.ledger().network_id() {
+            return Err(Error::NetworkIdMismatch);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkId, &network_id);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Return the initialized network identifier. Callers can use this value
+    /// as a deployment guard before submitting network-sensitive operations.
+    pub fn network_id(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::NetworkId)
+            .ok_or(Error::NetworkNotInitialized)
     }
 
     /// Discover this registry's stable identity and capabilities in one
