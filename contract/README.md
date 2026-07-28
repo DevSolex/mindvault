@@ -66,6 +66,14 @@ pub enum VerificationStatus {
 Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`,
 and content-hash forms such as `sha256:`, `sha-256:`, or `0x`.
 
+### Bounded text validation
+
+The contract applies one shared byte-length validator to resource IDs, metadata
+pointers, tags, and creator terms hashes. This keeps exact-limit acceptance and
+over-limit errors consistent as new text fields are added. The public limits and
+error codes are unchanged: IDs are 1–24 bytes, metadata is 1–512 bytes, tags
+are 1–32 bytes (up to 8 tags), and terms hashes are at most 64 bytes.
+
 ### Catalog page (cursor primitive)
 
 ```rust
@@ -154,25 +162,25 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
 
-| Event       | Payload                                                  | Triggered by                                               |
-| ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
-| `register`  | `Resource` (full resource record)                        | `register()` succeeds                                      |
-| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`     | `set_price()` succeeds                                     |
-| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds                               |
-| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`       | `set_tags()` succeeds                                      |
-| `transfer`  | `(previous_owner: Address, new_owner: Address)`          | `transfer_ownership()` or `accept_transfer()` succeeds     |
-| `propose`   | `(owner: Address, proposed: Address)`                    | `propose_transfer()` succeeds                              |
-| `cancel`    | `owner: Address`                                         | `cancel_transfer()` succeeds                               |
-| `setlisted` | `(old_listed: bool, new_listed: bool)`                   | `set_listed()` (and `delist()`) succeeds                   |
-| `setterms`  | `terms_hash: String`                                     | `set_terms_hash()` succeeds                                |
-| `setadmin`  | `new_admin: Address`                                     | The first (bootstrap) `nominate_new_admin()` call succeeds |
-| `nomadmin`  | `new_admin: Address`                                     | A subsequent `nominate_new_admin()` call succeeds          |
-| `accadmin`  | `new_admin: Address`                                     | `accept_admin()` succeeds                                  |
-| `freeze`    | `()`                                                     | `freeze_metadata()` succeeds                               |
-| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds           |
-| `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
-| `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
-| `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
+| Event       | Payload                                                            | Triggered by                                               |
+| ----------- | ------------------------------------------------------------------ | ---------------------------------------------------------- |
+| `register`  | `Resource` (full resource record)                                  | `register()` succeeds                                      |
+| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`               | `set_price()` succeeds                                     |
+| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`           | `update_metadata()` succeeds                               |
+| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`                 | `set_tags()` succeeds                                      |
+| `transfer`  | `(previous_owner: Address, new_owner: Address)`                    | `transfer_ownership()` or `accept_transfer()` succeeds     |
+| `propose`   | `(owner: Address, proposed: Address)`                              | `propose_transfer()` succeeds                              |
+| `cancel`    | `owner: Address`                                                   | `cancel_transfer()` succeeds                               |
+| `setlisted` | `(old_listed: bool, new_listed: bool)`                             | `set_listed()` (and `delist()`) succeeds                   |
+| `setterms`  | `terms_hash: String`                                               | `set_terms_hash()` succeeds                                |
+| `setadmin`  | `new_admin: Address`                                               | The first (bootstrap) `nominate_new_admin()` call succeeds |
+| `nomadmin`  | `new_admin: Address`                                               | A subsequent `nominate_new_admin()` call succeeds          |
+| `accadmin`  | `new_admin: Address`                                               | `accept_admin()` succeeds                                  |
+| `freeze`    | `()`                                                               | `freeze_metadata()` succeeds                               |
+| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds                       |
+| `addverif`  | `true`                                                             | `add_verifier()` succeeds                                  |
+| `rmverif`   | `false`                                                            | `remove_verifier()` succeeds                               |
+| `reindex`   | `new_count: u32 (topic carries old_count: u32)`                    | `repair_index()` succeeds                                  |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:

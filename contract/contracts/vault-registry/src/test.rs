@@ -236,6 +236,21 @@ fn valid_resource_id_is_accepted() {
 }
 
 #[test]
+fn resource_id_at_max_length_is_accepted() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "abcdefghijklmnopqrstuvwx"); // 24 bytes
+
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://x"),
+        &empty_tags(&env),
+    );
+    assert!(client.exists(&id));
+}
+
+#[test]
 fn get_missing_fails() {
     let (env, _creator, client) = setup();
     let res = client.try_get(&String::from_str(&env, "nope"));
@@ -2306,6 +2321,15 @@ fn set_terms_hash_rejects_over_max_length() {
         client.try_get_terms_hash(&creator),
         Err(Ok(Error::NotFound))
     );
+}
+
+#[test]
+fn set_terms_hash_accepts_max_length() {
+    let (env, creator, client) = setup();
+    let terms = String::from_str(&env, &"a".repeat(MAX_TERMS_HASH_LEN as usize));
+
+    client.set_terms_hash(&creator, &terms);
+    assert_eq!(client.get_terms_hash(&creator), terms);
 }
 
 // Admin bootstrap/uninitialized-state behavior is covered by
