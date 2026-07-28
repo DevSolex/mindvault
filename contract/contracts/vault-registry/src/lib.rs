@@ -159,6 +159,8 @@ pub struct Resource {
     /// (register or any mutation). Clients can use this to detect staleness
     /// or order events without trusting off-chain timestamps.
     pub updated_at: u32,
+    /// On-chain `Resource` schema version (`RESOURCE_SCHEMA_VERSION`).
+    pub schema_version: u32,
 }
 
 /// Structured payload emitted by `register()`.
@@ -336,6 +338,7 @@ impl VaultRegistry {
             verified: VerificationStatus::Pending,
             frozen: false,
             updated_at: env.ledger().sequence(),
+            schema_version: RESOURCE_SCHEMA_VERSION,
         };
         env.storage().persistent().set(&key, &resource);
         Self::bump_persistent(&env, &key);
@@ -1148,6 +1151,11 @@ impl VaultRegistry {
             let len = tag.len();
             if len == 0 || len > MAX_TAG_LEN {
                 return Err(Error::InvalidTag);
+            }
+            for j in (i + 1)..tags.len() {
+                if tag == tags.get(j).unwrap() {
+                    return Err(Error::InvalidTag);
+                }
             }
         }
         Ok(())

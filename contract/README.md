@@ -54,6 +54,8 @@ pub struct Resource {
     pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
     pub verified: VerificationStatus, // on-chain mirror of off-chain verification, settable only by a verifier
     pub frozen: bool,      // once true, update_metadata is permanently rejected
+    pub updated_at: u32,   // ledger sequence at which this resource was last written
+    pub schema_version: u32, // version of the on-chain Resource schema
 }
 
 pub enum VerificationStatus {
