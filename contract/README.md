@@ -119,6 +119,8 @@ after a redeploy to confirm which build is running on-chain. Only
 | `remove_verifier(verifier)` | `admin` | `verifier: Address` | `Result<(), Error>` | Revoke the verifier role. Emits `rmverif`. |
 | `is_verifier(address)` | — | `address: Address` | `bool` | Whether `address` currently holds the verifier role. |
 | `repair_index(ids)` | `admin` | `ids: Vec<String>` — authoritative ordered id list | `Result<(), Error>` | Rebuild the `list`/`list_page`/`count` index from `ids`. Every id must exist (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md). Emits `reindex`. |
+| `record_payment(resource_id, payer, tx_hash, amount)` | `payer` | `resource_id: String`; `payer: Address`; `tx_hash: String` — settlement tx hash (1–128 bytes); `amount: i128` — USDC stroops `> 0` | `Result<(), Error>` | Anchor an x402/Soroban settlement receipt on-chain, keyed by `(resource_id, payer)`. Overwrites any previous receipt for the same pair. Emits `payrec`. Errors `NotFound` if `resource_id` is not registered, `InvalidTxHash` if `tx_hash` is empty or over 128 bytes, `InvalidPaymentAmount` if `amount <= 0`. |
+| `get_payment_receipt(resource_id, payer)` | — | `resource_id: String`; `payer: Address` | `Result<PaymentReceipt, Error>` | Fetch the most recent payment receipt for `(resource_id, payer)`. Errors `NotFound` if none has been recorded. |
 
 ### Roles
 
@@ -155,6 +157,8 @@ Three roles govern who may call which methods:
 | `21` | `AlreadyFrozen` | `freeze_metadata` was called on a resource whose metadata is already frozen. |
 | `22` | `MetadataFrozen` | `update_metadata` was called on a resource whose metadata has been frozen. |
 | `23` | `DuplicateInRepair` | `repair_index` received a list with duplicate resource ids. |
+| `24` | `InvalidTxHash` | `tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes). |
+| `25` | `InvalidPaymentAmount` | `amount` in `record_payment` is `<= 0`. |
 
 ### Events
 
@@ -185,6 +189,7 @@ apart, so update all three together.
 | `addverif` | `true` | `add_verifier()` succeeds |
 | `rmverif` | `false` | `remove_verifier()` succeeds |
 | `reindex` | `new_count: u32 (topic carries old_count: u32)` | `repair_index()` succeeds |
+| `payrec` | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }` | `record_payment()` succeeds |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
