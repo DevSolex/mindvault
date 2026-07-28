@@ -54,14 +54,14 @@ fn register_then_read() {
 }
 
 #[test]
-fn register_event_contains_full_resource_payload() {
+fn register_emits_structured_event() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "evtres");
     let metadata = String::from_str(&env, "ipfs://evt");
     let price = 500i128;
     let tags_list = tags(&env, &["tag1"]);
 
-    client.register(&creator, &id, &price, &metadata, &tags_list);
+    client.register(&creator, &id, &1_000_000i128, &metadata, &resource_tags);
 
     let all_events = env.events().all();
     let mut found = false;
