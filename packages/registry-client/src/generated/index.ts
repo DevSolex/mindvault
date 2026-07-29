@@ -54,9 +54,16 @@ export const Errors = {
   21: { message: "AlreadyFrozen" },
   22: { message: "MetadataFrozen" },
   23: { message: "DuplicateInRepair" },
-  24: { message: "NetworkAlreadyInitialized" },
-  25: { message: "NetworkIdMismatch" },
-  26: { message: "NetworkNotInitialized" },
+  24: { message: "InvalidTxHash" },
+  25: { message: "InvalidPaymentAmount" },
+  26: { message: "NotModerator" },
+  27: { message: "AlreadyFlagged" },
+  28: { message: "NotFlagged" },
+  29: { message: "InvalidLifecycleTransition" },
+  30: { message: "ResourceNotMutable" },
+  31: { message: "NetworkAlreadyInitialized" },
+  32: { message: "NetworkIdMismatch" },
+  33: { message: "NetworkNotInitialized" },
 };
 
 export type DataKey =
@@ -79,9 +86,17 @@ export interface Resource {
    */
   frozen: boolean;
   id: string;
+  /**
+   * Backwards-compatible projection of `state == ResourceState::Listed`.
+   */
   listed: boolean;
   metadata: string;
   price: i128;
+  /**
+   * Explicit resource lifecycle state. See `contract/README.md` for the
+   * transition table and the role allowed to make each transition.
+   */
+  state: ResourceState;
   /**
    * Discovery labels (e.g. "dataset", "research"). Distinct from `metadata`,
    * which remains the off-chain content anchor (IPFS URI, content hash, etc.).
@@ -151,6 +166,21 @@ export interface RegistryInfo {
 }
 
 /**
+ * The availability and moderation state of a resource.
+ *
+ * `listed` remains on [`Resource`] as a backwards-compatible projection: it
+ * is true exactly when this value is [`ResourceState::Listed`]. Clients that
+ * need to distinguish a moderation hold from a creator delist must use this
+ * field rather than the boolean projection.
+ */
+export type ResourceState =
+  | { tag: "Listed"; values: void }
+  | { tag: "Delisted"; values: void }
+  | { tag: "Frozen"; values: void }
+  | { tag: "Disputed"; values: void }
+  | { tag: "Tombstoned"; values: void };
+
+/**
  * Compact version struct returned by [`VaultRegistry::contract_version`].
  *
  * Deployment scripts and upgrade tooling should call `contract_version`
@@ -192,65 +222,30 @@ export interface MetadataUpdateEvent {
 }
 
 export interface Client {
-  /**
-   * Construct and simulate a get transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Fetch a resource. Errors with `NotFound` if it does not exist.
-   */
   get: (
     { id }: { id: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<Resource>>>;
 
-  /**
-   * Construct and simulate a list transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Paginated resource list in insertion order. `limit` is capped at 20.
-   *
-   * Kept for callers that only need the page body. Prefer `list_page` when
-   * the client must know the next cursor / end-of-list without recomputing
-   * offsets.
-   */
   list: (
     { start, limit }: { start: u32; limit: u32 },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Array<Resource>>>;
 
-  /**
-   * Construct and simulate a admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Current contract admin.
-   */
   admin: (options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>;
 
-  /**
-   * Construct and simulate a count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Total number of resources successfully registered (monotonic; not decremented on transfer).
-   */
   count: (options?: MethodOptions) => Promise<AssembledTransaction<u32>>;
 
-  /**
-   * Construct and simulate a delist transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Delist a resource (convenience method for set_listed(false)). Only the creator may call this.
-   */
   delist: (
     { id }: { id: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a exists transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Whether a resource with `id` is registered.
-   * Bumps the entry's TTL when found, keeping hot resources alive.
-   */
   exists: (
     { id }: { id: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<boolean>>;
 
-  /**
-   * Construct and simulate a register transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Register a new resource. Price is in USDC stroops (6 decimals).
-   * Rejects `price <= 0` (`InvalidPrice`) or `price > MAX_PRICE` (`PriceExceedsMax`).
-   * Requires the creator's authorization.
-   */
   register: (
     {
       creator,
@@ -262,314 +257,149 @@ export interface Client {
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a set_tags transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Replace a resource's discovery tags. Only the creator may call this.
-   * Does not modify `metadata` (the off-chain content pointer).
-   */
   set_tags: (
     { id, tags }: { id: string; tags: Array<string> },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a get_owner transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Get the owner address of a resource. Errors with `NotFound` if it does not exist.
-   */
   get_owner: (
     { id }: { id: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<string>>>;
 
-  /**
-   * Construct and simulate a list_page transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Paginated catalog page with next-cursor metadata.
-   *
-   * - `cursor` is a 0-based catalog index (same domain as `list`'s `start`).
-   * - `limit` is capped at 20.
-   * - `next_cursor` is `Some(next_index)` when more entries may exist after
-   * this page, or `None` at end-of-list (including empty catalog / cursor
-   * past the end).
-   * - Each persistent entry (Index slot and Resource) that is successfully
-   * read has its TTL bumped to keep hot catalog entries alive.
-   */
   list_page: (
     { cursor, limit }: { cursor: u32; limit: u32 },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<CatalogPage>>;
 
-  /**
-   * Construct and simulate a set_price transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Update a resource's price. Rejects `new_price <= 0` or `new_price > MAX_PRICE`.
-   * Only the creator may call this.
-   *
-   * Emits a `setprice` event whose data is a [`PriceUpdated`] value
-   * containing `id`, `old_price`, `new_price`, and `updater`.
-   */
   set_price: (
     { id, new_price }: { id: string; new_price: i128 },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a network_id transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Return the initialized network identifier. Callers can use this value
-   * as a deployment guard before submitting network-sensitive operations.
-   */
   network_id: (options?: MethodOptions) => Promise<AssembledTransaction<Result<Buffer>>>;
 
-  /**
-   * Construct and simulate a set_listed transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Set the listing state of a resource. Only the creator may call this.
-   *
-   * Emits a `setlisted` event with data `(old_listed, new_listed)` so
-   * listeners can distinguish a delist, relist, or no-op transition without
-   * needing to query additional state. The event is always emitted, even
-   * when the new value equals the old value.
-   */
   set_listed: (
     { id, listed }: { id: string; listed: boolean },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a is_verifier transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Whether `address` currently holds the verifier role.
-   */
   is_verifier: (
     { address }: { address: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<boolean>>;
 
-  /**
-   * Construct and simulate a list_listed transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Paginated list of resources whose `listed` flag is true, in insertion order.
-   *
-   * - Resources are ordered by registration sequence.
-   * - `limit` is capped at `20`.
-   * - Delisted resources are skipped; relisted resources will reappear.
-   * - Returns an empty `Vec` if no listed resources fall in range.
-   * - Each persistent entry (Index slot and Resource) that is successfully
-   * read has its TTL bumped to keep hot catalog entries alive.
-   */
   list_listed: (
     { start, limit }: { start: u32; limit: u32 },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Array<Resource>>>;
 
-  /**
-   * Construct and simulate a accept_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Accept the pending admin nomination and become the contract admin.
-   * Only the pending admin may call this.
-   */
   accept_admin: (
     { new_admin }: { new_admin: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a add_verifier transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Grant the verifier role to `verifier`, authorizing `set_verification_status`.
-   * Only the admin may call this. Errors `AdminNotSet` if no admin has
-   * been set yet (see `nominate_new_admin`).
-   */
   add_verifier: (
     { verifier }: { verifier: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a repair_index transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Rebuild the pagination index (`list`/`list_page`/`count`) from an
-   * authoritative, admin-supplied ordered list of resource ids. Only the
-   * admin may call this. Every id must already exist as a registered
-   * `Resource` (else `NotFound`) and the list must not contain duplicates
-   * (else `DuplicateInRepair`). Never touches `Resource` storage itself —
-   * only rewrites the derived `Index`/`Count` pointers, so it's safe to
-   * re-run with the current correct id list as a no-op. See
-   * `docs/index-repair.md` for the full repair strategy.
-   */
+  open_dispute: (
+    { id, admin }: { id: string; admin: string },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
+
   repair_index: (
     { ids }: { ids: Array<string> },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a pending_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Pending nominated contract admin.
-   */
   pending_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>;
 
-  /**
-   * Construct and simulate a registry_info transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Discover this registry's stable identity and capabilities in one
-   * read-only call: name, crate version, `Resource` schema version, and
-   * the network this contract is deployed on. Always succeeds — there is
-   * no failure mode a caller needs to handle.
-   */
   registry_info: (options?: MethodOptions) => Promise<AssembledTransaction<RegistryInfo>>;
 
-  /**
-   * Construct and simulate a get_terms_hash transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
-   * Bumps the entry's TTL on a successful read.
-   */
   get_terms_hash: (
     { creator }: { creator: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<string>>>;
 
-  /**
-   * Construct and simulate a set_terms_hash transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Store a hash of creator marketplace terms.
-   */
   set_terms_hash: (
     { creator, terms_hash }: { creator: string; terms_hash: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a accept_transfer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Accept a proposed transfer. Only the pending owner can call this.
-   */
   accept_transfer: (
     { id }: { id: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a cancel_transfer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Cancel a proposed transfer. Only the current owner can call this.
-   */
   cancel_transfer: (
     { id }: { id: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a freeze_metadata transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Permanently freeze a resource's metadata pointer. Only the creator may
-   * call this. Irreversible — errors `AlreadyFrozen` if called twice.
-   * Price, listing, tags, and ownership remain mutable after freezing.
-   */
   freeze_metadata: (
     { id }: { id: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a list_by_creator transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Paginated listing of resources owned by `creator` in insertion order.
-   *
-   * - Results are ordered by global registration sequence for that creator.
-   * - `limit` is capped at `20`.
-   * - Returns empty `Vec` when `start` is beyond the creator's known items.
-   * - Each persistent Resource entry that is successfully read has its TTL
-   * bumped to keep hot resources alive.
-   */
+  freeze_resource: (
+    { id }: { id: string },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
+
   list_by_creator: (
     { creator, start, limit }: { creator: string; start: u32; limit: u32 },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Array<Resource>>>;
 
-  /**
-   * Construct and simulate a remove_verifier transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Revoke the verifier role from `verifier`. Only the admin may call this.
-   */
   remove_verifier: (
     { verifier }: { verifier: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a update_metadata transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Update a resource's metadata pointer. Only the creator may call this.
-   *
-   * Emits a [`MetadataUpdateEvent`] containing the resource id, the previous
-   * metadata pointer (`old_metadata`), and the new one (`new_metadata`).
-   * Off-chain indexers can use these fields to build an audit trail without
-   * querying historical ledger state.
-   */
+  resolve_dispute: (
+    { id, admin, state }: { id: string; admin: string; state: ResourceState },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
+
   update_metadata: (
     { id, metadata }: { id: string; metadata: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a contract_version transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Return the contract crate version and the `Resource` schema version as a
-   * stable, compact struct. Deployment scripts and upgrade tools should call
-   * this to confirm which version of the contract is running on-chain before
-   * and after a redeploy, without needing to parse the full `registry_info`
-   * response.
-   *
-   * Upgrade compatibility: `crate_version` is the Cargo semver string baked
-   * in at build time (`CARGO_PKG_VERSION`). `resource_schema_version` is an
-   * integer bumped only when the on-chain `Resource` struct changes in a way
-   * that requires callers to update how they decode it. A change to
-   * `crate_version` alone does not imply a schema change.
-   */
   contract_version: (options?: MethodOptions) => Promise<AssembledTransaction<ContractVersion>>;
 
-  /**
-   * Construct and simulate a propose_transfer transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Propose a transfer to a new owner. The new owner must accept it.
-   */
   propose_transfer: (
     { id, new_creator }: { id: string; new_creator: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a initialize_network transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Store the intended network identifier once. The supplied ID must match
-   * the ledger this contract is executing on, preventing a deployment
-   * script from accidentally recording a different Stellar network.
-   */
   initialize_network: (
     { network_id }: { network_id: Buffer },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a nominate_new_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Nominate a new contract admin. Only the current admin may call this.
-   * Sets `pending_admin`. The nomination does not take effect until
-   * the pending admin calls `accept_admin`.
-   */
   nominate_new_admin: (
     { new_admin }: { new_admin: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a transfer_ownership transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   */
+  tombstone_resource: (
+    { id, admin }: { id: string; admin: string },
+    options?: MethodOptions,
+  ) => Promise<AssembledTransaction<Result<void>>>;
+
   transfer_ownership: (
     { id, new_creator }: { id: string; new_creator: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<Result<void>>>;
 
-  /**
-   * Construct and simulate a creator_resource_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Number of resources currently owned by `creator` (moves with
-   * `transfer_ownership`/`accept_transfer`; unrelated to the monotonic,
-   * never-decremented `count()`).
-   */
   creator_resource_count: (
     { creator }: { creator: string },
     options?: MethodOptions,
   ) => Promise<AssembledTransaction<u32>>;
 
-  /**
-   * Construct and simulate a set_verification_status transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Update a resource's on-chain verification status. Only an address
-   * currently holding the verifier role (see `add_verifier`) may call
-   * this. Only `Pending -> Verified`, `Pending -> Rejected`,
-   * `Verified -> Rejected`, and `Rejected -> Verified` are allowed;
-   * self-transitions and reverting to `Pending` error with
-   * `InvalidVerificationTransition`.
-   */
   set_verification_status: (
     { id, verifier, status }: { id: string; verifier: string; status: VerificationStatus },
     options?: MethodOptions,
@@ -577,14 +407,10 @@ export interface Client {
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
-    /** Options for initializing a Client as well as for calling a method, with extras specific to deploying. */
     options: MethodOptions &
       Omit<ContractClientOptions, "contractId"> & {
-        /** The hash of the Wasm blob, which must already be installed on-chain. */
         wasmHash: Buffer | string;
-        /** Salt used to generate the contract's ID. Passed through to {@link Operation.createCustomContract}. Default: random. */
         salt?: Buffer | Uint8Array;
-        /** The format used to decode `wasmHash`, if it's provided as a string. */
         format?: "hex" | "base64";
       },
   ): Promise<AssembledTransaction<T>> {
@@ -605,14 +431,14 @@ export class Client extends ContractClient {
         "AAAAAAAAAFFHZXQgdGhlIG93bmVyIGFkZHJlc3Mgb2YgYSByZXNvdXJjZS4gRXJyb3JzIHdpdGggYE5vdEZvdW5kYCBpZiBpdCBkb2VzIG5vdCBleGlzdC4AAAAAAAAJZ2V0X293bmVyAAAAAAAAAQAAAAAAAAACaWQAAAAAABAAAAABAAAD6QAAABMAAAAD",
         "AAAAAAAAAbVQYWdpbmF0ZWQgY2F0YWxvZyBwYWdlIHdpdGggbmV4dC1jdXJzb3IgbWV0YWRhdGEuCgotIGBjdXJzb3JgIGlzIGEgMC1iYXNlZCBjYXRhbG9nIGluZGV4IChzYW1lIGRvbWFpbiBhcyBgbGlzdGAncyBgc3RhcnRgKS4KLSBgbGltaXRgIGlzIGNhcHBlZCBhdCAyMC4KLSBgbmV4dF9jdXJzb3JgIGlzIGBTb21lKG5leHRfaW5kZXgpYCB3aGVuIG1vcmUgZW50cmllcyBtYXkgZXhpc3QgYWZ0ZXIKdGhpcyBwYWdlLCBvciBgTm9uZWAgYXQgZW5kLW9mLWxpc3QgKGluY2x1ZGluZyBlbXB0eSBjYXRhbG9nIC8gY3Vyc29yCnBhc3QgdGhlIGVuZCkuCi0gRWFjaCBwZXJzaXN0ZW50IGVudHJ5IChJbmRleCBzbG90IGFuZCBSZXNvdXJjZSkgdGhhdCBpcyBzdWNjZXNzZnVsbHkKcmVhZCBoYXMgaXRzIFRUTCBidW1wZWQgdG8ga2VlcCBob3QgY2F0YWxvZyBlbnRyaWVzIGFsaXZlLgAAAAAAAAlsaXN0X3BhZ2UAAAAAAAACAAAAAAAAAAZjdXJzb3IAAAAAAAQAAAAAAAAABWxpbWl0AAAAAAAABAAAAAEAAAfQAAAAC0NhdGFsb2dQYWdlAA==",
         "AAAAAAAAAOpVcGRhdGUgYSByZXNvdXJjZSdzIHByaWNlLiBSZWplY3RzIGBuZXdfcHJpY2UgPD0gMGAgb3IgYG5ld19wcmljZSA+IE1BWF9QUklDRWAuCk9ubHkgdGhlIGNyZWF0b3IgbWF5IGNhbGwgdGhpcy4KCkVtaXRzIGEgYHNldHByaWNlYCBldmVudCB3aG9zZSBkYXRhIGlzIGEgW2BQcmljZVVwZGF0ZWRgXSB2YWx1ZQpjb250YWluaW5nIGBpZGAsIGBvbGRfcHJpY2VgLCBgbmV3X3ByaWNlYCwgYW5kIGB1cGRhdGVyYC4AAAAAAAlzZXRfcHJpY2UAAAAAAAACAAAAAAAAAAJpZAAAAAAAEAAAAAAAAAAJbmV3X3ByaWNlAAAAAAAACwAAAAEAAAPpAAAD7QAAAAAAAAAD",
-        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACwAAAAEAAAAAAAAACFJlc291cmNlAAAAAQAAABAAAAAAAAAAAAAAAAVDb3VudAAAAAAAAAEAAAAAAAAABUluZGV4AAAAAAAAAQAAAAQAAAAAAAAAAAAAAAVBZG1pbgAAAAAAAAAAAAAAAAAADFBlbmRpbmdBZG1pbgAAAAEAAAAAAAAADENyZWF0b3JUZXJtcwAAAAEAAAATAAAAAQAAAAAAAAAQQ3JlYXRvclJlc291cmNlcwAAAAEAAAATAAAAAQAAAAAAAAAMQ3JlYXRvckNvdW50AAAAAQAAABMAAAABAAAAAAAAAA9QZW5kaW5nVHJhbnNmZXIAAAAAAQAAABAAAAABAAAAAAAAAAhWZXJpZmllcgAAAAEAAAATAAAAAAAAAAAAAAAJTmV0d29ya0lkAAAA",
-        "AAAAAAAAAItSZXR1cm4gdGhlIGluaXRpYWxpemVkIG5ldHdvcmsgaWRlbnRpZmllci4gQ2FsbGVycyBjYW4gdXNlIHRoaXMgdmFsdWUKYXMgYSBkZXBsb3ltZW50IGd1YXJkIGJlZm9yZSBzdWJtaXR0aW5nIG5ldHdvcmstc2Vuc2l0aXZlIG9wZXJhdGlvbnMuAAAAAApuZXR3b3JrX2lkAAAAAAAAAAAAAQAAA+kAAAPuAAAAIAAAAAM=",
-        "AAAAAAAAAT1TZXQgdGhlIGxpc3Rpbmcgc3RhdGUgb2YgYSByZXNvdXJjZS4gT25seSB0aGUgY3JlYXRvciBtYXkgY2FsbCB0aGlzLgoKRW1pdHMgYSBgc2V0bGlzdGVkYCBldmVudCB3aXRoIGRhdGEgYChvbGRfbGlzdGVkLCBuZXdfbGlzdGVkKWAgc28KbGlzdGVuZXJzIGNhbiBkaXN0aW5ndWlzaCBhIGRlbGlzdCwgcmVsaXN0LCBvciBuby1vcCB0cmFuc2l0aW9uIHdpdGhvdXQKbmVlZGluZyB0byBxdWVyeSBhZGRpdGlvbmFsIHN0YXRlLiBUaGUgZXZlbnQgaXMgYWx3YXlzIGVtaXR0ZWQsIGV2ZW4Kd2hlbiB0aGUgbmV3IHZhbHVlIGVxdWFscyB0aGUgb2xkIHZhbHVlLgAAAAAAAApzZXRfbGlzdGVkAAAAAAACAAAAAAAAAAJpZAAAAAAAEAAAAAAAAAAGbGlzdGVkAAAAAAABAAAAAQAAA+kAAAPtAAAAAAAAAAM=",
-        "AAAAAQAAAAAAAAAAAAAACFJlc291cmNlAAAACQAAAAAAAAAHY3JlYXRvcgAAAAATAAAAQU9uY2UgdHJ1ZSwgYHVwZGF0ZV9tZXRhZGF0YWAgcGVybWFuZW50bHkgcmVqZWN0cyBmdXJ0aGVyIGNoYW5nZXMuAAAAAAAABmZyb3plbgAAAAAAAQAAAAAAAAACaWQAAAAAABAAAAAAAAAABmxpc3RlZAAAAAAAAQAAAAAAAAAIbWV0YWRhdGEAAAAQAAAAAAAAAAVwcmljZQAAAAAAAAsAAACTRGlzY292ZXJ5IGxhYmVscyAoZS5nLiAiZGF0YXNldCIsICJyZXNlYXJjaCIpLiBEaXN0aW5jdCBmcm9tIGBtZXRhZGF0YWAsCndoaWNoIHJlbWFpbnMgdGhlIG9mZi1jaGFpbiBjb250ZW50IGFuY2hvciAoSVBGUyBVUkksIGNvbnRlbnQgaGFzaCwgZXRjLikuAAAAAAR0YWdzAAAD6gAAABAAAAC6TGVkZ2VyIHNlcXVlbmNlIG51bWJlciBhdCB3aGljaCB0aGlzIHJlc291cmNlIHdhcyBsYXN0IHdyaXR0ZW4KKHJlZ2lzdGVyIG9yIGFueSBtdXRhdGlvbikuIENsaWVudHMgY2FuIHVzZSB0aGlzIHRvIGRldGVjdCBzdGFsZW5lc3MKb3Igb3JkZXIgZXZlbnRzIHdpdGhvdXQgdHJ1c3Rpbmcgb2ZmLWNoYWluIHRpbWVzdGFtcHMuAAAAAAAKdXBkYXRlZF9hdAAAAAAABAAAADpPbi1jaGFpbiB2ZXJpZmljYXRpb24gc3RhdHVzLCBzZXR0YWJsZSBvbmx5IGJ5IGEgdmVyaWZpZXIuAAAAAAAIdmVyaWZpZWQAAAfQAAAAElZlcmlmaWNhdGlvblN0YXR1cwAA",
+        "AAAAAgAAAAAAAAAAAAAAB0RhdGFLZXkAAAAACgAAAAEAAAAAAAAACFJlc291cmNlAAAAAQAAABAAAAAAAAAAAAAAAAVDb3VudAAAAAAAAAEAAAAAAAAABUluZGV4AAAAAAAAAQAAAAQAAAAAAAAAAAAAAAVBZG1pbgAAAAAAAAAAAAAAAAAADFBlbmRpbmdBZG1pbgAAAAEAAAAAAAAADENyZWF0b3JUZXJtcwAAAAEAAAATAAAAAQAAAAAAAAAQQ3JlYXRvclJlc291cmNlcwAAAAEAAAATAAAAAQAAAAAAAAAMQ3JlYXRvckNvdW50AAAAAQAAABMAAAABAAAAAAAAAA9QZW5kaW5nVHJhbnNmZXIAAAAAAQAAABAAAAABAAAAAAAAAAhWZXJpZmllcgAAAAEAAAAT",
+        "AAAAAAAAALhTZXQgYSByZXNvdXJjZSdzIGNyZWF0b3ItY29udHJvbGxlZCBsaXN0aW5nIHN0YXRlLiBPbmx5CmBMaXN0ZWQgPC0+IERlbGlzdGVkYCB0cmFuc2l0aW9ucyBhcmUgYWNjZXB0ZWQ7IGFsbCBvdGhlciBsaWZlY3ljbGUKc3RhdGVzIHJlamVjdCB0aGlzIG1ldGhvZCB3aXRoIGBJbnZhbGlkTGlmZWN5Y2xlVHJhbnNpdGlvbmAuAAAACnNldF9saXN0ZWQAAAAAAAIAAAAAAAAAAmlkAAAAAAAQAAAAAAAAAAZsaXN0ZWQAAAAAAAEAAAABAAAD6QAAA+0AAAAAAAAAAw==",
+        "AAAAAQAAAAAAAAAAAAAACFJlc291cmNlAAAACgAAAAAAAAAHY3JlYXRvcgAAAAATAAAAQU9uY2UgdHJ1ZSwgYHVwZGF0ZV9tZXRhZGF0YWAgcGVybWFuZW50bHkgcmVqZWN0cyBmdXJ0aGVyIGNoYW5nZXMuAAAAAAAABmZyb3plbgAAAAAAAQAAAAAAAAACaWQAAAAAABAAAABEQmFja3dhcmRzLWNvbXBhdGlibGUgcHJvamVjdGlvbiBvZiBgc3RhdGUgPT0gUmVzb3VyY2VTdGF0ZTo6TGlzdGVkYC4AAAAGbGlzdGVkAAAAAAABAAAAAAAAAAhtZXRhZGF0YQAAABAAAAAAAAAABXByaWNlAAAAAAAACwAAAIJFeHBsaWNpdCByZXNvdXJjZSBsaWZlY3ljbGUgc3RhdGUuIFNlZSBgY29udHJhY3QvUkVBRE1FLm1kYCBmb3IgdGhlCnRyYW5zaXRpb24gdGFibGUgYW5kIHRoZSByb2xlIGFsbG93ZWQgdG8gbWFrZSBlYWNoIHRyYW5zaXRpb24uAAAAAAAFc3RhdGUAAAAAAAfQAAAADVJlc291cmNlU3RhdGUAAAAAAACTRGlzY292ZXJ5IGxhYmVscyAoZS5nLiAiZGF0YXNldCIsICJyZXNlYXJjaCIpLiBEaXN0aW5jdCBmcm9tIGBtZXRhZGF0YWAsCndoaWNoIHJlbWFpbnMgdGhlIG9mZi1jaGFpbiBjb250ZW50IGFuY2hvciAoSVBGUyBVUkksIGNvbnRlbnQgaGFzaCwgZXRjLikuAAAAAAR0YWdzAAAD6gAAABAAAAC6TGVkZ2VyIHNlcXVlbmNlIG51bWJlciBhdCB3aGljaCB0aGlzIHJlc291cmNlIHdhcyBsYXN0IHdyaXR0ZW4KKHJlZ2lzdGVyIG9yIGFueSBtdXRhdGlvbikuIENsaWVudHMgY2FuIHVzZSB0aGlzIHRvIGRldGVjdCBzdGFsZW5lc3MKb3Igb3JkZXIgZXZlbnRzIHdpdGhvdXQgdHJ1c3Rpbmcgb2ZmLWNoYWluIHRpbWVzdGFtcHMuAAAAAAAKdXBkYXRlZF9hdAAAAAAABAAAADpPbi1jaGFpbiB2ZXJpZmljYXRpb24gc3RhdHVzLCBzZXR0YWJsZSBvbmx5IGJ5IGEgdmVyaWZpZXIuAAAAAAAIdmVyaWZpZWQAAAfQAAAAElZlcmlmaWNhdGlvblN0YXR1cwAA",
         "AAAAAAAAADRXaGV0aGVyIGBhZGRyZXNzYCBjdXJyZW50bHkgaG9sZHMgdGhlIHZlcmlmaWVyIHJvbGUuAAAAC2lzX3ZlcmlmaWVyAAAAAAEAAAAAAAAAB2FkZHJlc3MAAAAAEwAAAAEAAAAB",
         "AAAAAAAAAaFQYWdpbmF0ZWQgbGlzdCBvZiByZXNvdXJjZXMgd2hvc2UgYGxpc3RlZGAgZmxhZyBpcyB0cnVlLCBpbiBpbnNlcnRpb24gb3JkZXIuCgotIFJlc291cmNlcyBhcmUgb3JkZXJlZCBieSByZWdpc3RyYXRpb24gc2VxdWVuY2UuCi0gYGxpbWl0YCBpcyBjYXBwZWQgYXQgYDIwYC4KLSBEZWxpc3RlZCByZXNvdXJjZXMgYXJlIHNraXBwZWQ7IHJlbGlzdGVkIHJlc291cmNlcyB3aWxsIHJlYXBwZWFyLgotIFJldHVybnMgYW4gZW1wdHkgYFZlY2AgaWYgbm8gbGlzdGVkIHJlc291cmNlcyBmYWxsIGluIHJhbmdlLgotIEVhY2ggcGVyc2lzdGVudCBlbnRyeSAoSW5kZXggc2xvdCBhbmQgUmVzb3VyY2UpIHRoYXQgaXMgc3VjY2Vzc2Z1bGx5CnJlYWQgaGFzIGl0cyBUVEwgYnVtcGVkIHRvIGtlZXAgaG90IGNhdGFsb2cgZW50cmllcyBhbGl2ZS4AAAAAAAALbGlzdF9saXN0ZWQAAAAAAgAAAAAAAAAFc3RhcnQAAAAAAAAEAAAAAAAAAAVsaW1pdAAAAAAAAAQAAAABAAAD6gAAB9AAAAAIUmVzb3VyY2U=",
         "AAAAAAAAAGhBY2NlcHQgdGhlIHBlbmRpbmcgYWRtaW4gbm9taW5hdGlvbiBhbmQgYmVjb21lIHRoZSBjb250cmFjdCBhZG1pbi4KT25seSB0aGUgcGVuZGluZyBhZG1pbiBtYXkgY2FsbCB0aGlzLgAAAAxhY2NlcHRfYWRtaW4AAAABAAAAAAAAAAluZXdfYWRtaW4AAAAAAAATAAAAAQAAA+kAAAPtAAAAAAAAAAM=",
         "AAAAAAAAALlHcmFudCB0aGUgdmVyaWZpZXIgcm9sZSB0byBgdmVyaWZpZXJgLCBhdXRob3JpemluZyBgc2V0X3ZlcmlmaWNhdGlvbl9zdGF0dXNgLgpPbmx5IHRoZSBhZG1pbiBtYXkgY2FsbCB0aGlzLiBFcnJvcnMgYEFkbWluTm90U2V0YCBpZiBubyBhZG1pbiBoYXMKYmVlbiBzZXQgeWV0IChzZWUgYG5vbWluYXRlX25ld19hZG1pbmApLgAAAAAAAAxhZGRfdmVyaWZpZXIAAAABAAAAAAAAAAh2ZXJpZmllcgAAABMAAAABAAAD6QAAA+0AAAAAAAAAAw==",
+        "AAAAAAAAAEBQbGFjZSBhbiBhY3RpdmUgcmVzb3VyY2UgdW5kZXIgYW4gYWRtaW4tY29udHJvbGxlZCBkaXNwdXRlIGhvbGQuAAAADG9wZW5fZGlzcHV0ZQAAAAIAAAAAAAAAAmlkAAAAAAAQAAAAAAAAAAVhZG1pbgAAAAAAABMAAAABAAAD6QAAA+0AAAAAAAAAAw==",
         "AAAAAAAAAgZSZWJ1aWxkIHRoZSBwYWdpbmF0aW9uIGluZGV4IChgbGlzdGAvYGxpc3RfcGFnZWAvYGNvdW50YCkgZnJvbSBhbgphdXRob3JpdGF0aXZlLCBhZG1pbi1zdXBwbGllZCBvcmRlcmVkIGxpc3Qgb2YgcmVzb3VyY2UgaWRzLiBPbmx5IHRoZQphZG1pbiBtYXkgY2FsbCB0aGlzLiBFdmVyeSBpZCBtdXN0IGFscmVhZHkgZXhpc3QgYXMgYSByZWdpc3RlcmVkCmBSZXNvdXJjZWAgKGVsc2UgYE5vdEZvdW5kYCkgYW5kIHRoZSBsaXN0IG11c3Qgbm90IGNvbnRhaW4gZHVwbGljYXRlcwooZWxzZSBgRHVwbGljYXRlSW5SZXBhaXJgKS4gTmV2ZXIgdG91Y2hlcyBgUmVzb3VyY2VgIHN0b3JhZ2UgaXRzZWxmIOKAlApvbmx5IHJld3JpdGVzIHRoZSBkZXJpdmVkIGBJbmRleGAvYENvdW50YCBwb2ludGVycywgc28gaXQncyBzYWZlIHRvCnJlLXJ1biB3aXRoIHRoZSBjdXJyZW50IGNvcnJlY3QgaWQgbGlzdCBhcyBhIG5vLW9wLiBTZWUKYGRvY3MvaW5kZXgtcmVwYWlyLm1kYCBmb3IgdGhlIGZ1bGwgcmVwYWlyIHN0cmF0ZWd5LgAAAAAADHJlcGFpcl9pbmRleAAAAAEAAAAAAAAAA2lkcwAAAAPqAAAAEAAAAAEAAAPpAAAD7QAAAAAAAAAD",
         "AAAAAAAAACFQZW5kaW5nIG5vbWluYXRlZCBjb250cmFjdCBhZG1pbi4AAAAAAAANcGVuZGluZ19hZG1pbgAAAAAAAAAAAAABAAAD6AAAABM=",
         "AAAAAAAAAPVEaXNjb3ZlciB0aGlzIHJlZ2lzdHJ5J3Mgc3RhYmxlIGlkZW50aXR5IGFuZCBjYXBhYmlsaXRpZXMgaW4gb25lCnJlYWQtb25seSBjYWxsOiBuYW1lLCBjcmF0ZSB2ZXJzaW9uLCBgUmVzb3VyY2VgIHNjaGVtYSB2ZXJzaW9uLCBhbmQKdGhlIG5ldHdvcmsgdGhpcyBjb250cmFjdCBpcyBkZXBsb3llZCBvbi4gQWx3YXlzIHN1Y2NlZWRzIOKAlCB0aGVyZSBpcwpubyBmYWlsdXJlIG1vZGUgYSBjYWxsZXIgbmVlZHMgdG8gaGFuZGxlLgAAAAAAAA1yZWdpc3RyeV9pbmZvAAAAAAAAAAAAAAEAAAfQAAAADFJlZ2lzdHJ5SW5mbw==",
@@ -624,14 +450,19 @@ export class Client extends ContractClient {
         "AAAAAAAAAEFBY2NlcHQgYSBwcm9wb3NlZCB0cmFuc2Zlci4gT25seSB0aGUgcGVuZGluZyBvd25lciBjYW4gY2FsbCB0aGlzLgAAAAAAAA9hY2NlcHRfdHJhbnNmZXIAAAAAAQAAAAAAAAACaWQAAAAAABAAAAABAAAD6QAAA+0AAAAAAAAAAw==",
         "AAAAAAAAAEFDYW5jZWwgYSBwcm9wb3NlZCB0cmFuc2Zlci4gT25seSB0aGUgY3VycmVudCBvd25lciBjYW4gY2FsbCB0aGlzLgAAAAAAAA9jYW5jZWxfdHJhbnNmZXIAAAAAAQAAAAAAAAACaWQAAAAAABAAAAABAAAD6QAAA+0AAAAAAAAAAw==",
         "AAAAAAAAAM1QZXJtYW5lbnRseSBmcmVlemUgYSByZXNvdXJjZSdzIG1ldGFkYXRhIHBvaW50ZXIuIE9ubHkgdGhlIGNyZWF0b3IgbWF5CmNhbGwgdGhpcy4gSXJyZXZlcnNpYmxlIOKAlCBlcnJvcnMgYEFscmVhZHlGcm96ZW5gIGlmIGNhbGxlZCB0d2ljZS4KUHJpY2UsIGxpc3RpbmcsIHRhZ3MsIGFuZCBvd25lcnNoaXAgcmVtYWluIG11dGFibGUgYWZ0ZXIgZnJlZXppbmcuAAAAAAAAD2ZyZWV6ZV9tZXRhZGF0YQAAAAABAAAAAAAAAAJpZAAAAAAAEAAAAAEAAAPpAAAD7QAAAAAAAAAD",
+        "AAAAAAAAANFGcmVlemUgYW4gb3RoZXJ3aXNlIGFjdGl2ZSByZXNvdXJjZS4gVGhlIGNyZWF0b3IgbWF5IGZyZWV6ZSBhIGxpc3RlZCBvcgpkZWxpc3RlZCByZXNvdXJjZSwgYnV0IG9ubHkgYW4gYWRtaW4gY2FuIHJlc3RvcmUgaXQgdGhyb3VnaCBkaXNwdXRlCnJlc29sdXRpb24uIFRoaXMgbGlmZWN5Y2xlIGZyZWV6ZSBpcyBzZXBhcmF0ZSBmcm9tIGBmcmVlemVfbWV0YWRhdGFgLgAAAAAAAA9mcmVlemVfcmVzb3VyY2UAAAAAAQAAAAAAAAACaWQAAAAAABAAAAABAAAD6QAAA+0AAAAAAAAAAw==",
         "AAAAAAAAAV5QYWdpbmF0ZWQgbGlzdGluZyBvZiByZXNvdXJjZXMgb3duZWQgYnkgYGNyZWF0b3JgIGluIGluc2VydGlvbiBvcmRlci4KCi0gUmVzdWx0cyBhcmUgb3JkZXJlZCBieSBnbG9iYWwgcmVnaXN0cmF0aW9uIHNlcXVlbmNlIGZvciB0aGF0IGNyZWF0b3IuCi0gYGxpbWl0YCBpcyBjYXBwZWQgYXQgYDIwYC4KLSBSZXR1cm5zIGVtcHR5IGBWZWNgIHdoZW4gYHN0YXJ0YCBpcyBiZXlvbmQgdGhlIGNyZWF0b3IncyBrbm93biBpdGVtcy4KLSBFYWNoIHBlcnNpc3RlbnQgUmVzb3VyY2UgZW50cnkgdGhhdCBpcyBzdWNjZXNzZnVsbHkgcmVhZCBoYXMgaXRzIFRUTApidW1wZWQgdG8ga2VlcCBob3QgcmVzb3VyY2VzIGFsaXZlLgAAAAAAD2xpc3RfYnlfY3JlYXRvcgAAAAADAAAAAAAAAAdjcmVhdG9yAAAAABMAAAAAAAAABXN0YXJ0AAAAAAAABAAAAAAAAAAFbGltaXQAAAAAAAAEAAAAAQAAA+oAAAfQAAAACFJlc291cmNl",
         "AAAAAAAAAEdSZXZva2UgdGhlIHZlcmlmaWVyIHJvbGUgZnJvbSBgdmVyaWZpZXJgLiBPbmx5IHRoZSBhZG1pbiBtYXkgY2FsbCB0aGlzLgAAAAAPcmVtb3ZlX3ZlcmlmaWVyAAAAAAEAAAAAAAAACHZlcmlmaWVyAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAAD",
+        "AAAAAAAAAEFSZXNvbHZlIGEgZGlzcHV0ZWQgcmVzb3VyY2UgdG8gYExpc3RlZGAsIGBEZWxpc3RlZGAsIG9yIGBGcm96ZW5gLgAAAAAAAA9yZXNvbHZlX2Rpc3B1dGUAAAAAAwAAAAAAAAACaWQAAAAAABAAAAAAAAAABWFkbWluAAAAAAAAEwAAAAAAAAAFc3RhdGUAAAAAAAfQAAAADVJlc291cmNlU3RhdGUAAAAAAAABAAAD6QAAA+0AAAAAAAAAAw==",
         "AAAAAAAAAT5VcGRhdGUgYSByZXNvdXJjZSdzIG1ldGFkYXRhIHBvaW50ZXIuIE9ubHkgdGhlIGNyZWF0b3IgbWF5IGNhbGwgdGhpcy4KCkVtaXRzIGEgW2BNZXRhZGF0YVVwZGF0ZUV2ZW50YF0gY29udGFpbmluZyB0aGUgcmVzb3VyY2UgaWQsIHRoZSBwcmV2aW91cwptZXRhZGF0YSBwb2ludGVyIChgb2xkX21ldGFkYXRhYCksIGFuZCB0aGUgbmV3IG9uZSAoYG5ld19tZXRhZGF0YWApLgpPZmYtY2hhaW4gaW5kZXhlcnMgY2FuIHVzZSB0aGVzZSBmaWVsZHMgdG8gYnVpbGQgYW4gYXVkaXQgdHJhaWwgd2l0aG91dApxdWVyeWluZyBoaXN0b3JpY2FsIGxlZGdlciBzdGF0ZS4AAAAAAA91cGRhdGVfbWV0YWRhdGEAAAAAAgAAAAAAAAACaWQAAAAAABAAAAAAAAAACG1ldGFkYXRhAAAAEAAAAAEAAAPpAAAD7QAAAAAAAAAD",
+        "AAAAAgAAAT5UaGUgYXZhaWxhYmlsaXR5IGFuZCBtb2RlcmF0aW9uIHN0YXRlIG9mIGEgcmVzb3VyY2UuCgpgbGlzdGVkYCByZW1haW5zIG9uIFtgUmVzb3VyY2VgXSBhcyBhIGJhY2t3YXJkcy1jb21wYXRpYmxlIHByb2plY3Rpb246IGl0CmlzIHRydWUgZXhhY3RseSB3aGVuIHRoaXMgdmFsdWUgaXMgW2BSZXNvdXJjZVN0YXRlOjpMaXN0ZWRgXS4gQ2xpZW50cyB0aGF0Cm5lZWQgdG8gZGlzdGluZ3Vpc2ggYSBtb2RlcmF0aW9uIGhvbGQgZnJvbSBhIGNyZWF0b3IgZGVsaXN0IG11c3QgdXNlIHRoaXMKZmllbGQgcmF0aGVyIHRoYW4gdGhlIGJvb2xlYW4gcHJvamVjdGlvbi4AAAAAAAAAAAANUmVzb3VyY2VTdGF0ZQAAAAAAAAUAAAAAAAAAAAAAAAZMaXN0ZWQAAAAAAAAAAAAAAAAACERlbGlzdGVkAAAAAAAAAAAAAAAGRnJvemVuAAAAAAAAAAAAAAAAAAhEaXNwdXRlZAAAAAAAAAAAAAAAClRvbWJzdG9uZWQAAA==",
         "AAAAAAAAAnxSZXR1cm4gdGhlIGNvbnRyYWN0IGNyYXRlIHZlcnNpb24gYW5kIHRoZSBgUmVzb3VyY2VgIHNjaGVtYSB2ZXJzaW9uIGFzIGEKc3RhYmxlLCBjb21wYWN0IHN0cnVjdC4gRGVwbG95bWVudCBzY3JpcHRzIGFuZCB1cGdyYWRlIHRvb2xzIHNob3VsZCBjYWxsCnRoaXMgdG8gY29uZmlybSB3aGljaCB2ZXJzaW9uIG9mIHRoZSBjb250cmFjdCBpcyBydW5uaW5nIG9uLWNoYWluIGJlZm9yZQphbmQgYWZ0ZXIgYSByZWRlcGxveSwgd2l0aG91dCBuZWVkaW5nIHRvIHBhcnNlIHRoZSBmdWxsIGByZWdpc3RyeV9pbmZvYApyZXNwb25zZS4KClVwZ3JhZGUgY29tcGF0aWJpbGl0eTogYGNyYXRlX3ZlcnNpb25gIGlzIHRoZSBDYXJnbyBzZW12ZXIgc3RyaW5nIGJha2VkCmluIGF0IGJ1aWxkIHRpbWUgKGBDQVJHT19QS0dfVkVSU0lPTmApLiBgcmVzb3VyY2Vfc2NoZW1hX3ZlcnNpb25gIGlzIGFuCmludGVnZXIgYnVtcGVkIG9ubHkgd2hlbiB0aGUgb24tY2hhaW4gYFJlc291cmNlYCBzdHJ1Y3QgY2hhbmdlcyBpbiBhIHdheQp0aGF0IHJlcXVpcmVzIGNhbGxlcnMgdG8gdXBkYXRlIGhvdyB0aGV5IGRlY29kZSBpdC4gQSBjaGFuZ2UgdG8KYGNyYXRlX3ZlcnNpb25gIGFsb25lIGRvZXMgbm90IGltcGx5IGEgc2NoZW1hIGNoYW5nZS4AAAAQY29udHJhY3RfdmVyc2lvbgAAAAAAAAABAAAH0AAAAA9Db250cmFjdFZlcnNpb24A",
         "AAAAAAAAAEBQcm9wb3NlIGEgdHJhbnNmZXIgdG8gYSBuZXcgb3duZXIuIFRoZSBuZXcgb3duZXIgbXVzdCBhY2NlcHQgaXQuAAAAEHByb3Bvc2VfdHJhbnNmZXIAAAACAAAAAAAAAAJpZAAAAAAAEAAAAAAAAAALbmV3X2NyZWF0b3IAAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAAD",
         "AAAAAQAAAWdDb21wYWN0IHZlcnNpb24gc3RydWN0IHJldHVybmVkIGJ5IFtgVmF1bHRSZWdpc3RyeTo6Y29udHJhY3RfdmVyc2lvbmBdLgoKRGVwbG95bWVudCBzY3JpcHRzIGFuZCB1cGdyYWRlIHRvb2xpbmcgc2hvdWxkIGNhbGwgYGNvbnRyYWN0X3ZlcnNpb25gCmJlZm9yZSBhbmQgYWZ0ZXIgYSByZWRlcGxveSB0byBjb25maXJtIHdoaWNoIGJ1aWxkIGlzIHJ1bm5pbmcgb24tY2hhaW4uCk9ubHkgYHJlc291cmNlX3NjaGVtYV92ZXJzaW9uYCBpcyByZWxldmFudCB0byB3aGV0aGVyIGNhbGxlcnMgbXVzdCB1cGRhdGUKdGhlaXIgYFJlc291cmNlYCBkZWNvZGluZyBsb2dpYzsgYSBgY3JhdGVfdmVyc2lvbmAgYnVtcCBhbG9uZSBpcyBzYWZlLgAAAAAAAAAAD0NvbnRyYWN0VmVyc2lvbgAAAAACAAAAQUNhcmdvIHNlbXZlciBzdHJpbmcgYmFrZWQgaW4gYXQgYnVpbGQgdGltZSAoYENBUkdPX1BLR19WRVJTSU9OYCkuAAAAAAAADWNyYXRlX3ZlcnNpb24AAAAAAAAQAAAAhE9uLWNoYWluIGBSZXNvdXJjZWAgc2NoZW1hIHZlcnNpb24gKGBSRVNPVVJDRV9TQ0hFTUFfVkVSU0lPTmApLgpCdW1wIHRoaXMgb25seSB3aGVuIHRoZSBgUmVzb3VyY2VgIHN0cnVjdCBjaGFuZ2VzIGluIGEgYnJlYWtpbmcgd2F5LgAAABdyZXNvdXJjZV9zY2hlbWFfdmVyc2lvbgAAAAAE",
+        "AAAAAAAAAItSZXR1cm4gdGhlIGluaXRpYWxpemVkIG5ldHdvcmsgaWRlbnRpZmllci4gQ2FsbGVycyBjYW4gdXNlIHRoaXMgdmFsdWUKYXMgYSBkZXBsb3ltZW50IGd1YXJkIGJlZm9yZSBzdWJtaXR0aW5nIG5ldHdvcmstc2Vuc2l0aXZlIG9wZXJhdGlvbnMuAAAAAApuZXR3b3JrX2lkAAAAAAAAAAAAAQAAA+kAAAPuAAAAIAAAAAM=",
         "AAAAAAAAAMhTdG9yZSB0aGUgaW50ZW5kZWQgbmV0d29yayBpZGVudGlmaWVyIG9uY2UuIFRoZSBzdXBwbGllZCBJRCBtdXN0IG1hdGNoCnRoZSBsZWRnZXIgdGhpcyBjb250cmFjdCBpcyBleGVjdXRpbmcgb24sIHByZXZlbnRpbmcgYSBkZXBsb3ltZW50CnNjcmlwdCBmcm9tIGFjY2lkZW50YWxseSByZWNvcmRpbmcgYSBkaWZmZXJlbnQgU3RlbGxhciBuZXR3b3JrLgAAABJpbml0aWFsaXplX25ldHdvcmsAAAAAAAEAAAAAAAAACm5ldHdvcmtfaWQAAAAAA+4AAAAgAAAAAQAAA+kAAAPtAAAAAAAAAAM=",
         "AAAAAAAAAKxOb21pbmF0ZSBhIG5ldyBjb250cmFjdCBhZG1pbi4gT25seSB0aGUgY3VycmVudCBhZG1pbiBtYXkgY2FsbCB0aGlzLgpTZXRzIGBwZW5kaW5nX2FkbWluYC4gVGhlIG5vbWluYXRpb24gZG9lcyBub3QgdGFrZSBlZmZlY3QgdW50aWwKdGhlIHBlbmRpbmcgYWRtaW4gY2FsbHMgYGFjY2VwdF9hZG1pbmAuAAAAEm5vbWluYXRlX25ld19hZG1pbgAAAAAAAQAAAAAAAAAJbmV3X2FkbWluAAAAAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAAD",
+        "AAAAAAAAAHBQZXJtYW5lbnRseSByZXRpcmUgYSByZXNvdXJjZS4gT25seSBhbiBhZG1pbiBtYXkgdG9tYnN0b25lIGl0OyB0aGUKdG9tYnN0b25lZCBzdGF0ZSBoYXMgbm8gb3V0Z29pbmcgdHJhbnNpdGlvbnMuAAAAEnRvbWJzdG9uZV9yZXNvdXJjZQAAAAAAAgAAAAAAAAACaWQAAAAAABAAAAAAAAAABWFkbWluAAAAAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAAD",
         "AAAAAAAAAAAAAAASdHJhbnNmZXJfb3duZXJzaGlwAAAAAAACAAAAAAAAAAJpZAAAAAAAEAAAAAAAAAALbmV3X2NyZWF0b3IAAAAAEwAAAAEAAAPpAAAD7QAAAAAAAAAD",
         "AAAAAgAAAIpPbi1jaGFpbiBtaXJyb3Igb2YgdGhlIHNlcnZlcidzIG9mZi1jaGFpbiB2ZXJpZmljYXRpb24gcmVzdWx0LiBTZXR0YWJsZQpvbmx5IGJ5IGFuIGFkZHJlc3MgaG9sZGluZyB0aGUgdmVyaWZpZXIgcm9sZSAoc2VlIGBhZGRfdmVyaWZpZXJgKS4AAAAAAAAAAAASVmVyaWZpY2F0aW9uU3RhdHVzAAAAAAADAAAAAAAAAAAAAAAHUGVuZGluZwAAAAAAAAAAAAAAAAhWZXJpZmllZAAAAAAAAAAAAAAACFJlamVjdGVk",
         "AAAAAQAAAOtFdmVudCBkYXRhIGVtaXR0ZWQgd2hlbiBhIHJlc291cmNlJ3MgbWV0YWRhdGEgcG9pbnRlciBpcyB1cGRhdGVkLgpDYXJyaWVzIHRoZSByZXNvdXJjZSBpZCwgdGhlIHByZXZpb3VzIG1ldGFkYXRhIHBvaW50ZXIsIGFuZCB0aGUgbmV3IG9uZQpzbyB0aGF0IG9mZi1jaGFpbiBpbmRleGVycyBjYW4gYnVpbGQgYSBmdWxsIGF1ZGl0IHRyYWlsIHdpdGhvdXQgcXVlcnlpbmcKaGlzdG9yaWNhbCBsZWRnZXIgc3RhdGUuAAAAAAAAAAATTWV0YWRhdGFVcGRhdGVFdmVudAAAAAADAAAAAAAAAAJpZAAAAAAAEAAAAAAAAAAMbmV3X21ldGFkYXRhAAAAEAAAAAAAAAAMb2xkX21ldGFkYXRhAAAAEA==",
@@ -659,6 +490,7 @@ export class Client extends ContractClient {
     list_listed: this.txFromJSON<Array<Resource>>,
     accept_admin: this.txFromJSON<Result<void>>,
     add_verifier: this.txFromJSON<Result<void>>,
+    open_dispute: this.txFromJSON<Result<void>>,
     repair_index: this.txFromJSON<Result<void>>,
     pending_admin: this.txFromJSON<Option<string>>,
     registry_info: this.txFromJSON<RegistryInfo>,
@@ -667,13 +499,16 @@ export class Client extends ContractClient {
     accept_transfer: this.txFromJSON<Result<void>>,
     cancel_transfer: this.txFromJSON<Result<void>>,
     freeze_metadata: this.txFromJSON<Result<void>>,
+    freeze_resource: this.txFromJSON<Result<void>>,
     list_by_creator: this.txFromJSON<Array<Resource>>,
     remove_verifier: this.txFromJSON<Result<void>>,
+    resolve_dispute: this.txFromJSON<Result<void>>,
     update_metadata: this.txFromJSON<Result<void>>,
     contract_version: this.txFromJSON<ContractVersion>,
     propose_transfer: this.txFromJSON<Result<void>>,
     initialize_network: this.txFromJSON<Result<void>>,
     nominate_new_admin: this.txFromJSON<Result<void>>,
+    tombstone_resource: this.txFromJSON<Result<void>>,
     transfer_ownership: this.txFromJSON<Result<void>>,
     creator_resource_count: this.txFromJSON<u32>,
     set_verification_status: this.txFromJSON<Result<void>>,

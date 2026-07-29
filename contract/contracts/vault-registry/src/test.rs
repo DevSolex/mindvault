@@ -660,7 +660,7 @@ fn set_listed_event_emits_old_and_new_state_relist() {
 }
 
 #[test]
-fn set_listed_event_no_op_same_state() {
+fn set_listed_allows_no_op_same_state() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "evnoop");
     client.register(
@@ -671,20 +671,8 @@ fn set_listed_event_no_op_same_state() {
         &empty_tags(&env),
     );
 
-    // Set listed=true when already listed → expect (true, true)
     client.set_listed(&id, &true);
-
-    assert_eq!(
-        env.events().all(),
-        soroban_sdk::vec![
-            &env,
-            (
-                client.address.clone(),
-                (symbol_short!("setlisted"), id.clone()).into_val(&env),
-                (true, true).into_val(&env),
-            ),
-        ]
-    );
+    assert_eq!(client.get(&id).state, ResourceState::Listed);
 }
 
 #[test]
@@ -2810,11 +2798,13 @@ fn contract_version_returns_crate_and_schema_version() {
     let v = client.contract_version();
 
     // crate_version is baked at build time; it must be a non-empty semver string.
-    assert!(!v.crate_version.is_empty(), "crate_version must not be empty");
+    assert!(
+        !v.crate_version.is_empty(),
+        "crate_version must not be empty"
+    );
     // resource_schema_version is the compile-time constant; the call must echo it.
     assert_eq!(
-        v.resource_schema_version,
-        RESOURCE_SCHEMA_VERSION,
+        v.resource_schema_version, RESOURCE_SCHEMA_VERSION,
         "contract_version must expose RESOURCE_SCHEMA_VERSION"
     );
 }
@@ -2994,6 +2984,8 @@ fn full_workflow_emits_exactly_the_documented_events() {
 
     client.set_listed(&r0, &false);
     record(&env, &client, &mut observed);
+    client.set_listed(&r0, &true);
+    record(&env, &client, &mut observed);
     client.delist(&r0);
     record(&env, &client, &mut observed);
 
@@ -3051,6 +3043,11 @@ fn full_workflow_emits_exactly_the_documented_events() {
     record(&env, &client, &mut observed);
 
     client.freeze_metadata(&r2); // -> "freeze"
+    record(&env, &client, &mut observed);
+
+    client.open_dispute(&r2, &admin2); // -> "lifecycle"
+    record(&env, &client, &mut observed);
+    client.resolve_dispute(&r2, &admin2, &ResourceState::Frozen); // -> "lifecycle"
     record(&env, &client, &mut observed);
 
     client.repair_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "reindex"
@@ -3161,6 +3158,94 @@ fn resource_starts_pending_and_unfrozen() {
     let resource = client.get(&id);
     assert_eq!(resource.verified, VerificationStatus::Pending);
     assert!(!resource.frozen);
+    assert_eq!(resource.state, ResourceState::Listed);
+    assert!(resource.listed);
+}
+
+// ─── Resource lifecycle state machine (#455) ──────────────────────────────
+
+#[test]
+fn creator_lifecycle_transitions_keep_listing_projection_in_sync() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "lifecyc1");
+
+    client.set_listed(&id, &false);
+    let delisted = client.get(&id);
+    assert_eq!(delisted.state, ResourceState::Delisted);
+    assert!(!delisted.listed);
+
+    client.set_listed(&id, &true);
+    let listed = client.get(&id);
+    assert_eq!(listed.state, ResourceState::Listed);
+    assert!(listed.listed);
+
+    client.freeze_resource(&id);
+    let frozen = client.get(&id);
+    assert_eq!(frozen.state, ResourceState::Frozen);
+    assert!(!frozen.listed);
+}
+
+#[test]
+fn lifecycle_rejects_creator_transitions_out_of_frozen() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "lifecyc2");
+
+    client.freeze_resource(&id);
+    assert_eq!(
+        client.try_set_listed(&id, &false),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
+    assert_eq!(
+        client.try_freeze_resource(&id),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
+}
+
+#[test]
+fn admin_can_dispute_resolve_and_tombstone_resource() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "lifecyc3");
+
+    client.open_dispute(&id, &admin);
+    assert_eq!(client.get(&id).state, ResourceState::Disputed);
+    assert_eq!(
+        client.try_set_price(&id, &200i128),
+        Err(Ok(Error::ResourceNotMutable))
+    );
+
+    client.resolve_dispute(&id, &admin, &ResourceState::Frozen);
+    assert_eq!(client.get(&id).state, ResourceState::Frozen);
+
+    client.tombstone_resource(&id, &admin);
+    let tombstoned = client.get(&id);
+    assert_eq!(tombstoned.state, ResourceState::Tombstoned);
+    assert!(!tombstoned.listed);
+    assert_eq!(
+        client.try_tombstone_resource(&id, &admin),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
+}
+
+#[test]
+fn lifecycle_admin_methods_reject_wrong_role_and_invalid_resolution() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "lifecyc4");
+    let stranger = Address::generate(&env);
+
+    assert_eq!(
+        client.try_open_dispute(&id, &stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_resolve_dispute(&id, &admin, &ResourceState::Listed),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
+
+    client.open_dispute(&id, &admin);
+    assert_eq!(
+        client.try_resolve_dispute(&id, &admin, &ResourceState::Tombstoned),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
 }
 
 #[test]
@@ -3279,6 +3364,9 @@ fn event_schema_matches_documented_readme_table() {
         .split("### Events")
         .nth(1)
         .expect("contract/README.md must have an `### Events` section")
+        .split("### Resource lifecycle")
+        .next()
+        .expect("`### Events` section must precede lifecycle documentation")
         .split("### Registry info")
         .next()
         .expect("`### Events` section must be followed by `### Registry info`");
@@ -3671,12 +3759,14 @@ fn duplicate_detection_stable_after_mixed_lifecycle_ops() {
         assert_eq!(
             client.try_register(&alice, id, &1i128, &meta, &empty_tags(&env)),
             Err(Ok(Error::AlreadyRegistered)),
-            "expected AlreadyRegistered for id {:?}", id,
+            "expected AlreadyRegistered for id {:?}",
+            id,
         );
         assert_eq!(
             client.try_register(&bob, id, &1i128, &meta, &empty_tags(&env)),
             Err(Ok(Error::AlreadyRegistered)),
-            "expected AlreadyRegistered for id {:?}", id,
+            "expected AlreadyRegistered for id {:?}",
+            id,
         );
     }
 

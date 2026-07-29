@@ -51,7 +51,8 @@ pub struct Resource {
     pub creator: Address,  // current owner's Stellar address
     pub price: i128,       // price in USDC stroops (7 decimals)
     pub metadata: String,  // pointer (supported URI or content-hash form), max 512 bytes, non-empty
-    pub listed: bool,      // whether the resource is available for discovery/purchase
+    pub listed: bool,      // compatibility projection: true exactly when state is Listed
+    pub state: ResourceState, // explicit lifecycle state
     pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
     pub verified: VerificationStatus, // on-chain mirror of off-chain verification, settable only by a verifier
     pub frozen: bool,      // once true, update_metadata is permanently rejected
@@ -63,6 +64,14 @@ pub enum VerificationStatus {
     Pending,
     Verified,
     Rejected,
+}
+
+pub enum ResourceState {
+    Listed,
+    Delisted,
+    Frozen,
+    Disputed,
+    Tombstoned,
 }
 
 /// Optional dispute flag stored on a resource. Uses an enum rather than
@@ -77,6 +86,7 @@ pub enum FlagReason {
     Copyright = 1,
     Malicious = 2,
     Other     = 3,
+}
 }
 ```
 
@@ -207,6 +217,11 @@ Three roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `26` | `NotModerator`                  | Caller does not hold the moderator role.                                                |
 | `27` | `AlreadyFlagged`                | Resource is already flagged as disputed.                                                |
 | `28` | `NotFlagged`                    | Resource is not currently flagged as disputed.                                          |
+| `29` | `InvalidLifecycleTransition`    | The requested lifecycle transition is not allowed from the current state.               |
+| `30` | `ResourceNotMutable`            | A frozen, disputed, or tombstoned resource cannot be changed by its creator.            |
+| `31` | `NetworkAlreadyInitialized`     | Network identifier has already been initialized for this contract instance.             |
+| `32` | `NetworkIdMismatch`             | Invocation network identifier does not match configured network ID.                     |
+| `33` | `NetworkNotInitialized`         | Network identifier has not been initialized.                                            |
 
 ### Events
 
@@ -254,8 +269,34 @@ listeners can determine the transition direction without querying additional sta
 | No-op delist          | `(false, false)` |
 
 Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted`
-event — `delist` is a thin convenience wrapper that calls `set_listed`. The event
-is emitted even when the new value equals the old value.
+event — `delist` is a thin convenience wrapper that calls `set_listed`.
+For backwards compatibility, no-op listing calls still emit the corresponding
+`setlisted` event but do not count as lifecycle transitions.
+
+### Resource lifecycle state machine
+
+New resources start in `Listed`. `listed` is maintained as a compatibility
+projection and is `true` only in that state. `freeze_metadata()` is independent:
+it makes the metadata pointer immutable but does not change `ResourceState`.
+
+| Current state | Allowed next states                            | Authorized actor                                                   |
+| ------------- | ---------------------------------------------- | ------------------------------------------------------------------ |
+| `Listed`      | `Delisted`, `Frozen`, `Disputed`, `Tombstoned` | creator for `Delisted`/`Frozen`; admin for `Disputed`/`Tombstoned` |
+| `Delisted`    | `Listed`, `Frozen`, `Disputed`, `Tombstoned`   | creator for `Listed`/`Frozen`; admin for `Disputed`/`Tombstoned`   |
+| `Frozen`      | `Disputed`, `Tombstoned`                       | admin                                                              |
+| `Disputed`    | `Listed`, `Delisted`, `Frozen`, `Tombstoned`   | admin                                                              |
+| `Tombstoned`  | none                                           | —                                                                  |
+
+Use `set_listed(id, true|false)` for the creator-controlled listed/delisted
+transitions and `freeze_resource(id)` to enter `Frozen`. The current admin uses
+`open_dispute(id, admin)`, `resolve_dispute(id, admin, state)`, and
+`tombstone_resource(id, admin)` for moderation transitions.
+
+`Frozen`, `Disputed`, and `Tombstoned` resources are excluded from
+`list_listed`. Creator mutations to price, metadata, tags, or ownership fail
+with `ResourceNotMutable` in those states. All invalid state changes, including
+attempts to leave `Frozen` or `Tombstoned` without admin resolution, fail with
+`InvalidLifecycleTransition`.
 
 The `updmeta` event carries structured data so that off-chain indexers can build
 a full audit trail without querying historical ledger state:
