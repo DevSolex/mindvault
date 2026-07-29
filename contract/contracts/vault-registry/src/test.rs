@@ -280,24 +280,8 @@ fn set_price_emits_structured_event() {
 
     client.set_price(&id, &updated_price);
 
-    // Locate the `setprice` event by its leading topic symbol so the test is
-    // robust against any other events emitted (e.g. from `register`).
-    let setprice_sym = soroban_sdk::symbol_short!("setprice");
-    let all_events = env.events().all();
-    let (_, _topics, data) = (0..all_events.len())
-        .map(|i| all_events.get(i).unwrap())
-        .find(|(_id, topics, _data)| {
-            if topics.is_empty() {
-                return false;
-            }
-            let first: soroban_sdk::Symbol =
-                soroban_sdk::FromVal::from_val(&env, &topics.get(0).unwrap());
-            first == setprice_sym
-        })
+    let payload = find_setprice_event(&env, &client.address)
         .expect("setprice event not found");
-
-    // Data must deserialise to PriceUpdated with the right field values.
-    let payload = PriceUpdated::from_val(&env, &data);
     assert_eq!(payload.id, id);
     assert_eq!(payload.old_price, initial_price);
     assert_eq!(payload.new_price, updated_price);
@@ -338,50 +322,6 @@ fn ownership_can_transfer() {
     assert_eq!(client.get(&id).creator, new_owner);
 }
 
-fn event_data_as_owners(
-    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
-    topic0_str: &str,
-) -> Option<(Address, Address)> {
-    for i in 0..events.len() {
-        let (_, topics, data) = events.get(i).unwrap();
-        if topics.len() != 2 {
-            continue;
-        }
-        let t0: Symbol =
-            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
-                .ok()?;
-        if t0 != Symbol::new(events.env(), topic0_str) {
-            continue;
-        }
-        let pair: (Address, Address) =
-            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
-        return Some(pair);
-    }
-    None
-}
-
-fn event_data_as_address(
-    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
-    topic0_str: &str,
-) -> Option<Address> {
-    for i in 0..events.len() {
-        let (_, topics, data) = events.get(i).unwrap();
-        if topics.len() != 2 {
-            continue;
-        }
-        let t0: Symbol =
-            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
-                .ok()?;
-        if t0 != Symbol::new(events.env(), topic0_str) {
-            continue;
-        }
-        let addr: Address =
-            <Address as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
-        return Some(addr);
-    }
-    None
-}
-
 #[test]
 fn transfer_ownership_event_contains_previous_and_new_owner() {
     let (env, creator, client) = setup();
@@ -396,8 +336,8 @@ fn transfer_ownership_event_contains_previous_and_new_owner() {
     );
     client.transfer_ownership(&id, &new_owner);
 
-    let (prev, new) = event_data_as_owners(&env.events().all(), "transfer")
-        .expect("transfer event with (Address, Address) data not found");
+    let (prev, new) = find_transfer_event(&env, &client.address)
+        .expect("transfer event not emitted");
     assert_eq!(prev, creator);
     assert_eq!(new, new_owner);
 }
@@ -416,8 +356,8 @@ fn propose_transfer_event_contains_owner_and_proposed() {
     );
     client.propose_transfer(&id, &proposed);
 
-    let (owner, target) = event_data_as_owners(&env.events().all(), "propose")
-        .expect("propose event with (Address, Address) data not found");
+    let (owner, target) = find_propose_event(&env, &client.address)
+        .expect("propose event not emitted");
     assert_eq!(owner, creator);
     assert_eq!(target, proposed);
 }
@@ -438,23 +378,8 @@ fn accept_transfer_event_contains_previous_and_new_owner() {
     env.mock_all_auths();
     client.accept_transfer(&id);
 
-    let events = env.events().all();
-    let mut last_transfer_data: Option<Val> = None;
-    for i in 0..events.len() {
-        let (_, topics, data) = events.get(i).unwrap();
-        if topics.len() == 2
-            && <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
-                == Ok(Symbol::new(&env, "transfer"))
-        {
-            last_transfer_data = Some(data);
-        }
-    }
-    let accept_data = last_transfer_data
-        .as_ref()
-        .expect("accept transfer event not found");
-    let (prev, new): (Address, Address) =
-        <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&env, accept_data)
-            .expect("accept event data should decode to (Address, Address)");
+    let (prev, new) = find_transfer_event(&env, &client.address)
+        .expect("accept transfer event not emitted");
     assert_eq!(prev, creator);
     assert_eq!(new, new_owner);
 }
@@ -474,8 +399,8 @@ fn cancel_transfer_event_contains_owner() {
     client.propose_transfer(&id, &proposed);
     client.cancel_transfer(&id);
 
-    let owner = event_data_as_address(&env.events().all(), "cancel")
-        .expect("cancel event with Address data not found");
+    let owner = find_cancel_event(&env, &client.address)
+        .expect("cancel event not emitted");
     assert_eq!(owner, creator);
 }
 
@@ -2154,30 +2079,12 @@ fn set_tags_event_includes_prev_and_next() {
     let new_tags = tags(&env, &["finance", "api"]);
     client.set_tags(&id, &new_tags);
 
-    // Verify event contains both prev and next tags
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-
-    // Event structure: (contract_address, topics_vec, data)
-    // topics=(symbol_short!("settags"), id), data=(prev_tags, new_tags)
-    let (_contract, topics, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    // Decode topics: [symbol_short!("settags"), id]
-    assert_eq!(topics.len(), 2);
-
-    // Decode data as tuple: (prev_tags, new_tags)
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
 
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "data"));
-    assert_eq!(
-        prev_tags.get(1).unwrap(),
-        String::from_str(&env, "research")
-    );
+    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "research"));
 
     assert_eq!(next_tags.len(), 2);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "finance"));
@@ -2190,24 +2097,13 @@ fn set_tags_event_supports_tag_removal() {
     let id = String::from_str(&env, "removaltest");
     let metadata = String::from_str(&env, "ipfs://m");
 
-    // Register with multiple tags
+    // Register with multiple tags then clear all tags
     let initial_tags = tags(&env, &["tag1", "tag2", "tag3"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    client.set_tags(&id, &empty_tags(&env));
 
-    // Clear all tags
-    let empty = empty_tags(&env);
-    client.set_tags(&id, &empty);
-
-    // Verify event shows previous tags and empty next tags
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-    let (_, _, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
     assert_eq!(prev_tags.len(), 3);
     assert_eq!(next_tags.len(), 0);
 }
@@ -2218,23 +2114,12 @@ fn set_tags_event_supports_tag_addition() {
     let id = String::from_str(&env, "additiontest");
     let metadata = String::from_str(&env, "ipfs://m");
 
-    // Register with no tags
+    // Register with no tags then add some
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    client.set_tags(&id, &tags(&env, &["first", "second"]));
 
-    // Add tags
-    let new_tags = tags(&env, &["first", "second"]);
-    client.set_tags(&id, &new_tags);
-
-    // Verify event shows empty previous and new tags
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-    let (_, _, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
     assert_eq!(prev_tags.len(), 0);
     assert_eq!(next_tags.len(), 2);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "first"));
@@ -2246,24 +2131,13 @@ fn set_tags_event_on_replacement() {
     let id = String::from_str(&env, "replacetest");
     let metadata = String::from_str(&env, "ipfs://m");
 
-    // Register with initial tags
+    // Register with initial tags then replace completely
     let initial_tags = tags(&env, &["old1", "old2"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    client.set_tags(&id, &tags(&env, &["new1", "new2", "new3"]));
 
-    // Replace completely with different tags
-    let replacement_tags = tags(&env, &["new1", "new2", "new3"]);
-    client.set_tags(&id, &replacement_tags);
-
-    // Verify event shows complete replacement
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-    let (_, _, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "old1"));
     assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "old2"));
