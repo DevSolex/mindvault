@@ -454,6 +454,32 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: "mindvault_set_tags",
     description:
       "Replace the discovery tags on an on-chain resource. Only the resource creator (the agent wallet) may call this. Tags are normalized to lowercase before the on-chain call — pass them already lowercased to avoid round-trip surprises. Constraints: 1–8 tags, each 1–32 characters, containing only lowercase letters, digits, hyphens, or underscores. Pass an empty array to clear all tags. Requires a funded agent wallet.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        resourceId: {
+          type: "string",
+          description:
+            "The on-chain resource ID to update tags for (from mindvault_publish or mindvault_browse).",
+          examples: ["cm7x8y9z", "res-001"],
+        },
+        tags: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Replacement tag list (0–8 entries, each 1–32 chars). Tags are normalized to lowercase. Use lowercase letters, digits, hyphens, or underscores. Examples: ['dataset', 'research'], [] to clear all tags.",
+          examples: [["dataset", "research"], ["finance", "api"], []],
+        },
+        confirmMainnet: {
+          type: "boolean",
+          description:
+            "Required on mainnet (or set MINDVAULT_ALLOW_MAINNET=1). Explicitly confirm this mutation on the public Stellar network.",
+        },
+      },
+      required: ["resourceId", "tags"],
+    },
+  },
+  {
     name: "mindvault_update_metadata",
     description:
       "Update the on-chain metadata pointer for a registered resource in the vault registry contract. Only the resource creator/owner may call this. Validates the pointer length and format (must start with ipfs://, ar://, http(s)://, sha256:, sha-256:, or 0x and be at most 512 characters) client-side before signing and submitting.",
@@ -464,15 +490,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           type: "string",
           description:
             "The on-chain resource ID to update (from mindvault_publish or mindvault_browse). Letters, digits, dot, dash, or underscore.",
-          examples: ["cm7x8y9z", "res-001"],
-        },
-        tags: {
-          type: "array",
-          items: { type: "string" },
-          description:
-            "Replacement tag list (0–8 entries, each 1–32 chars). Tags are normalized to lowercase. Use lowercase letters, digits, hyphens, or underscores. Examples: ['dataset', 'research'], [] to clear all tags.",
-          examples: [["dataset", "research"], ["finance", "api"], []],
-            "The resource ID to update metadata for. Example: 'cm7x8y9z'",
           examples: ["cm7x8y9z", "res-001"],
         },
         metadata: {
@@ -502,8 +519,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         resourceId: {
           type: "string",
-          description:
-            "The resource ID to update price for. Example: 'cm7x8y9z'",
+          description: "The resource ID to update price for. Example: 'cm7x8y9z'",
           examples: ["cm7x8y9z", "res-001"],
         },
         price: {
@@ -530,14 +546,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         resourceId: {
           type: "string",
-          description:
-            "The resource ID to transfer ownership of. Example: 'cm7x8y9z'",
+          description: "The resource ID to transfer ownership of. Example: 'cm7x8y9z'",
           examples: ["cm7x8y9z", "res-001"],
         },
         newCreator: {
           type: "string",
-          description:
-            "The Stellar public key (G… , 56 chars) of the new resource owner.",
+          description: "The Stellar public key (G… , 56 chars) of the new resource owner.",
           examples: ["GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH"],
         },
         confirmMainnet: {
@@ -558,8 +572,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         resourceId: {
           type: "string",
-          description:
-            "The resource ID to change listed state for. Example: 'cm7x8y9z'",
+          description: "The resource ID to change listed state for. Example: 'cm7x8y9z'",
           examples: ["cm7x8y9z", "res-001"],
         },
         listed: {
@@ -604,8 +617,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         profile: {
           type: "string",
-          description:
-            "Optional profile name to import into. Defaults to the active profile.",
+          description: "Optional profile name to import into. Defaults to the active profile.",
           examples: ["testnet", "mainnet-publisher"],
         },
         persist: {
