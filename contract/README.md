@@ -31,6 +31,7 @@ reads the canonical resource entry here.
 | `list_page(cursor, limit)`                     | —                     | `cursor: u32` — 0‑based catalog index; `limit: u32` — page size (capped at 20)                                                                                                                                                                                         | `CatalogPage`             | Paginated page with `items` + `next_cursor` (`None` = end-of-list).                                                      |
 | `list_listed(start, limit)`                    | —                     | `start: u32`; `limit: u32` (capped at 20)                                                                                                                                                                                                                              | `Vec<Resource>`           | Paginated list of **listed-only** resources. Delisted resources are skipped; relisted resources reappear.                |
 | `list_by_creator(creator, start, limit)`       | —                     | `creator: Address`; `start: u32`; `limit: u32` (capped at 20)                                                                                                                                                                                                          | `Vec<Resource>`           | Paginated list of resources currently owned by `creator`.                                                                |
+| `list_by_tag(tag, start, limit)`               | —                     | `tag: String` — matched case-insensitively; `start: u32`; `limit: u32` (capped at 20)                                                                                                                                                                                  | `Vec<Resource>`           | Paginated list of resources carrying `tag`, in index insertion order. Tag matching is case-insensitive.                  |
 | `get(id)`                                      | —                     | `id: String`                                                                                                                                                                                                                                                           | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent.                                                                     |
 | `exists(id)`                                   | —                     | `id: String`                                                                                                                                                                                                                                                           | `bool`                    | Whether a resource is registered.                                                                                        |
 | `get_owner(id)`                                | —                     | `id: String`                                                                                                                                                                                                                                                           | `Result<Address, Error>`  | Fetch the current owner of a resource. Errors `NotFound` if absent.                                                      |
@@ -54,12 +55,28 @@ pub struct Resource {
     pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
     pub verified: VerificationStatus, // on-chain mirror of off-chain verification, settable only by a verifier
     pub frozen: bool,      // once true, update_metadata is permanently rejected
+    pub updated_at: u32,   // ledger sequence of the last write (register or any mutation)
+    pub dispute_flag: DisputeFlag, // NoFlag = no dispute; Flagged(reason) = active moderator flag
 }
 
 pub enum VerificationStatus {
     Pending,
     Verified,
     Rejected,
+}
+
+/// Optional dispute flag stored on a resource. Uses an enum rather than
+/// `Option<FlagReason>` to satisfy Soroban's `contracttype` encoding requirements.
+pub enum DisputeFlag {
+    NoFlag,              // no active dispute flag
+    Flagged(FlagReason), // actively flagged with a reason code
+}
+
+pub enum FlagReason {
+    Spam      = 0,
+    Copyright = 1,
+    Malicious = 2,
+    Other     = 3,
 }
 ```
 
@@ -78,6 +95,30 @@ pub struct CatalogPage {
 Clients should paginate by passing `next_cursor` back as `cursor`/`start` instead of
 recomputing offsets from `items.len()`. `list(start, limit)` remains available and
 returns only the `items` body for existing callers.
+
+### Fee / royalty configuration
+
+```rust
+pub struct FeeConfig {
+    pub platform_fee_bps: u32,        // platform cut (0–MAX_FEE_BPS = 5 000 bp)
+    pub royalty_bps: u32,             // creator royalty (0–MAX_FEE_BPS = 5 000 bp)
+    pub fee_recipient: Option<Address>, // where platform fee is routed; None = no platform fee
+}
+```
+
+The registry stores a single `FeeConfig` at registry scope (not per-resource).
+`set_fee_config` enforces:
+
+- `platform_fee_bps ≤ MAX_FEE_BPS` (else `FeeBpsTooHigh`)
+- `royalty_bps ≤ MAX_FEE_BPS` (else `FeeBpsTooHigh`)
+- `platform_fee_bps + royalty_bps ≤ MAX_FEE_BPS` (else `TotalFeeTooHigh`)
+
+This guarantees a creator always receives at least 50 % of any sale price.
+The contract does **not** collect fees itself — it stores the agreed split so
+off-chain settlement (x402 facilitator, future settlement contracts) can read
+and apply it.
+
+See [`docs/adr-fee-config.md`](../docs/adr-fee-config.md) for the full design rationale.
 
 ### Methods
 
@@ -98,6 +139,7 @@ returns only the `items` body for existing callers.
 | `list_page(cursor, limit)`                      | —                                                        | `cursor: u32`; `limit: u32` — capped at 20                                                                                                                                                                                                           | `CatalogPage`             | Paginated page with `items` + `next_cursor`.                                                                                                                                                                                                                                                             |
 | `list_listed(start, limit)`                     | —                                                        | `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                                                            | `Vec<Resource>`           | Paginated list of listed-only resources. Delisted resources are skipped; relisted resources reappear.                                                                                                                                                                                                    |
 | `list_by_creator(creator, start, limit)`        | —                                                        | `creator: Address`; `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                                        | `Vec<Resource>`           | Paginated list of resources currently owned by `creator`, in registration order.                                                                                                                                                                                                                         |
+| `list_by_tag(tag, start, limit)`                | —                                                        | `tag: String` (normalized to lowercase); `start: u32`; `limit: u32` — capped at 20                                                                                                                                                                   | `Vec<Resource>`           | Paginated list of resources carrying `tag`, in tag-index insertion order. The lookup tag is normalized to lowercase before querying. Returns an empty vec for unknown tags (not `NotFound`). Each resource entry read has its TTL bumped.                                                                |
 | `get(id)`                                       | —                                                        | `id: String`                                                                                                                                                                                                                                         | `Result<Resource, Error>` | Read a single resource. Errors `NotFound` if absent.                                                                                                                                                                                                                                                     |
 | `exists(id)`                                    | —                                                        | `id: String`                                                                                                                                                                                                                                         | `bool`                    | Whether a resource is registered.                                                                                                                                                                                                                                                                        |
 | `get_owner(id)`                                 | —                                                        | `id: String`                                                                                                                                                                                                                                         | `Result<Address, Error>`  | Fetch the resource's current owner. Errors `NotFound` if absent.                                                                                                                                                                                                                                         |
@@ -113,6 +155,11 @@ returns only the `items` body for existing callers.
 | `add_verifier(verifier)`                        | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                                       |
 | `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
 | `is_verifier(address)`                          | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the verifier role.                                                                                                                                                                                                                                                     |
+| `add_moderator(moderator)`                      | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Grant the moderator role, authorizing `flag_resource` and `unflag_resource`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                          |
+| `remove_moderator(moderator)`                   | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Revoke the moderator role.                                                                                                                                                                                                                                                                               |
+| `is_moderator(address)`                         | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the moderator role.                                                                                                                                                                                                                                                    |
+| `flag_resource(id, moderator, reason)`          | `moderator`                                              | `id: String`; `moderator: Address`; `reason: FlagReason`                                                                                                                                                                                             | `Result<(), Error>`       | Set `Resource.dispute_flag` to `Flagged(reason)`. Flagging is informational — it does not delist or delete the resource. Re-flagging an already-flagged resource replaces the reason. Errors `Unauthorized` if caller lacks the moderator role. Emits `flag`.                                            |
+| `unflag_resource(id, moderator)`                | `moderator`                                              | `id: String`; `moderator: Address`                                                                                                                                                                                                                   | `Result<(), Error>`       | Clear `Resource.dispute_flag` to `NoFlag`. No-op if the resource is not currently flagged (event still emitted). Errors `Unauthorized` if caller lacks the moderator role. Emits `unflag`.                                                                                                               |
 | `repair_index(ids)`                             | `admin`                                                  | `ids: Vec<String>` — authoritative ordered id list                                                                                                                                                                                                   | `Result<(), Error>`       | Rebuild the `list`/`list_page`/`count` pagination index from `ids`. Every id must already be a registered `Resource` (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md).                                  |
 | `add_moderator(moderator)`                      | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Grant the moderator role, authorizing `flag_dispute` and `unflag_dispute`. Errors `AdminNotSet` if no admin has been set yet. Emits `addmod`.                                                                                                                                                            |
 | `remove_moderator(moderator)`                   | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Revoke the moderator role. Emits `rmmod`.                                                                                                                                                                                                                                                                |
@@ -123,9 +170,9 @@ returns only the `items` body for existing callers.
 
 ### Roles
 
-Two roles sit alongside the per-resource `creator` and the pre-existing admin:
+Three roles sit alongside the per-resource `creator` and the pre-existing admin:
 
-- **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`) and repair the pagination index (`repair_index`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
+- **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`), repair the pagination index (`repair_index`) or tag index (`repair_tag_index`), and set the registry fee config (`set_fee_config`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
 - **verifier** — zero or more addresses granted by the admin. Can only call `set_verification_status`. Cannot touch price, metadata, listing, tags, ownership, or the admin/verifier role list itself.
 
 ### Error codes
@@ -242,13 +289,15 @@ separate config lookup. It always succeeds; there is no error case.
 
 ### Constants
 
-| Constant                   | Value                        | Description                                           |
-| -------------------------- | ---------------------------- | ----------------------------------------------------- |
-| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.      |
-| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.    |
-| `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
-| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
-| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
+| Constant                   | Value                        | Description                                                                                                                                  |
+| -------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.                                                                                             |
+| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.                                                                                           |
+| `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).                                                                                             |
+| `RESOURCE_SCHEMA_VERSION`  | `4`                          | Current `Resource` schema version (`dispute_flag` added in v4).                                                                              |
+| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.                                                                                                   |
+| `MAX_FEE_BPS`              | `5_000`                      | Maximum fee in basis points (50 %). Neither `platform_fee_bps` nor `royalty_bps` may exceed this individually, and their sum may not either. |
+| `FEE_BPS_DENOM`            | `10_000`                     | Basis-point denominator. `amount * fee_bps / FEE_BPS_DENOM` converts a fee to a USDC stroop amount.                                          |
 
 `price` is an `i128` in **USDC stroops** (7 decimal places).
 Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.

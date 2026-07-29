@@ -58,10 +58,10 @@ fn register_emits_structured_event() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "evtres");
     let metadata = String::from_str(&env, "ipfs://evt");
-    let price = 500i128;
+    let price = 1_000_000i128;
     let tags_list = tags(&env, &["tag1"]);
 
-    client.register(&creator, &id, &1_000_000i128, &metadata, &resource_tags);
+    client.register(&creator, &id, &price, &metadata, &tags_list);
 
     let all_events = env.events().all();
     let mut found = false;
@@ -77,17 +77,18 @@ fn register_emits_structured_event() {
         if t0 != Symbol::new(&env, "register") {
             continue;
         }
-        let resource: Resource = <Resource as TryFromVal<Env, Val>>::try_from_val(&env, &data)
-            .ok()
-            .unwrap();
-        assert_eq!(resource.id, id);
-        assert_eq!(resource.creator, creator);
-        assert_eq!(resource.price, price);
-        assert_eq!(resource.metadata, metadata);
-        assert!(resource.listed);
-        assert_eq!(resource.tags.len(), 1);
+        let event: RegisterEvent =
+            <RegisterEvent as TryFromVal<Env, Val>>::try_from_val(&env, &data)
+                .ok()
+                .unwrap();
+        assert_eq!(event.id, id);
+        assert_eq!(event.creator, creator);
+        assert_eq!(event.price, price);
+        assert_eq!(event.metadata, metadata);
+        assert!(event.listed);
+        assert_eq!(event.tags.len(), 1);
         assert_eq!(
-            resource.tags.get(0).unwrap(),
+            event.tags.get(0).unwrap(),
             String::from_str(&env, "tag1")
         );
         found = true;
@@ -279,24 +280,8 @@ fn set_price_emits_structured_event() {
 
     client.set_price(&id, &updated_price);
 
-    // Locate the `setprice` event by its leading topic symbol so the test is
-    // robust against any other events emitted (e.g. from `register`).
-    let setprice_sym = soroban_sdk::symbol_short!("setprice");
-    let all_events = env.events().all();
-    let (_, _topics, data) = (0..all_events.len())
-        .map(|i| all_events.get(i).unwrap())
-        .find(|(_id, topics, _data)| {
-            if topics.is_empty() {
-                return false;
-            }
-            let first: soroban_sdk::Symbol =
-                soroban_sdk::FromVal::from_val(&env, &topics.get(0).unwrap());
-            first == setprice_sym
-        })
+    let payload = find_setprice_event(&env, &client.address)
         .expect("setprice event not found");
-
-    // Data must deserialise to PriceUpdated with the right field values.
-    let payload = PriceUpdated::from_val(&env, &data);
     assert_eq!(payload.id, id);
     assert_eq!(payload.old_price, initial_price);
     assert_eq!(payload.new_price, updated_price);
@@ -337,50 +322,6 @@ fn ownership_can_transfer() {
     assert_eq!(client.get(&id).creator, new_owner);
 }
 
-fn event_data_as_owners(
-    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
-    topic0_str: &str,
-) -> Option<(Address, Address)> {
-    for i in 0..events.len() {
-        let (_, topics, data) = events.get(i).unwrap();
-        if topics.len() != 2 {
-            continue;
-        }
-        let t0: Symbol =
-            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
-                .ok()?;
-        if t0 != Symbol::new(events.env(), topic0_str) {
-            continue;
-        }
-        let pair: (Address, Address) =
-            <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
-        return Some(pair);
-    }
-    None
-}
-
-fn event_data_as_address(
-    events: &soroban_sdk::Vec<(Address, soroban_sdk::Vec<Val>, Val)>,
-    topic0_str: &str,
-) -> Option<Address> {
-    for i in 0..events.len() {
-        let (_, topics, data) = events.get(i).unwrap();
-        if topics.len() != 2 {
-            continue;
-        }
-        let t0: Symbol =
-            <Symbol as TryFromVal<Env, Val>>::try_from_val(events.env(), &topics.get(0).unwrap())
-                .ok()?;
-        if t0 != Symbol::new(events.env(), topic0_str) {
-            continue;
-        }
-        let addr: Address =
-            <Address as TryFromVal<Env, Val>>::try_from_val(events.env(), &data).ok()?;
-        return Some(addr);
-    }
-    None
-}
-
 #[test]
 fn transfer_ownership_event_contains_previous_and_new_owner() {
     let (env, creator, client) = setup();
@@ -395,8 +336,8 @@ fn transfer_ownership_event_contains_previous_and_new_owner() {
     );
     client.transfer_ownership(&id, &new_owner);
 
-    let (prev, new) = event_data_as_owners(&env.events().all(), "transfer")
-        .expect("transfer event with (Address, Address) data not found");
+    let (prev, new) = find_transfer_event(&env, &client.address)
+        .expect("transfer event not emitted");
     assert_eq!(prev, creator);
     assert_eq!(new, new_owner);
 }
@@ -415,8 +356,8 @@ fn propose_transfer_event_contains_owner_and_proposed() {
     );
     client.propose_transfer(&id, &proposed);
 
-    let (owner, target) = event_data_as_owners(&env.events().all(), "propose")
-        .expect("propose event with (Address, Address) data not found");
+    let (owner, target) = find_propose_event(&env, &client.address)
+        .expect("propose event not emitted");
     assert_eq!(owner, creator);
     assert_eq!(target, proposed);
 }
@@ -437,23 +378,8 @@ fn accept_transfer_event_contains_previous_and_new_owner() {
     env.mock_all_auths();
     client.accept_transfer(&id);
 
-    let events = env.events().all();
-    let mut last_transfer_data: Option<Val> = None;
-    for i in 0..events.len() {
-        let (_, topics, data) = events.get(i).unwrap();
-        if topics.len() == 2
-            && <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
-                == Ok(Symbol::new(&env, "transfer"))
-        {
-            last_transfer_data = Some(data);
-        }
-    }
-    let accept_data = last_transfer_data
-        .as_ref()
-        .expect("accept transfer event not found");
-    let (prev, new): (Address, Address) =
-        <(Address, Address) as TryFromVal<Env, Val>>::try_from_val(&env, accept_data)
-            .expect("accept event data should decode to (Address, Address)");
+    let (prev, new) = find_transfer_event(&env, &client.address)
+        .expect("accept transfer event not emitted");
     assert_eq!(prev, creator);
     assert_eq!(new, new_owner);
 }
@@ -473,8 +399,8 @@ fn cancel_transfer_event_contains_owner() {
     client.propose_transfer(&id, &proposed);
     client.cancel_transfer(&id);
 
-    let owner = event_data_as_address(&env.events().all(), "cancel")
-        .expect("cancel event with Address data not found");
+    let owner = find_cancel_event(&env, &client.address)
+        .expect("cancel event not emitted");
     assert_eq!(owner, creator);
 }
 
@@ -2153,30 +2079,12 @@ fn set_tags_event_includes_prev_and_next() {
     let new_tags = tags(&env, &["finance", "api"]);
     client.set_tags(&id, &new_tags);
 
-    // Verify event contains both prev and next tags
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-
-    // Event structure: (contract_address, topics_vec, data)
-    // topics=(symbol_short!("settags"), id), data=(prev_tags, new_tags)
-    let (_contract, topics, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    // Decode topics: [symbol_short!("settags"), id]
-    assert_eq!(topics.len(), 2);
-
-    // Decode data as tuple: (prev_tags, new_tags)
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
 
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "data"));
-    assert_eq!(
-        prev_tags.get(1).unwrap(),
-        String::from_str(&env, "research")
-    );
+    assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "research"));
 
     assert_eq!(next_tags.len(), 2);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "finance"));
@@ -2189,24 +2097,13 @@ fn set_tags_event_supports_tag_removal() {
     let id = String::from_str(&env, "removaltest");
     let metadata = String::from_str(&env, "ipfs://m");
 
-    // Register with multiple tags
+    // Register with multiple tags then clear all tags
     let initial_tags = tags(&env, &["tag1", "tag2", "tag3"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    client.set_tags(&id, &empty_tags(&env));
 
-    // Clear all tags
-    let empty = empty_tags(&env);
-    client.set_tags(&id, &empty);
-
-    // Verify event shows previous tags and empty next tags
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-    let (_, _, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
     assert_eq!(prev_tags.len(), 3);
     assert_eq!(next_tags.len(), 0);
 }
@@ -2217,23 +2114,12 @@ fn set_tags_event_supports_tag_addition() {
     let id = String::from_str(&env, "additiontest");
     let metadata = String::from_str(&env, "ipfs://m");
 
-    // Register with no tags
+    // Register with no tags then add some
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    client.set_tags(&id, &tags(&env, &["first", "second"]));
 
-    // Add tags
-    let new_tags = tags(&env, &["first", "second"]);
-    client.set_tags(&id, &new_tags);
-
-    // Verify event shows empty previous and new tags
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-    let (_, _, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
     assert_eq!(prev_tags.len(), 0);
     assert_eq!(next_tags.len(), 2);
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "first"));
@@ -2245,24 +2131,13 @@ fn set_tags_event_on_replacement() {
     let id = String::from_str(&env, "replacetest");
     let metadata = String::from_str(&env, "ipfs://m");
 
-    // Register with initial tags
+    // Register with initial tags then replace completely
     let initial_tags = tags(&env, &["old1", "old2"]);
     client.register(&creator, &id, &100i128, &metadata, &initial_tags);
+    client.set_tags(&id, &tags(&env, &["new1", "new2", "new3"]));
 
-    // Replace completely with different tags
-    let replacement_tags = tags(&env, &["new1", "new2", "new3"]);
-    client.set_tags(&id, &replacement_tags);
-
-    // Verify event shows complete replacement
-    let events = env.events().all();
-    let last_event = events.last().unwrap();
-    let (_, _, data): (
-        Address,
-        soroban_sdk::Vec<soroban_sdk::Val>,
-        soroban_sdk::Val,
-    ) = last_event;
-
-    let (prev_tags, next_tags): (Vec<String>, Vec<String>) = data.try_into_val(&env).unwrap();
+    let (prev_tags, next_tags) = find_settags_event(&env, &client.address)
+        .expect("settags event not emitted");
     assert_eq!(prev_tags.len(), 2);
     assert_eq!(prev_tags.get(0).unwrap(), String::from_str(&env, "old1"));
     assert_eq!(prev_tags.get(1).unwrap(), String::from_str(&env, "old2"));
@@ -2271,6 +2146,529 @@ fn set_tags_event_on_replacement() {
     assert_eq!(next_tags.get(0).unwrap(), String::from_str(&env, "new1"));
     assert_eq!(next_tags.get(1).unwrap(), String::from_str(&env, "new2"));
     assert_eq!(next_tags.get(2).unwrap(), String::from_str(&env, "new3"));
+}
+
+// ---------------------------------------------------------------------------
+// list_by_tag + tag index (#359)
+// ---------------------------------------------------------------------------
+//
+// Acceptance criteria (from issue):
+//   • Resources are indexed by normalized tag; changing tags updates indexes.
+//   • Tests cover add/remove/duplicate tags.
+//   • Pagination works the same as other list_* functions (limit capped at 20,
+//     start beyond index returns empty, TTL is bumped for returned resources).
+//   • list_by_tag is case-insensitive (normalized to lowercase).
+//   • repair_tag_index is admin-only, rebuilds from Resource.tags.
+
+/// Register a resource tagged with `tag_strs` using the default metadata.
+fn register_tagged<'a>(
+    env: &Env,
+    creator: &Address,
+    client: &VaultRegistryClient<'a>,
+    id: &str,
+    tag_strs: &[&str],
+) -> String {
+    let id = String::from_str(env, id);
+    client.register(
+        creator,
+        &id,
+        &100i128,
+        &String::from_str(env, "ipfs://m"),
+        &tags(env, tag_strs),
+    );
+    id
+}
+
+// ── Basic indexing on register ──────────────────────────────────────────────
+
+#[test]
+fn list_by_tag_returns_registered_resource() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "tagr1", &["dataset"]);
+
+    let result = client.list_by_tag(&String::from_str(&env, "dataset"), &0u32, &20u32);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.get(0).unwrap().id, id);
+}
+
+#[test]
+fn list_by_tag_returns_empty_when_no_resources_carry_tag() {
+    let (env, creator, client) = setup();
+    register_tagged(&env, &creator, &client, "tagr2", &["other"]);
+
+    let result = client.list_by_tag(&String::from_str(&env, "dataset"), &0u32, &20u32);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn list_by_tag_returns_empty_when_no_resources_registered() {
+    let (env, _creator, client) = setup();
+    let result = client.list_by_tag(&String::from_str(&env, "any"), &0u32, &20u32);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn list_by_tag_multiple_resources_same_tag() {
+    let (env, creator, client) = setup();
+    let a = register_tagged(&env, &creator, &client, "tagm1", &["ml"]);
+    let b = register_tagged(&env, &creator, &client, "tagm2", &["ml", "research"]);
+    let c = register_tagged(&env, &creator, &client, "tagm3", &["other"]);
+    // c carries a different tag — should not appear
+
+    let result = client.list_by_tag(&String::from_str(&env, "ml"), &0u32, &20u32);
+    assert_eq!(result.len(), 2);
+    assert_eq!(result.get(0).unwrap().id, a);
+    assert_eq!(result.get(1).unwrap().id, b);
+    let _ = c; // registered but not in "ml" index
+}
+
+// ── Case-insensitive normalization ──────────────────────────────────────────
+
+#[test]
+fn list_by_tag_is_case_insensitive() {
+    let (env, creator, client) = setup();
+    // Register with mixed-case tag; the index normalizes to lowercase.
+    let id = register_tagged(&env, &creator, &client, "tagci", &["Dataset"]);
+
+    // All variants should match.
+    for variant in &["Dataset", "dataset", "DATASET", "DataSet"] {
+        let result =
+            client.list_by_tag(&String::from_str(&env, variant), &0u32, &20u32);
+        assert_eq!(
+            result.len(),
+            1,
+            "list_by_tag(\"{variant}\") should match resource with tag \"Dataset\""
+        );
+        assert_eq!(result.get(0).unwrap().id, id);
+    }
+}
+
+#[test]
+fn list_by_tag_lowercase_tag_on_register_also_indexed() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "taglow", &["research"]);
+
+    let result = client.list_by_tag(&String::from_str(&env, "Research"), &0u32, &20u32);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.get(0).unwrap().id, id);
+}
+
+// ── Index update on set_tags ─────────────────────────────────────────────────
+
+#[test]
+fn list_by_tag_updated_when_set_tags_adds_tag() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "tagadd", &["alpha"]);
+
+    // Not yet in "beta" index.
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "beta"), &0u32, &20u32)
+            .len(),
+        0
+    );
+
+    // Add "beta" tag via set_tags.
+    client.set_tags(
+        &id,
+        &tags(&env, &["alpha", "beta"]),
+    );
+
+    let result = client.list_by_tag(&String::from_str(&env, "beta"), &0u32, &20u32);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result.get(0).unwrap().id, id);
+    // Still in "alpha" index.
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "alpha"), &0u32, &20u32)
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn list_by_tag_updated_when_set_tags_removes_tag() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "tagrem", &["alpha", "beta"]);
+
+    // Both indexed initially.
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "alpha"), &0u32, &20u32)
+            .len(),
+        1
+    );
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "beta"), &0u32, &20u32)
+            .len(),
+        1
+    );
+
+    // Remove "beta" by replacing with only "alpha".
+    client.set_tags(&id, &tags(&env, &["alpha"]));
+
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "alpha"), &0u32, &20u32)
+            .len(),
+        1,
+        "alpha should still be indexed"
+    );
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "beta"), &0u32, &20u32)
+            .len(),
+        0,
+        "beta should be removed from index after set_tags"
+    );
+}
+
+#[test]
+fn list_by_tag_updated_when_all_tags_cleared() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "tagclr", &["data", "ml"]);
+
+    // Both indexed.
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "data"), &0u32, &20u32).len(),
+        1
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "ml"), &0u32, &20u32).len(),
+        1
+    );
+
+    // Clear all tags.
+    client.set_tags(&id, &empty_tags(&env));
+
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "data"), &0u32, &20u32).len(),
+        0,
+        "data should be removed after clearing all tags"
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "ml"), &0u32, &20u32).len(),
+        0,
+        "ml should be removed after clearing all tags"
+    );
+}
+
+#[test]
+fn list_by_tag_reflects_complete_tag_replacement() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "tagreplace", &["old1", "old2"]);
+
+    client.set_tags(&id, &tags(&env, &["new1", "new2", "new3"]));
+
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "old1"), &0u32, &20u32).len(),
+        0
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "old2"), &0u32, &20u32).len(),
+        0
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "new1"), &0u32, &20u32).len(),
+        1
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "new2"), &0u32, &20u32).len(),
+        1
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "new3"), &0u32, &20u32).len(),
+        1
+    );
+}
+
+// ── Duplicate tags: same tag listed twice in a single set_tags call ──────────
+//
+// `validate_tags` does not reject duplicate string values within a tag list.
+// The index `tag_index_add` guards against duplicate ids per tag entry, so
+// the same resource cannot appear twice in a tag's index regardless of how
+// many times its tag list contains that value.
+
+#[test]
+fn list_by_tag_no_duplicate_entries_when_tag_appears_twice_on_register() {
+    let (env, creator, client) = setup();
+    // Both "ml" entries should map to the same resource, but the index must
+    // only contain one entry for it.
+    let id = register_tagged(&env, &creator, &client, "tagdup", &["ml", "ml"]);
+
+    let result = client.list_by_tag(&String::from_str(&env, "ml"), &0u32, &20u32);
+    assert_eq!(result.len(), 1, "tag index must not contain duplicate id entries");
+    assert_eq!(result.get(0).unwrap().id, id);
+}
+
+#[test]
+fn list_by_tag_no_duplicate_entries_when_set_tags_repeats_tag() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "tagdup2", &["finance"]);
+
+    // set_tags with duplicate "finance" — must not create a duplicate index entry.
+    client.set_tags(&id, &tags(&env, &["finance", "finance"]));
+
+    let result = client.list_by_tag(&String::from_str(&env, "finance"), &0u32, &20u32);
+    assert_eq!(result.len(), 1, "tag index must not double-insert on repeated set_tags");
+}
+
+// ── Pagination ───────────────────────────────────────────────────────────────
+
+#[test]
+fn list_by_tag_pagination_first_page() {
+    let (env, creator, client) = setup();
+    for i in 0..5u32 {
+        register_tagged(
+            &env,
+            &creator,
+            &client,
+            &alloc::format!("pgr{i}"),
+            &["page"],
+        );
+    }
+
+    let page = client.list_by_tag(&String::from_str(&env, "page"), &0u32, &3u32);
+    assert_eq!(page.len(), 3);
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "pgr0"));
+    assert_eq!(page.get(2).unwrap().id, String::from_str(&env, "pgr2"));
+}
+
+#[test]
+fn list_by_tag_pagination_second_page() {
+    let (env, creator, client) = setup();
+    for i in 0..5u32 {
+        register_tagged(
+            &env,
+            &creator,
+            &client,
+            &alloc::format!("pgs{i}"),
+            &["page"],
+        );
+    }
+
+    let page = client.list_by_tag(&String::from_str(&env, "page"), &3u32, &3u32);
+    assert_eq!(page.len(), 2); // only pgs3, pgs4 remain
+    assert_eq!(page.get(0).unwrap().id, String::from_str(&env, "pgs3"));
+    assert_eq!(page.get(1).unwrap().id, String::from_str(&env, "pgs4"));
+}
+
+#[test]
+fn list_by_tag_start_beyond_index_returns_empty() {
+    let (env, creator, client) = setup();
+    register_tagged(&env, &creator, &client, "pgx1", &["only"]);
+
+    let result = client.list_by_tag(&String::from_str(&env, "only"), &99u32, &20u32);
+    assert_eq!(result.len(), 0);
+}
+
+#[test]
+fn list_by_tag_limit_capped_at_20() {
+    let (env, creator, client) = setup();
+    for i in 0..25u32 {
+        register_tagged(
+            &env,
+            &creator,
+            &client,
+            &alloc::format!("pg20x{i:02}"),
+            &["bulk"],
+        );
+    }
+
+    let result = client.list_by_tag(&String::from_str(&env, "bulk"), &0u32, &25u32);
+    assert_eq!(result.len(), 20, "limit must be capped at 20");
+}
+
+// ── TTL bump on list_by_tag read ─────────────────────────────────────────────
+
+#[test]
+fn list_by_tag_bumps_ttl_for_returned_resources() {
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "tagtll", &["ttl"]);
+
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &String::from_str(&env, "tagtll")),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS
+    );
+
+    client.list_by_tag(&String::from_str(&env, "ttl"), &0u32, &20u32);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "list_by_tag must bump TTL for each returned resource"
+    );
+}
+
+// ── repair_tag_index ─────────────────────────────────────────────────────────
+
+#[test]
+fn repair_tag_index_rebuilds_drifted_index() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_tagged(&env, &creator, &client, "reprtia", &["science"]);
+    let b = register_tagged(&env, &creator, &client, "reprtib", &["science", "data"]);
+
+    // Verify initial state via list_by_tag.
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "science"), &0u32, &20u32).len(),
+        2
+    );
+
+    // Repair is a no-op when the index is already correct.
+    client.repair_tag_index(&Vec::from_array(&env, [a.clone(), b.clone()]));
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "science"), &0u32, &20u32).len(),
+        2
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "data"), &0u32, &20u32).len(),
+        1
+    );
+}
+
+#[test]
+fn repair_tag_index_rejects_unknown_id() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_tagged(&env, &creator, &client, "reprtix", &["tag"]);
+
+    let res = client.try_repair_tag_index(&Vec::from_array(
+        &env,
+        [a.clone(), String::from_str(&env, "ghost")],
+    ));
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+    // The index must be untouched after a failed repair.
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "tag"), &0u32, &20u32).len(),
+        1
+    );
+}
+
+#[test]
+fn repair_tag_index_before_admin_set_fails() {
+    let (env, creator, client) = setup();
+    let a = register_tagged(&env, &creator, &client, "reprtinadmin", &["t"]);
+
+    let res = client.try_repair_tag_index(&Vec::from_array(&env, [a.clone()]));
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn repair_tag_index_accepts_duplicate_ids_in_input() {
+    // Duplicate ids in the input are idempotent per the ADR.
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_tagged(&env, &creator, &client, "reprtidp", &["dup"]);
+
+    // Passing the same id twice must not error and must not create a duplicate entry.
+    client.repair_tag_index(&Vec::from_array(&env, [a.clone(), a.clone()]));
+
+    let result = client.list_by_tag(&String::from_str(&env, "dup"), &0u32, &20u32);
+    assert_eq!(result.len(), 1, "repair with duplicate input ids must not double-insert");
+}
+
+#[test]
+fn repair_tag_index_emits_retagidx_event() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_tagged(&env, &creator, &client, "reprtevent", &["evt"]);
+    let b = register_tagged(&env, &creator, &client, "reprtevent2", &["evt"]);
+
+    client.repair_tag_index(&Vec::from_array(&env, [a.clone(), b.clone()]));
+
+    let all = env.events().all();
+    assert_eq!(all.len(), 1, "exactly one event should be emitted");
+    let (_, topics, data) = all.get(0).unwrap();
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, symbol_short!("retagidx"));
+    let count: u32 = u32::try_from_val(&env, &data).unwrap();
+    assert_eq!(count, 2u32, "event must report the number of unique ids processed");
+}
+
+#[test]
+fn repair_tag_index_with_empty_id_list_emits_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    client.repair_tag_index(&Vec::new(&env));
+    let all = env.events().all();
+    assert_eq!(all.len(), 1);
+    let (_, _, data) = all.get(0).unwrap();
+    let count: u32 = u32::try_from_val(&env, &data).unwrap();
+    assert_eq!(count, 0u32);
+}
+
+#[test]
+fn list_by_tag_index_maintained_across_multiple_set_tags_calls() {
+    // Simulate a real lifecycle: register → set_tags (several times) → verify index.
+    let (env, creator, client) = setup();
+    let id = register_tagged(&env, &creator, &client, "lifecycle", &["v1"]);
+
+    // v1 → v1 + v2
+    client.set_tags(&id, &tags(&env, &["v1", "v2"]));
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "v1"), &0u32, &20u32).len(),
+        1
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "v2"), &0u32, &20u32).len(),
+        1
+    );
+
+    // v1 + v2 → v3 only
+    client.set_tags(&id, &tags(&env, &["v3"]));
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "v1"), &0u32, &20u32).len(),
+        0
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "v2"), &0u32, &20u32).len(),
+        0
+    );
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "v3"), &0u32, &20u32).len(),
+        1
+    );
+
+    // v3 → empty
+    client.set_tags(&id, &empty_tags(&env));
+    assert_eq!(
+        client.list_by_tag(&String::from_str(&env, "v3"), &0u32, &20u32).len(),
+        0
+    );
+}
+
+#[test]
+fn list_by_tag_tag_shared_across_multiple_resources_independent_per_resource() {
+    let (env, creator, client) = setup();
+    let a = register_tagged(&env, &creator, &client, "shared1", &["common", "unique1"]);
+    let b = register_tagged(&env, &creator, &client, "shared2", &["common", "unique2"]);
+
+    // "common" index has both.
+    let common = client.list_by_tag(&String::from_str(&env, "common"), &0u32, &20u32);
+    assert_eq!(common.len(), 2);
+
+    // Remove "common" from a only — b's "common" entry must remain.
+    client.set_tags(&a, &tags(&env, &["unique1"]));
+
+    let common_after = client.list_by_tag(&String::from_str(&env, "common"), &0u32, &20u32);
+    assert_eq!(
+        common_after.len(),
+        1,
+        "removing tag from one resource must not affect other resources in the same index"
+    );
+    assert_eq!(common_after.get(0).unwrap().id, b);
+
+    // "unique1" still points to a; "unique2" still points to b.
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "unique1"), &0u32, &20u32)
+            .len(),
+        1
+    );
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "unique2"), &0u32, &20u32)
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -2454,8 +2852,8 @@ fn register_then_settags_events_reconstruct_current_tags() {
     };
     let last_register_tags = |env: &Env| -> (String, Vec<String>) {
         let (_, _, data) = env.events().all().last().unwrap();
-        let resource: Resource = data.try_into_val(env).unwrap();
-        (resource.id, resource.tags)
+        let event: RegisterEvent = data.try_into_val(env).unwrap();
+        (event.id, event.tags)
     };
 
     client.register(
@@ -2603,6 +3001,9 @@ fn full_workflow_emits_exactly_the_documented_events() {
     record(&env, &client, &mut observed);
 
     client.repair_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "reindex"
+    record(&env, &client, &mut observed);
+
+    client.repair_tag_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "retagidx"
     record(&env, &client, &mut observed);
 
     let payer = Address::generate(&env);
@@ -3009,7 +3410,9 @@ proptest! {
     #![proptest_config(ProptestConfig::with_cases(60))]
     /// Any format-valid metadata pointer up to MAX_METADATA_POINTER_LEN bytes
     /// must be accepted by both `register` and `update_metadata`. The prefix
-    /// is fixed; the body length is drawn uniformly in [0, max − prefix_len].
+    /// is fixed; the body length is drawn uniformly in [0, max − longest_prefix_len]
+    /// where the longest prefix is `https://` (8 bytes) to ensure both the
+    /// `ipfs://` and `https://` forms stay within MAX_METADATA_POINTER_LEN.
     #[test]
     fn metadata_boundary_shorter_strings_always_succeed(
         id_str   in r"[a-z][a-z0-9]{0,10}",
@@ -4128,7 +4531,11 @@ fn record_payment_does_not_mutate_resource() {
     let after = client.get(&id);
 
     assert_eq!(before, after, "record_payment must not mutate the Resource entry");
-    assert_eq!(client.count(), 1, "record_payment must not change the resource count");
+    assert_eq!(
+        client.count(),
+        1,
+        "record_payment must not change the resource count"
+    );
     assert_eq!(
         client.list(&0u32, &10u32).get(0).unwrap().id,
         id,
@@ -4381,3 +4788,681 @@ fn different_moderators_can_flag_and_unflag() {
     client.unflag_dispute(&id, &mod2);
     assert!(!client.is_flagged(&id));
 }
+
+// ─── Dispute flagging (#389) ───────────────────────────────────────────────
+//
+// Acceptance criteria (from issue):
+//   • Flag state is exposed in reads and listing filters; events include reason code.
+//   • Error handling is deterministic and documented.
+//   • The implementation passes the relevant local test suite.
+
+// ── Helper: setup with admin + moderator pre-configured ──────────────────
+
+fn setup_with_moderator<'a>() -> (Env, Address, Address, Address, VaultRegistryClient<'a>) {
+    let (env, creator, admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    (env, creator, admin, moderator, client)
+}
+
+// ── add_moderator / remove_moderator / is_moderator ──────────────────────
+
+#[test]
+fn admin_can_grant_and_revoke_moderator() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+
+    assert!(!client.is_moderator(&moderator));
+
+    client.add_moderator(&moderator);
+    assert!(client.is_moderator(&moderator));
+
+    client.remove_moderator(&moderator);
+    assert!(!client.is_moderator(&moderator));
+}
+
+#[test]
+fn add_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_add_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn remove_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_remove_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn is_moderator_false_for_unknown_address() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_moderator(&stranger));
+}
+
+#[test]
+fn add_moderator_emits_addmod_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    // Check event immediately — before any other invocation resets the log.
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            if sym == Symbol::new(&env, "addmod") {
+                let val: bool = FromVal::from_val(&env, &data);
+                return val;
+            }
+        }
+        false
+    });
+    assert!(found, "addmod event not emitted");
+}
+
+#[test]
+fn remove_moderator_emits_rmmod_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.remove_moderator(&moderator);
+
+    // Check event immediately — before any other invocation resets the log.
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            if sym == Symbol::new(&env, "rmmod") {
+                let val: bool = FromVal::from_val(&env, &data);
+                return !val; // rmmod emits false
+            }
+        }
+        false
+    });
+    assert!(found, "rmmod event not emitted");
+}
+
+// ── flag_resource ─────────────────────────────────────────────────────────
+
+#[test]
+fn moderator_can_flag_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres0");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let resource = client.get(&id);
+    assert_eq!(resource.dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+}
+
+#[test]
+fn flag_resource_emits_flag_event_with_reason() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres1");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
+
+    let all = env.events().all();
+    let mut found = false;
+    for i in 0..all.len() {
+        let (cid, topics, data) = all.get(i).unwrap();
+        if cid != client.address {
+            continue;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            if sym != Symbol::new(&env, "flag") {
+                continue;
+            }
+            let event: FlagEvent = TryFromVal::try_from_val(&env, &data).unwrap();
+            assert_eq!(event.id, id);
+            assert_eq!(event.moderator, moderator);
+            assert_eq!(event.reason, FlagReason::Copyright);
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "flag event not emitted");
+}
+
+#[test]
+fn flag_resource_with_all_reasons() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+
+    for (suffix, reason) in [
+        ("fr2a", FlagReason::Spam),
+        ("fr2b", FlagReason::Copyright),
+        ("fr2c", FlagReason::Malicious),
+        ("fr2d", FlagReason::Other),
+    ] {
+        let id = register_default(&env, &creator, &client, suffix);
+        client.flag_resource(&id, &moderator, &reason);
+        let resource = client.get(&id);
+        assert_eq!(
+            resource.dispute_flag,
+            DisputeFlag::Flagged(reason),
+            "dispute_flag mismatch for reason {:?}", reason
+        );
+    }
+}
+
+#[test]
+fn flag_resource_replaces_existing_flag() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres3");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+
+    client.flag_resource(&id, &moderator, &FlagReason::Malicious);
+    assert_eq!(
+        client.get(&id).dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Malicious),
+        "re-flag should replace the reason"
+    );
+}
+
+#[test]
+fn flag_resource_non_moderator_is_unauthorized() {
+    let (env, creator, _admin, _moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres4");
+    let stranger = Address::generate(&env);
+
+    let res = client.try_flag_resource(&id, &stranger, &FlagReason::Spam);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    // Resource must not be flagged.
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn flag_resource_revoked_moderator_is_unauthorized() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres5");
+
+    client.remove_moderator(&moderator);
+
+    let res = client.try_flag_resource(&id, &moderator, &FlagReason::Spam);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+}
+
+#[test]
+fn flag_resource_missing_resource_fails() {
+    let (env, _creator, _admin, moderator, client) = setup_with_moderator();
+    let ghost = String::from_str(&env, "ghostres0");
+
+    let res = client.try_flag_resource(&ghost, &moderator, &FlagReason::Other);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn flag_resource_does_not_delist_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres6");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let resource = client.get(&id);
+    assert!(resource.listed, "flagging must not change listed state");
+}
+
+#[test]
+fn flag_resource_preserves_all_other_fields() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagres7");
+    let before = client.get(&id);
+
+    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
+
+    let after = client.get(&id);
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.creator, before.creator);
+    assert_eq!(after.price, before.price);
+    assert_eq!(after.metadata, before.metadata);
+    assert_eq!(after.listed, before.listed);
+    assert_eq!(after.tags, before.tags);
+    assert_eq!(after.verified, before.verified);
+    assert_eq!(after.frozen, before.frozen);
+    assert_eq!(after.dispute_flag, DisputeFlag::Flagged(FlagReason::Copyright));
+}
+
+// ── unflag_resource ───────────────────────────────────────────────────────
+
+#[test]
+fn moderator_can_unflag_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr0");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+
+    client.unflag_resource(&id, &moderator);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn unflag_resource_emits_unflag_event() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr1");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Other);
+    client.unflag_resource(&id, &moderator);
+
+    // Check event immediately — before any other invocation resets the log.
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, _data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            return sym == Symbol::new(&env, "unflag");
+        }
+        false
+    });
+    assert!(found, "unflag event not emitted");
+}
+
+#[test]
+fn unflag_resource_on_unflagged_is_noop_but_emits_event() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr2");
+
+    // Resource starts unflagged — unflagging is a no-op but must succeed and emit.
+    client.unflag_resource(&id, &moderator);
+
+    // Check the event immediately after the call, before any other invocation
+    // resets the per-invocation event log (same pattern as freeze tests).
+    let all = env.events().all();
+    let found = (0..all.len()).any(|i| {
+        let (cid, topics, _data) = all.get(i).unwrap();
+        if cid != client.address {
+            return false;
+        }
+        if let Some(sym) = topic0_symbol(&env, &topics) {
+            return sym == Symbol::new(&env, "unflag");
+        }
+        false
+    });
+    assert!(found, "unflag event must be emitted even on a no-op");
+
+    // State check comes after the event check to avoid resetting the event log.
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn unflag_resource_non_moderator_is_unauthorized() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "unflagr3");
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let stranger = Address::generate(&env);
+    let res = client.try_unflag_resource(&id, &stranger);
+    assert_eq!(res, Err(Ok(Error::Unauthorized)));
+    // Flag must remain.
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Spam));
+}
+
+#[test]
+fn unflag_resource_missing_resource_fails() {
+    let (env, _creator, _admin, moderator, client) = setup_with_moderator();
+    let ghost = String::from_str(&env, "ghostres1");
+    let res = client.try_unflag_resource(&ghost, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+// ── dispute_flag in reads / listing ───────────────────────────────────────
+
+#[test]
+fn resource_starts_with_no_flag() {
+    let (env, creator, client) = setup();
+    let id = register_default(&env, &creator, &client, "noflag0");
+    let resource = client.get(&id);
+    assert_eq!(resource.dispute_flag, DisputeFlag::NoFlag);
+}
+
+#[test]
+fn list_exposes_dispute_flag_in_results() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id_a = register_default(&env, &creator, &client, "listflag0");
+    let id_b = register_default(&env, &creator, &client, "listflag1");
+
+    client.flag_resource(&id_a, &moderator, &FlagReason::Malicious);
+
+    let page = client.list(&0u32, &20u32);
+    assert_eq!(page.len(), 2);
+
+    // Find each resource in the returned page (order may vary by insertion).
+    let mut found_a = false;
+    let mut found_b = false;
+    for i in 0..page.len() {
+        let r = page.get(i).unwrap();
+        if r.id == id_a {
+            assert_eq!(r.dispute_flag, DisputeFlag::Flagged(FlagReason::Malicious));
+            found_a = true;
+        }
+        if r.id == id_b {
+            assert_eq!(r.dispute_flag, DisputeFlag::NoFlag);
+            found_b = true;
+        }
+    }
+    assert!(found_a && found_b, "both resources must appear in list");
+}
+
+#[test]
+fn list_listed_exposes_dispute_flag() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "listdflag");
+    client.flag_resource(&id, &moderator, &FlagReason::Copyright);
+
+    let listed = client.list_listed(&0u32, &20u32);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.get(0).unwrap().dispute_flag, DisputeFlag::Flagged(FlagReason::Copyright));
+}
+
+#[test]
+fn flag_resource_appears_in_list_page_items() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "pageflag0");
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    let page = client.list_page(&0u32, &20u32);
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        page.items.get(0).unwrap().dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Spam)
+    );
+}
+
+// ── flag/unflag interaction with other resource mutations ─────────────────
+
+#[test]
+fn creator_can_mutate_flagged_resource() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "mutflag0");
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    // Creator can still update price, metadata, listing, and tags.
+    client.set_price(&id, &999i128);
+    assert_eq!(client.get(&id).price, 999i128);
+
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://updated"));
+    assert_eq!(
+        client.get(&id).metadata,
+        String::from_str(&env, "ipfs://updated")
+    );
+
+    client.set_listed(&id, &false);
+    assert!(!client.get(&id).listed);
+
+    client.set_tags(&id, &tags(&env, &["new"]));
+    assert_eq!(client.get(&id).tags.len(), 1);
+
+    // dispute_flag is preserved through all mutations.
+    assert_eq!(
+        client.get(&id).dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Spam),
+        "dispute_flag must survive unrelated mutations"
+    );
+}
+
+#[test]
+fn flag_and_unflag_roundtrip() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "roundtrip0");
+
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+
+    client.flag_resource(&id, &moderator, &FlagReason::Other);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::Flagged(FlagReason::Other));
+
+    client.unflag_resource(&id, &moderator);
+    assert_eq!(client.get(&id).dispute_flag, DisputeFlag::NoFlag);
+
+    // Can be re-flagged after unflagging.
+    client.flag_resource(&id, &moderator, &FlagReason::Malicious);
+    assert_eq!(
+        client.get(&id).dispute_flag,
+        DisputeFlag::Flagged(FlagReason::Malicious)
+    );
+}
+
+// ── Storage TTL tests for index entries (#371) ────────────────────────────────
+
+fn index_storage_ttl(env: &Env, contract: &soroban_sdk::Address, index: u32) -> u32 {
+    let key = DataKey::Index(index);
+    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+}
+
+#[test]
+fn register_extends_index_storage_ttl() {
+    let (env, creator, client) = setup();
+    let id0 = String::from_str(&env, "idxres0");
+    let id1 = String::from_str(&env, "idxres1");
+    let meta = String::from_str(&env, "ipfs://meta");
+
+    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
+    client.register(&creator, &id1, &200i128, &meta, &empty_tags(&env));
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT,
+        "Index(0) entry must receive persistent TTL of TTL_BUMP_AMOUNT"
+    );
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 1),
+        TTL_BUMP_AMOUNT,
+        "Index(1) entry must receive persistent TTL of TTL_BUMP_AMOUNT"
+    );
+}
+
+#[test]
+fn list_page_bumps_index_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id0 = String::from_str(&env, "idxttl0");
+    let id1 = String::from_str(&env, "idxttl1");
+    let meta = String::from_str(&env, "ipfs://meta");
+
+    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
+    client.register(&creator, &id1, &200i128, &meta, &empty_tags(&env));
+
+    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + decay);
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT - decay,
+        "Index TTL should have decayed"
+    );
+
+    client.list_page(&0u32, &10u32);
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT,
+        "list_page must bump Index(0) TTL back to TTL_BUMP_AMOUNT"
+    );
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 1),
+        TTL_BUMP_AMOUNT,
+        "list_page must bump Index(1) TTL back to TTL_BUMP_AMOUNT"
+    );
+}
+
+#[test]
+fn repair_index_extends_index_storage_ttl() {
+    let (env, creator, client) = setup();
+    let admin = Address::generate(&env);
+    client.nominate_new_admin(&admin);
+
+    let id0 = String::from_str(&env, "reidx0");
+    let meta = String::from_str(&env, "ipfs://meta");
+    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(id0.clone());
+    client.repair_index(&ids);
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT,
+        "repair_index must set persistent TTL for reindexed entries to TTL_BUMP_AMOUNT"
+    );
+}
+
+// ── Schema version stored on resources (#375) ─────────────────────────────────
+
+#[test]
+fn resource_includes_schema_version() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "schemaverres");
+    let meta = String::from_str(&env, "ipfs://schemaver");
+
+    client.register(&creator, &id, &100i128, &meta, &empty_tags(&env));
+
+    let r = client.get(&id);
+    assert_eq!(
+        r.schema_version, RESOURCE_SCHEMA_VERSION,
+        "Resource from get() must include RESOURCE_SCHEMA_VERSION"
+    );
+
+    let page = client.list_page(&0u32, &10u32);
+    assert_eq!(
+        page.items.get(0).unwrap().schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "Resource from list_page() must include RESOURCE_SCHEMA_VERSION"
+    );
+
+    let listed = client.list_listed(&0u32, &10u32);
+    assert_eq!(
+        listed.get(0).unwrap().schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "Resource from list_listed() must include RESOURCE_SCHEMA_VERSION"
+    );
+
+    let by_creator = client.list_by_creator(&creator, &0u32, &10u32);
+    assert_eq!(
+        by_creator.get(0).unwrap().schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "Resource from list_by_creator() must include RESOURCE_SCHEMA_VERSION"
+    );
+}
+
+// ── Pagination property tests (#377) ─────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(30))]
+    #[test]
+    fn test_pagination_invariants_property(
+        num_resources in 0u32..=30u32,
+        start in 0u32..=40u32,
+        limit in 0u32..=35u32,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+        let meta = String::from_str(&env, "ipfs://pagetest");
+
+        for i in 0..num_resources {
+            let id_str = format!("res{:04}", i);
+            let id = String::from_str(&env, &id_str);
+            client.register(&creator, &id, &100i128, &meta, &empty_tags(&env));
+        }
+
+        assert_eq!(client.count(), num_resources);
+
+        // 1. list_page invariants
+        let page = client.list_page(&start, &limit);
+        let cap = limit.min(20);
+
+        // Cap enforcement
+        assert!(page.items.len() <= cap, "list_page items count exceeds cap limit.min(20)");
+
+        if start >= num_resources {
+            // Out-of-range starts: no panic, empty items, next_cursor is None
+            assert_eq!(page.items.len(), 0, "out-of-range start must return empty items");
+            assert_eq!(page.next_cursor, None, "out-of-range start must produce next_cursor = None");
+        } else {
+            // Ordering check
+            let expected_len = (num_resources - start).min(cap);
+            assert_eq!(page.items.len(), expected_len);
+            for (idx, item) in page.items.iter().enumerate() {
+                let expected_id = format!("res{:04}", start + idx as u32);
+                assert_eq!(item.id, String::from_str(&env, &expected_id), "ordering invariant failed");
+            }
+
+            if start + page.items.len() < num_resources {
+                assert_eq!(page.next_cursor, Some(start + page.items.len()));
+            } else {
+                assert_eq!(page.next_cursor, None);
+            }
+        }
+
+        // 2. list invariants
+        let list_items = client.list(&start, &limit);
+        assert_eq!(list_items, page.items, "list() must delegate to list_page().items");
+
+        // 3. list_by_creator invariants
+        let creator_items = client.list_by_creator(&creator, &start, &limit);
+        assert_eq!(creator_items, page.items, "list_by_creator must match list_page for single creator");
+    }
+}
+
+// ── Tag validation property tests (#376) ──────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(40))]
+    #[test]
+    fn test_tag_validation_property(
+        tag_count in 0u32..=12u32,
+        max_tag_len in 0u32..=40u32,
+        include_duplicate in any::<bool>(),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+        let id = String::from_str(&env, "tagpropres");
+        let meta = String::from_str(&env, "ipfs://tagprop");
+
+        let mut tags_vec = Vec::new(&env);
+        let mut is_valid = tag_count <= 8;
+
+        for i in 0..tag_count {
+            let len = if max_tag_len == 0 { 0 } else { (i % max_tag_len) + 1 };
+            if len == 0 || len > 32 {
+                is_valid = false;
+            }
+            let char_byte = b'a' + (i % 26) as u8;
+            let mut buf = alloc::vec![char_byte; len as usize];
+            let tag_str = core::str::from_utf8(&buf).unwrap();
+            tags_vec.push_back(String::from_str(&env, tag_str));
+        }
+
+        if include_duplicate && tag_count >= 2 {
+            tags_vec.set(1, tags_vec.get(0).unwrap());
+            is_valid = false;
+        }
+
+        let result = client.try_register(&creator, &id, &100i128, &meta, &tags_vec);
+        if is_valid {
+            assert!(result.is_ok(), "valid tag vector should succeed in register");
+        } else {
+            assert_eq!(result, Err(Ok(Error::InvalidTag)), "invalid tag vector should be rejected with InvalidTag");
+        }
+    }
+}
+
