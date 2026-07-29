@@ -93,6 +93,14 @@ pub enum FlagReason {
 Supported metadata pointer prefixes are `ipfs://`, `ar://`, `https://`, `http://`,
 and content-hash forms such as `sha256:`, `sha-256:`, or `0x`.
 
+### Bounded text validation
+
+The contract applies one shared byte-length validator to resource IDs, metadata
+pointers, tags, and creator terms hashes. This keeps exact-limit acceptance and
+over-limit errors consistent as new text fields are added. The public limits and
+error codes are unchanged: IDs are 1–24 bytes, metadata is 1–512 bytes, tags
+are 1–32 bytes (up to 8 tags), and terms hashes are at most 64 bytes.
+
 ### Catalog page (cursor primitive)
 
 ```rust

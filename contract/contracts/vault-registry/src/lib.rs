@@ -1510,9 +1510,13 @@ impl VaultRegistry {
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
-        if terms_hash.len() > MAX_TERMS_HASH_LEN {
-            return Err(Error::TermsHashTooLong);
-        }
+        Self::validate_bounded_string(
+            &terms_hash,
+            0,
+            MAX_TERMS_HASH_LEN,
+            Error::TermsHashTooLong,
+            Error::TermsHashTooLong,
+        )?;
         let key = DataKey::CreatorTerms(creator.clone());
         env.storage().persistent().set(&key, &terms_hash);
         Self::bump_persistent(&env, &key);
@@ -1764,12 +1768,14 @@ impl VaultRegistry {
     }
 
     fn validate_resource_id(id: &String) -> Result<(), Error> {
-        let len = id.len();
-        if len == 0 || len > 24 {
-            return Err(Error::InvalidResourceId);
-        }
-        let mut buf = alloc::vec![0u8; len as usize];
-        id.copy_into_slice(&mut buf);
+        Self::validate_bounded_string(
+            id,
+            1,
+            24,
+            Error::InvalidResourceId,
+            Error::InvalidResourceId,
+        )?;
+        let buf = Self::string_bytes(id);
         for &b in buf.iter() {
             if !(b.is_ascii_lowercase() || b.is_ascii_digit()) {
                 return Err(Error::InvalidResourceId);
@@ -1779,9 +1785,7 @@ impl VaultRegistry {
     }
 
     fn is_reserved_id(id: &soroban_sdk::String) -> bool {
-        let len = id.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        id.copy_into_slice(&mut buf);
+        let buf = Self::string_bytes(id);
         let eq_ignore_case = |expected: &[u8]| -> bool {
             if buf.len() != expected.len() {
                 return false;
@@ -1805,16 +1809,14 @@ impl VaultRegistry {
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
-        if metadata.is_empty() {
-            return Err(Error::EmptyMetadata);
-        }
-        if metadata.len() > MAX_METADATA_POINTER_LEN {
-            return Err(Error::MetadataTooLong);
-        }
-
-        let len = metadata.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        metadata.copy_into_slice(&mut buf);
+        Self::validate_bounded_string(
+            metadata,
+            1,
+            MAX_METADATA_POINTER_LEN,
+            Error::EmptyMetadata,
+            Error::MetadataTooLong,
+        )?;
+        let buf = Self::string_bytes(metadata);
         let starts_with = |prefix: &[u8]| -> bool {
             if buf.len() < prefix.len() {
                 return false;
@@ -1862,10 +1864,13 @@ impl VaultRegistry {
         let mut norm: Vec<String> = Vec::new(env);
         for i in 0..tags.len() {
             let tag = tags.get(i).unwrap();
-            let len = tag.len();
-            if len == 0 || len > MAX_TAG_LEN {
-                return Err(Error::InvalidTag);
-            }
+            Self::validate_bounded_string(
+                &tag,
+                1,
+                MAX_TAG_LEN,
+                Error::InvalidTag,
+                Error::InvalidTag,
+            )?;
             norm.push_back(Self::normalize_tag(env, &tag));
         }
         Ok(norm)
@@ -1907,6 +1912,35 @@ impl VaultRegistry {
         let key = DataKey::TagIndex(tag.clone());
         env.storage().persistent().set(&key, &out);
         Self::bump_persistent(env, &key);
+    }
+
+    /// Validate a string's byte length while preserving the contract's
+    /// caller-visible error for both lower- and upper-bound failures. Keep
+    /// all bounded text fields on this helper so future fields cannot drift
+    /// into inconsistent boundary handling.
+    fn validate_bounded_string(
+        value: &String,
+        min_len: u32,
+        max_len: u32,
+        below_min_error: Error,
+        above_max_error: Error,
+    ) -> Result<(), Error> {
+        let len = value.len();
+        if len < min_len {
+            return Err(below_min_error);
+        }
+        if len > max_len {
+            return Err(above_max_error);
+        }
+        Ok(())
+    }
+
+    /// Materialize Soroban string bytes once for validators that need to
+    /// inspect content after a shared length check.
+    fn string_bytes(value: &String) -> alloc::vec::Vec<u8> {
+        let mut bytes = alloc::vec![0u8; value.len() as usize];
+        value.copy_into_slice(&mut bytes);
+        bytes
     }
 
     /// Content and ownership changes are allowed only while a resource is
