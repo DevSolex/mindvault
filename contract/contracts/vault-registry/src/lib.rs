@@ -94,6 +94,10 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
         "payrec",
         "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
     ),
+    ("addmod", "true"),
+    ("rmmod", "false"),
+    ("flagdisp", "moderator: Address"),
+    ("unflgdisp", "moderator: Address"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -204,6 +208,8 @@ pub enum DataKey {
     /// Keyed by (resource id string, payer Address) so escrow/lease
     /// contracts can look up a settlement without scanning event history.
     PaymentReceipt(String, Address),
+    Moderator(Address),
+    DisputeFlag(String),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -295,6 +301,9 @@ pub enum Error {
     InvalidTxHash = 24,
     /// `amount` supplied to `record_payment` is `<= 0`.
     InvalidPaymentAmount = 25,
+    NotModerator = 26,
+    AlreadyFlagged = 27,
+    NotFlagged = 28,
 }
 
 #[contract]
@@ -891,6 +900,109 @@ impl VaultRegistry {
         env.storage()
             .instance()
             .get(&DataKey::Verifier(address))
+            .unwrap_or(false)
+    }
+
+    // ─── Moderator role ──────────────────────────────────────────────────────
+
+    /// Grant the moderator role to `moderator`. Only the admin may call this.
+    /// Moderators can flag and unflag dispute notices on resources but cannot
+    /// change ownership, price, metadata, or verification status.
+    /// Errors `AdminNotSet` if no admin has been set yet.
+    pub fn add_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &true);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("addmod"), moderator), true);
+        Ok(())
+    }
+
+    /// Revoke the moderator role from `moderator`. Only the admin may call this.
+    pub fn remove_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &false);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("rmmod"), moderator), false);
+        Ok(())
+    }
+
+    /// Whether `address` currently holds the moderator role.
+    pub fn is_moderator(env: Env, address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Moderator(address))
+            .unwrap_or(false)
+    }
+
+    /// Flag a dispute notice on a resource. Only an address currently holding
+    /// the moderator role may call this. Errors `NotFound` if the resource
+    /// does not exist, `AlreadyFlagged` if it is already flagged.
+    pub fn flag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::NotModerator);
+        }
+        Self::validate_resource_id(&id)?;
+        // Confirm resource exists
+        Self::load(&env, &id)?;
+        let flag_key = DataKey::DisputeFlag(id.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            return Err(Error::AlreadyFlagged);
+        }
+        env.storage().persistent().set(&flag_key, &true);
+        Self::bump_persistent(&env, &flag_key);
+        env.events()
+            .publish((symbol_short!("flagdisp"), id), moderator);
+        Ok(())
+    }
+
+    /// Remove a dispute flag from a resource. Only a moderator may call this.
+    /// Errors `NotFound` if the resource does not exist, `NotFlagged` if it is
+    /// not currently flagged.
+    pub fn unflag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::NotModerator);
+        }
+        Self::validate_resource_id(&id)?;
+        // Confirm resource exists
+        Self::load(&env, &id)?;
+        let flag_key = DataKey::DisputeFlag(id.clone());
+        if !env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            return Err(Error::NotFlagged);
+        }
+        env.storage().persistent().set(&flag_key, &false);
+        Self::bump_persistent(&env, &flag_key);
+        env.events()
+            .publish((symbol_short!("unflgdisp"), id), moderator);
+        Ok(())
+    }
+
+    /// Whether a resource currently has an active dispute flag.
+    /// Returns `false` for unknown resources (no `NotFound` error).
+    pub fn is_flagged(env: Env, id: String) -> bool {
+        let flag_key = DataKey::DisputeFlag(id);
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
             .unwrap_or(false)
     }
 
