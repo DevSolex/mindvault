@@ -463,6 +463,9 @@ impl VaultRegistry {
         let cur = Self::creator_count(&env, &creator);
         Self::set_creator_count(&env, &creator, cur + 1);
 
+        // Maintain tag index: add id to each tag's index entry.
+        Self::tag_index_add(&env, &tags, &id);
+
         let event = RegisterEvent {
             id: id.clone(),
             creator: creator.clone(),
@@ -611,6 +614,10 @@ impl VaultRegistry {
 
         resource.tags = norm_tags.clone();
         Self::save(&env, &mut resource);
+
+        // Maintain tag index: remove id from prev tags, add to new tags.
+        Self::tag_index_remove(&env, &prev_tags, &id);
+        Self::tag_index_add(&env, &tags, &id);
 
         // Emit event with both previous and next tags for indexer reconciliation
         env.events()
@@ -1733,6 +1740,83 @@ impl VaultRegistry {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::AdminNotSet)
+    }
+
+    /// Normalize a tag for index keying: lowercase ASCII.
+    /// `Resource.tags` stores tags as submitted (no mutation); only the index
+    /// key is normalized so lookups are case-insensitive.
+    fn normalize_tag(env: &Env, tag: &String) -> String {
+        let len = tag.len() as usize;
+        let mut buf = alloc::vec![0u8; len];
+        tag.copy_into_slice(&mut buf);
+        for b in buf.iter_mut() {
+            if b.is_ascii_uppercase() {
+                *b = b.to_ascii_lowercase();
+            }
+        }
+        // Build a Soroban String from the lowercased bytes via the &str path.
+        // All tag bytes are ASCII (validated by validate_tags), so from_utf8
+        // is infallible in practice.
+        match core::str::from_utf8(&buf) {
+            Ok(s) => String::from_str(env, s),
+            Err(_) => tag.clone(), // fallback: return original (should never happen)
+        }
+    }
+
+    /// Add `id` to the `TagIndex` entry for each tag in `tags`.
+    fn tag_index_add(env: &Env, tags: &Vec<String>, id: &String) {
+        for i in 0..tags.len() {
+            let raw_tag = tags.get(i).unwrap();
+            let norm = Self::normalize_tag(env, &raw_tag);
+            let idx_key = DataKey::TagIndex(norm);
+            let mut list: Vec<String> = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Vec<String>>(&idx_key)
+                .unwrap_or_else(|| Vec::new(env));
+            // Avoid duplicates: only add if not already present.
+            let mut already = false;
+            for j in 0..list.len() {
+                if list.get(j).unwrap() == *id {
+                    already = true;
+                    break;
+                }
+            }
+            if !already {
+                list.push_back(id.clone());
+                env.storage().persistent().set(&idx_key, &list);
+                Self::bump_persistent(env, &idx_key);
+            }
+        }
+    }
+
+    /// Remove `id` from the `TagIndex` entry for each tag in `tags`.
+    fn tag_index_remove(env: &Env, tags: &Vec<String>, id: &String) {
+        for i in 0..tags.len() {
+            let raw_tag = tags.get(i).unwrap();
+            let norm = Self::normalize_tag(env, &raw_tag);
+            let idx_key = DataKey::TagIndex(norm);
+            let existing: Vec<String> = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Vec<String>>(&idx_key)
+                .unwrap_or_else(|| Vec::new(env));
+            let mut new_list: Vec<String> = Vec::new(env);
+            for j in 0..existing.len() {
+                let v = existing.get(j).unwrap();
+                if v != *id {
+                    new_list.push_back(v);
+                }
+            }
+            if new_list.is_empty() {
+                if env.storage().persistent().has(&idx_key) {
+                    env.storage().persistent().remove(&idx_key);
+                }
+            } else {
+                env.storage().persistent().set(&idx_key, &new_list);
+                Self::bump_persistent(env, &idx_key);
+            }
+        }
     }
 }
 
