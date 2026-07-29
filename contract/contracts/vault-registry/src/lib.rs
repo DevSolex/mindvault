@@ -39,6 +39,14 @@ const MAX_TAGS: u32 = 8;
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
 const MAX_TAG_LEN: u32 = 32;
 
+// ── Fee / royalty configuration ──────────────────────────────────────────────
+/// Fee basis-point ceiling: 50 % (5 000 bp). Neither platform_fee_bps nor
+/// royalty_bps may individually exceed this value, and their *sum* may not
+/// exceed it either, so the worst case is 50 % of each purchase price.
+pub const MAX_FEE_BPS: u32 = 5_000;
+/// Denominator for converting basis-point values to a fraction (1/10 000).
+pub const FEE_BPS_DENOM: u32 = 10_000;
+
 /// Stable registry name returned by [`VaultRegistry::registry_info`].
 pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
 /// Version of the on-chain `Resource` schema. Bump whenever a change to the
@@ -415,7 +423,7 @@ impl VaultRegistry {
         Self::validate_price(price)?;
         Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
-        Self::validate_tags(&env, &tags)?;
+        let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
         if Self::is_reserved_id(&id) {
             return Err(Error::ReservedId);
         }
@@ -430,7 +438,7 @@ impl VaultRegistry {
             price,
             metadata: metadata.clone(),
             listed: true,
-            tags,
+            tags: norm_tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
             updated_at: env.ledger().sequence(),
@@ -578,20 +586,35 @@ impl VaultRegistry {
 
     /// Replace a resource's discovery tags. Only the creator may call this.
     /// Does not modify `metadata` (the off-chain content pointer).
+    /// Tags are normalized to lowercase ASCII before storage; the normalized
+    /// form is what gets indexed and returned from `list_by_tag`.
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
-        Self::validate_tags(&env, &tags)?;
+        let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
 
-        // Capture previous tags before replacement for event emission
+        // Capture previous tags before replacement for event emission and index
         let prev_tags = resource.tags.clone();
-        resource.tags = tags.clone();
+
+        // Remove resource from all tag index entries it was previously in
+        for i in 0..prev_tags.len() {
+            let tag = prev_tags.get(i).unwrap();
+            Self::tag_index_remove(&env, &tag, &id);
+        }
+
+        // Add resource to tag index for each new normalized tag
+        for i in 0..norm_tags.len() {
+            let tag = norm_tags.get(i).unwrap();
+            Self::tag_index_add(&env, &tag, &id);
+        }
+
+        resource.tags = norm_tags.clone();
         Self::save(&env, &mut resource);
 
         // Emit event with both previous and next tags for indexer reconciliation
         env.events()
-            .publish((symbol_short!("settags"), id), (prev_tags, tags));
+            .publish((symbol_short!("settags"), id), (prev_tags, norm_tags));
         Ok(())
     }
 
@@ -826,6 +849,143 @@ impl VaultRegistry {
     /// never-decremented `count()`).
     pub fn creator_resource_count(env: Env, creator: Address) -> u32 {
         Self::creator_count(&env, &creator)
+    }
+
+    /// Return the resource ids tagged with `tag` (normalized to lowercase),
+    /// paginated by `start`/`limit`. `limit` is capped at 20. Resources are
+    /// returned in the order they were added to the tag index (insertion
+    /// order per tag). If the tag has never been assigned to any resource
+    /// returns an empty vec. Each resource entry that is read has its TTL
+    /// bumped to keep hot resources alive.
+    pub fn list_by_tag(env: Env, tag: String, start: u32, limit: u32) -> Vec<Resource> {
+        let page_size = limit.min(20);
+        let mut result: Vec<Resource> = Vec::new(&env);
+        if page_size == 0 {
+            return result;
+        }
+
+        // Normalize the lookup tag the same way tags are stored
+        let norm_tag = Self::normalize_tag(&env, &tag);
+        let tag_key = DataKey::TagIndex(norm_tag);
+        let ids: Vec<String> = env
+            .storage()
+            .persistent()
+            .get(&tag_key)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let total = ids.len();
+        if start >= total {
+            return result;
+        }
+
+        let mut idx = start;
+        while result.len() < page_size && idx < total {
+            let id = ids.get(idx).unwrap();
+            let res_key = DataKey::Resource(id.clone());
+            if let Some(resource) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Resource>(&res_key)
+            {
+                Self::bump_persistent(&env, &res_key);
+                result.push_back(resource);
+            }
+            idx += 1;
+        }
+        result
+    }
+
+    /// Rebuild the tag index from an authoritative, admin-supplied ordered
+    /// list of resource ids. Only the admin may call this. Every id must
+    /// already exist as a registered `Resource` (else `NotFound`). Unlike
+    /// `repair_index`, duplicates in the id list are harmless (tag index has
+    /// set semantics per tag — re-indexing the same id is idempotent) and
+    /// are silently de-duplicated rather than rejected. Never reads, writes,
+    /// or deletes `Resource` storage — only rewrites the derived `TagIndex`
+    /// entries for the tags those resources currently carry. Safe to re-run
+    /// with the correct current id list as a no-op. See
+    /// `docs/tag-index-repair-design.md` for the full strategy.
+    pub fn repair_tag_index(env: Env, ids: Vec<String>) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        let len = ids.len();
+
+        // Validate every id exists before touching anything
+        for i in 0..len {
+            let id = ids.get(i).unwrap();
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::Resource(id.clone()))
+            {
+                return Err(Error::NotFound);
+            }
+        }
+
+        // Collect current tags for each id (read canonical Resource data).
+        // Build a tag -> Vec<id> map in a simple parallel-vec structure that
+        // avoids BTreeMap (unavailable in no_std without alloc feature that
+        // isn't brought in here). Small curated tag sets keep this O(n*t).
+        let mut tag_keys: Vec<String> = Vec::new(&env);   // unique normalized tags seen
+        let mut tag_id_vecs: alloc::vec::Vec<Vec<String>> = alloc::vec::Vec::new(); // parallel
+
+        // Helper: find index of tag_key in tag_keys, return None if absent
+        let find_tag_pos = |keys: &Vec<String>, t: &String| -> Option<u32> {
+            for k in 0..keys.len() {
+                if keys.get(k).unwrap() == *t {
+                    return Some(k);
+                }
+            }
+            None
+        };
+
+        for i in 0..len {
+            let id = ids.get(i).unwrap();
+            let resource: Resource = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Resource(id.clone()))
+                .unwrap(); // already validated above
+            for j in 0..resource.tags.len() {
+                let tag = resource.tags.get(j).unwrap();
+                match find_tag_pos(&tag_keys, &tag) {
+                    Some(pos) => {
+                        let id_vec = &mut tag_id_vecs[pos as usize];
+                        // Deduplicate: only add if not already present
+                        let mut already = false;
+                        for k in 0..id_vec.len() {
+                            if id_vec.get(k).unwrap() == id {
+                                already = true;
+                                break;
+                            }
+                        }
+                        if !already {
+                            id_vec.push_back(id.clone());
+                        }
+                    }
+                    None => {
+                        tag_keys.push_back(tag.clone());
+                        let mut id_vec: Vec<String> = Vec::new(&env);
+                        id_vec.push_back(id.clone());
+                        tag_id_vecs.push(id_vec);
+                    }
+                }
+            }
+        }
+
+        // Write rebuilt tag index entries
+        for k in 0..tag_keys.len() {
+            let tag = tag_keys.get(k).unwrap();
+            let id_vec = &tag_id_vecs[k as usize];
+            let tag_key = DataKey::TagIndex(tag);
+            env.storage().persistent().set(&tag_key, id_vec);
+            Self::bump_persistent(&env, &tag_key);
+        }
+
+        env.events()
+            .publish((symbol_short!("retagidx"),), len);
+        Ok(())
     }
 
     /// Fetch a resource. Errors with `NotFound` if it does not exist.
@@ -1140,6 +1300,62 @@ impl VaultRegistry {
         Ok(())
     }
 
+    /// Set the registry-level fee / royalty configuration. Only the admin may
+    /// call this. Errors `AdminNotSet` if no admin has been set yet.
+    ///
+    /// Both `platform_fee_bps` and `royalty_bps` must be ≤ [`MAX_FEE_BPS`]
+    /// (5 000 bp = 50 %) individually, **and** their sum must also be ≤
+    /// [`MAX_FEE_BPS`]. Violating either bound errors `FeeBpsTooHigh` (for an
+    /// individual field out of range) or `TotalFeeTooHigh` (for a valid
+    /// individual pair whose sum exceeds the ceiling).
+    ///
+    /// Stores the config under the singleton [`DataKey::FeeConfig`] instance
+    /// entry and emits a `setfee` event carrying the old config (or `None` on
+    /// first set) and the new config, so off-chain indexers have a full
+    /// audit trail.
+    pub fn set_fee_config(env: Env, config: FeeConfig) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+
+        // Validate individual bounds first so callers get the more specific error
+        if config.platform_fee_bps > MAX_FEE_BPS {
+            return Err(Error::FeeBpsTooHigh);
+        }
+        if config.royalty_bps > MAX_FEE_BPS {
+            return Err(Error::FeeBpsTooHigh);
+        }
+        // Then validate the combined ceiling
+        if config.platform_fee_bps + config.royalty_bps > MAX_FEE_BPS {
+            return Err(Error::TotalFeeTooHigh);
+        }
+
+        let old_config: OptFeeConfig = env
+            .storage()
+            .instance()
+            .get::<DataKey, FeeConfig>(&DataKey::FeeConfig)
+            .map(OptFeeConfig::Some)
+            .unwrap_or(OptFeeConfig::None);
+        env.storage()
+            .instance()
+            .set(&DataKey::FeeConfig, &config);
+        Self::bump_instance(&env);
+
+        env.events().publish(
+            (symbol_short!("setfee"),),
+            FeeConfigUpdated {
+                old_config,
+                new_config: config,
+            },
+        );
+        Ok(())
+    }
+
+    /// Read the registry-level fee / royalty configuration. Returns `None`
+    /// if `set_fee_config` has never been called.
+    pub fn get_fee_config(env: Env) -> Option<FeeConfig> {
+        env.storage().instance().get(&DataKey::FeeConfig)
+    }
+
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
@@ -1340,18 +1556,78 @@ impl VaultRegistry {
         }
     }
 
-    fn validate_tags(_env: &Env, tags: &Vec<String>) -> Result<(), Error> {
+    /// Normalize a single tag to lowercase ASCII. Non-ASCII bytes are
+    /// preserved as-is (lowercasing is only applied to ASCII alphabetic
+    /// bytes, matching the tag input surface which is already constrained
+    /// to short human-readable labels in practice).
+    fn normalize_tag(env: &Env, tag: &String) -> String {
+        let len = tag.len() as usize;
+        let mut buf = alloc::vec![0u8; len];
+        tag.copy_into_slice(&mut buf);
+        for b in buf.iter_mut() {
+            if b.is_ascii_uppercase() {
+                *b = b.to_ascii_lowercase();
+            }
+        }
+        String::from_bytes(env, &buf)
+    }
+
+    /// Normalize every tag in the input list to lowercase ASCII, validate
+    /// count and length limits, and return the normalized `Vec<String>`.
+    /// Errors `InvalidTag` for empty tags, tags exceeding `MAX_TAG_LEN`,
+    /// or more than `MAX_TAGS` entries.
+    fn normalize_and_validate_tags(env: &Env, tags: &Vec<String>) -> Result<Vec<String>, Error> {
         if tags.len() > MAX_TAGS {
             return Err(Error::InvalidTag);
         }
+        let mut norm: Vec<String> = Vec::new(env);
         for i in 0..tags.len() {
             let tag = tags.get(i).unwrap();
             let len = tag.len();
             if len == 0 || len > MAX_TAG_LEN {
                 return Err(Error::InvalidTag);
             }
+            norm.push_back(Self::normalize_tag(env, &tag));
         }
-        Ok(())
+        Ok(norm)
+    }
+
+    /// Return the current list of resource ids stored under `TagIndex(tag)`.
+    fn tag_index_get(env: &Env, tag: &String) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Vec<String>>(&DataKey::TagIndex(tag.clone()))
+            .unwrap_or_else(|| Vec::new(env))
+    }
+
+    /// Append `id` to the tag index entry for `tag` if not already present.
+    fn tag_index_add(env: &Env, tag: &String, id: &String) {
+        let mut ids = Self::tag_index_get(env, tag);
+        // Avoid duplicates (e.g. repair_tag_index may be called multiple times)
+        for i in 0..ids.len() {
+            if ids.get(i).unwrap() == *id {
+                return;
+            }
+        }
+        ids.push_back(id.clone());
+        let key = DataKey::TagIndex(tag.clone());
+        env.storage().persistent().set(&key, &ids);
+        Self::bump_persistent(env, &key);
+    }
+
+    /// Remove `id` from the tag index entry for `tag`. No-op if not present.
+    fn tag_index_remove(env: &Env, tag: &String, id: &String) {
+        let ids = Self::tag_index_get(env, tag);
+        let mut out: Vec<String> = Vec::new(env);
+        for i in 0..ids.len() {
+            let v = ids.get(i).unwrap();
+            if v != *id {
+                out.push_back(v);
+            }
+        }
+        let key = DataKey::TagIndex(tag.clone());
+        env.storage().persistent().set(&key, &out);
+        Self::bump_persistent(env, &key);
     }
 
     fn load(env: &Env, id: &String) -> Result<Resource, Error> {
