@@ -329,6 +329,12 @@ export function mockSetListed(resourceId: string, listed: boolean): string {
       listed,
       txHash: `MOCK_TX_SET_LISTED_${resourceId}`,
       source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
 const MOCK_REGISTRY_RESOURCES = [
   {
     id: "mock-1",

@@ -6,6 +6,35 @@ on:
     branches: [main]
 
 jobs:
+  fmt:
+    name: Format Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contract/target
+          key: ${{ runner.os }}-contract-fmt-${{ hashFiles('contract/Cargo.toml', 'contract/Cargo.lock', 'contract/contracts/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-contract-fmt-
+            ${{ runner.os }}-cargo-
+
+      - name: Check Rust formatting
+        working-directory: contract
+        run: cargo fmt --check
+
   build-and-test:
     name: Build & Test Contract
     runs-on: ubuntu-latest
@@ -18,10 +47,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown,wasm32v1-none
- fix/418-mcp-add-mcp-catalog-search-filters-parity
           components: rust-src
-
- main
 
       - name: Cache Cargo registry
         uses: actions/cache@v6
