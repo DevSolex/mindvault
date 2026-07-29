@@ -227,6 +227,9 @@ Three roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `28` | `NotFlagged`                    | Resource is not currently flagged as disputed.                                          |
 | `29` | `InvalidLifecycleTransition`    | The requested lifecycle transition is not allowed from the current state.               |
 | `30` | `ResourceNotMutable`            | A frozen, disputed, or tombstoned resource cannot be changed by its creator.            |
+| `31` | `NetworkAlreadyInitialized`     | Network identifier has already been initialized for this contract instance.             |
+| `32` | `NetworkIdMismatch`             | Invocation network identifier does not match configured network ID.                     |
+| `33` | `NetworkNotInitialized`         | Network identifier has not been initialized.                                            |
 
 ### Events
 
@@ -332,6 +335,24 @@ pub struct RegistryInfo {
 `registry_info()` lets an agent/client discover which registry it's talking to —
 and confirm it's the network it expects — without hardcoding assumptions or a
 separate config lookup. It always succeeds; there is no error case.
+
+### Deployment network guard
+
+Before a deployment is used, call
+`initialize_network(env.ledger().network_id())` once. The contract records the
+value only when it matches the executing ledger's network ID. This prevents a
+deployment script from accidentally configuring a testnet contract with a
+mainnet identifier (or the reverse).
+
+- `initialize_network(network_id: BytesN<32>)` returns `NetworkIdMismatch` if
+  the supplied ID differs from the current ledger, and
+  `NetworkAlreadyInitialized` on any later call.
+- `network_id()` returns the stored ID, or `NetworkNotInitialized` until the
+  one-time initialization succeeds.
+
+`registry_info().network_id` remains available before initialization as a
+read-only observation of the current ledger; use `network_id()` when a client
+must require an explicit deployment guard.
 
 ### Constants
 

@@ -148,6 +148,14 @@ pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
     (23, "DuplicateInRepair", "`repair_index` received a list with duplicate resource ids."),
     (24, "InvalidTxHash", "`tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes)."),
     (25, "InvalidPaymentAmount", "`amount` in `record_payment` is `<= 0`."),
+    (26, "NotModerator", "Caller does not hold the moderator role."),
+    (27, "AlreadyFlagged", "Resource is already flagged as disputed."),
+    (28, "NotFlagged", "Resource is not currently flagged as disputed."),
+    (29, "InvalidLifecycleTransition", "The requested lifecycle transition is not allowed from the current state."),
+    (30, "ResourceNotMutable", "A frozen, disputed, or tombstoned resource cannot be changed by its creator."),
+    (31, "NetworkAlreadyInitialized", "Network identifier has already been initialized for this contract instance."),
+    (32, "NetworkIdMismatch", "Invocation network identifier does not match configured network ID."),
+    (33, "NetworkNotInitialized", "Network identifier has not been initialized."),
 ];
 
 /// Canonical list of every event topic this contract emits, paired with a
@@ -371,6 +379,7 @@ pub enum DataKey {
     CreatorCount(Address),
     PendingTransfer(String),
     Verifier(Address),
+    NetworkId,
     /// Most-recent payment receipt for `(resource_id, payer)`.
     /// Keyed by (resource id string, payer Address) so escrow/lease
     /// contracts can look up a settlement without scanning event history.
@@ -473,6 +482,9 @@ pub enum Error {
     NotFlagged = 28,
     InvalidLifecycleTransition = 29,
     ResourceNotMutable = 30,
+    NetworkAlreadyInitialized = 31,
+    NetworkIdMismatch = 32,
+    NetworkNotInitialized = 33,
 }
 
 #[contract]
@@ -1170,6 +1182,32 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Store the intended network identifier once. The supplied ID must match
+    /// the ledger this contract is executing on, preventing a deployment
+    /// script from accidentally recording a different Stellar network.
+    pub fn initialize_network(env: Env, network_id: BytesN<32>) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::NetworkId) {
+            return Err(Error::NetworkAlreadyInitialized);
+        }
+        if network_id != env.ledger().network_id() {
+            return Err(Error::NetworkIdMismatch);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkId, &network_id);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Return the initialized network identifier. Callers can use this value
+    /// as a deployment guard before submitting network-sensitive operations.
+    pub fn network_id(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::NetworkId)
+            .ok_or(Error::NetworkNotInitialized)
     }
 
     /// Discover this registry's stable identity and capabilities in one

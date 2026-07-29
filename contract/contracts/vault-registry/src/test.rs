@@ -5,7 +5,7 @@ use alloc::{format, string::ToString};
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
-    Address, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
+    Address, BytesN, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
@@ -2757,6 +2757,59 @@ fn registry_info_is_stable_across_calls_and_registrations() {
         before, after,
         "registry_info must not depend on registry contents"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Deployment network identifier guard (#457)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_id_requires_initialization() {
+    let (env, _creator, client) = setup();
+    assert_eq!(
+        client.try_network_id(),
+        Err(Ok(Error::NetworkNotInitialized))
+    );
+    assert_eq!(client.registry_info().network_id, env.ledger().network_id());
+}
+
+#[test]
+fn initialize_network_records_and_exposes_current_ledger_id() {
+    let (env, _creator, client) = setup();
+    let expected = env.ledger().network_id();
+
+    client.initialize_network(&expected);
+    assert_eq!(client.network_id(), expected);
+}
+
+#[test]
+fn initialize_network_rejects_mismatched_network_id_without_writing() {
+    let (env, _creator, client) = setup();
+    let mut wrong = env.ledger().network_id().to_array();
+    wrong[0] ^= 1;
+    let wrong = BytesN::from_array(&env, &wrong);
+
+    assert_eq!(
+        client.try_initialize_network(&wrong),
+        Err(Ok(Error::NetworkIdMismatch))
+    );
+    assert_eq!(
+        client.try_network_id(),
+        Err(Ok(Error::NetworkNotInitialized))
+    );
+}
+
+#[test]
+fn initialize_network_rejects_duplicate_initialization() {
+    let (env, _creator, client) = setup();
+    let network_id = env.ledger().network_id();
+    client.initialize_network(&network_id);
+
+    assert_eq!(
+        client.try_initialize_network(&network_id),
+        Err(Ok(Error::NetworkAlreadyInitialized))
+    );
+    assert_eq!(client.network_id(), network_id);
 }
 
 // ---------------------------------------------------------------------------
