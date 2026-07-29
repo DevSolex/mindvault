@@ -4657,7 +4657,11 @@ fn record_payment_does_not_mutate_resource() {
     let after = client.get(&id);
 
     assert_eq!(before, after, "record_payment must not mutate the Resource entry");
-    assert_eq!(client.count(), 1, "record_payment must not change the resource count");
+    assert_eq!(
+        client.count(),
+        1,
+        "record_payment must not change the resource count"
+    );
     assert_eq!(
         client.list(&0u32, &10u32).get(0).unwrap().id,
         id,
@@ -5357,3 +5361,234 @@ fn flag_and_unflag_roundtrip() {
         DisputeFlag::Flagged(FlagReason::Malicious)
     );
 }
+
+// ── Storage TTL tests for index entries (#371) ────────────────────────────────
+
+fn index_storage_ttl(env: &Env, contract: &soroban_sdk::Address, index: u32) -> u32 {
+    let key = DataKey::Index(index);
+    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+}
+
+#[test]
+fn register_extends_index_storage_ttl() {
+    let (env, creator, client) = setup();
+    let id0 = String::from_str(&env, "idxres0");
+    let id1 = String::from_str(&env, "idxres1");
+    let meta = String::from_str(&env, "ipfs://meta");
+
+    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
+    client.register(&creator, &id1, &200i128, &meta, &empty_tags(&env));
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT,
+        "Index(0) entry must receive persistent TTL of TTL_BUMP_AMOUNT"
+    );
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 1),
+        TTL_BUMP_AMOUNT,
+        "Index(1) entry must receive persistent TTL of TTL_BUMP_AMOUNT"
+    );
+}
+
+#[test]
+fn list_page_bumps_index_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id0 = String::from_str(&env, "idxttl0");
+    let id1 = String::from_str(&env, "idxttl1");
+    let meta = String::from_str(&env, "ipfs://meta");
+
+    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
+    client.register(&creator, &id1, &200i128, &meta, &empty_tags(&env));
+
+    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + decay);
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT - decay,
+        "Index TTL should have decayed"
+    );
+
+    client.list_page(&0u32, &10u32);
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT,
+        "list_page must bump Index(0) TTL back to TTL_BUMP_AMOUNT"
+    );
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 1),
+        TTL_BUMP_AMOUNT,
+        "list_page must bump Index(1) TTL back to TTL_BUMP_AMOUNT"
+    );
+}
+
+#[test]
+fn repair_index_extends_index_storage_ttl() {
+    let (env, creator, client) = setup();
+    let admin = Address::generate(&env);
+    client.nominate_new_admin(&admin);
+
+    let id0 = String::from_str(&env, "reidx0");
+    let meta = String::from_str(&env, "ipfs://meta");
+    client.register(&creator, &id0, &100i128, &meta, &empty_tags(&env));
+
+    let mut ids = Vec::new(&env);
+    ids.push_back(id0.clone());
+    client.repair_index(&ids);
+
+    assert_eq!(
+        index_storage_ttl(&env, &client.address, 0),
+        TTL_BUMP_AMOUNT,
+        "repair_index must set persistent TTL for reindexed entries to TTL_BUMP_AMOUNT"
+    );
+}
+
+// ── Schema version stored on resources (#375) ─────────────────────────────────
+
+#[test]
+fn resource_includes_schema_version() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "schemaverres");
+    let meta = String::from_str(&env, "ipfs://schemaver");
+
+    client.register(&creator, &id, &100i128, &meta, &empty_tags(&env));
+
+    let r = client.get(&id);
+    assert_eq!(
+        r.schema_version, RESOURCE_SCHEMA_VERSION,
+        "Resource from get() must include RESOURCE_SCHEMA_VERSION"
+    );
+
+    let page = client.list_page(&0u32, &10u32);
+    assert_eq!(
+        page.items.get(0).unwrap().schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "Resource from list_page() must include RESOURCE_SCHEMA_VERSION"
+    );
+
+    let listed = client.list_listed(&0u32, &10u32);
+    assert_eq!(
+        listed.get(0).unwrap().schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "Resource from list_listed() must include RESOURCE_SCHEMA_VERSION"
+    );
+
+    let by_creator = client.list_by_creator(&creator, &0u32, &10u32);
+    assert_eq!(
+        by_creator.get(0).unwrap().schema_version,
+        RESOURCE_SCHEMA_VERSION,
+        "Resource from list_by_creator() must include RESOURCE_SCHEMA_VERSION"
+    );
+}
+
+// ── Pagination property tests (#377) ─────────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(30))]
+    #[test]
+    fn test_pagination_invariants_property(
+        num_resources in 0u32..=30u32,
+        start in 0u32..=40u32,
+        limit in 0u32..=35u32,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+        let meta = String::from_str(&env, "ipfs://pagetest");
+
+        for i in 0..num_resources {
+            let id_str = format!("res{:04}", i);
+            let id = String::from_str(&env, &id_str);
+            client.register(&creator, &id, &100i128, &meta, &empty_tags(&env));
+        }
+
+        assert_eq!(client.count(), num_resources);
+
+        // 1. list_page invariants
+        let page = client.list_page(&start, &limit);
+        let cap = limit.min(20);
+
+        // Cap enforcement
+        assert!(page.items.len() <= cap, "list_page items count exceeds cap limit.min(20)");
+
+        if start >= num_resources {
+            // Out-of-range starts: no panic, empty items, next_cursor is None
+            assert_eq!(page.items.len(), 0, "out-of-range start must return empty items");
+            assert_eq!(page.next_cursor, None, "out-of-range start must produce next_cursor = None");
+        } else {
+            // Ordering check
+            let expected_len = (num_resources - start).min(cap);
+            assert_eq!(page.items.len(), expected_len);
+            for (idx, item) in page.items.iter().enumerate() {
+                let expected_id = format!("res{:04}", start + idx as u32);
+                assert_eq!(item.id, String::from_str(&env, &expected_id), "ordering invariant failed");
+            }
+
+            if start + page.items.len() < num_resources {
+                assert_eq!(page.next_cursor, Some(start + page.items.len()));
+            } else {
+                assert_eq!(page.next_cursor, None);
+            }
+        }
+
+        // 2. list invariants
+        let list_items = client.list(&start, &limit);
+        assert_eq!(list_items, page.items, "list() must delegate to list_page().items");
+
+        // 3. list_by_creator invariants
+        let creator_items = client.list_by_creator(&creator, &start, &limit);
+        assert_eq!(creator_items, page.items, "list_by_creator must match list_page for single creator");
+    }
+}
+
+// ── Tag validation property tests (#376) ──────────────────────────────────────
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(40))]
+    #[test]
+    fn test_tag_validation_property(
+        tag_count in 0u32..=12u32,
+        max_tag_len in 0u32..=40u32,
+        include_duplicate in any::<bool>(),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+        let id = String::from_str(&env, "tagpropres");
+        let meta = String::from_str(&env, "ipfs://tagprop");
+
+        let mut tags_vec = Vec::new(&env);
+        let mut is_valid = tag_count <= 8;
+
+        for i in 0..tag_count {
+            let len = if max_tag_len == 0 { 0 } else { (i % max_tag_len) + 1 };
+            if len == 0 || len > 32 {
+                is_valid = false;
+            }
+            let char_byte = b'a' + (i % 26) as u8;
+            let mut buf = alloc::vec![char_byte; len as usize];
+            let tag_str = core::str::from_utf8(&buf).unwrap();
+            tags_vec.push_back(String::from_str(&env, tag_str));
+        }
+
+        if include_duplicate && tag_count >= 2 {
+            tags_vec.set(1, tags_vec.get(0).unwrap());
+            is_valid = false;
+        }
+
+        let result = client.try_register(&creator, &id, &100i128, &meta, &tags_vec);
+        if is_valid {
+            assert!(result.is_ok(), "valid tag vector should succeed in register");
+        } else {
+            assert_eq!(result, Err(Ok(Error::InvalidTag)), "invalid tag vector should be rejected with InvalidTag");
+        }
+    }
+}
+
