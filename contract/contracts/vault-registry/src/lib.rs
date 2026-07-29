@@ -46,6 +46,101 @@ pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
 /// it (e.g. the tags field added in schema version 2).
 pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 
+/// Maximum byte length of a settlement transaction hash stored in a
+/// [`PaymentReceipt`]. Stellar transaction hashes are 64 hex characters
+/// (32 bytes), but we allow up to 128 to accommodate future hash formats
+/// (e.g. a `sha256:` prefixed hex string).
+pub const MAX_TX_HASH_LEN: u32 = 128;
+
+/// Canonical list of every exported method this contract exposes, paired with
+/// the required authorisation rule (who must sign the call). This is the
+/// single source of truth for the API surface: `contract/README.md`'s Methods
+/// table must document exactly these function names, and every entry here must
+/// appear as a row in that table. Both directions are enforced by the test
+/// `readme_methods_table_matches_method_schema` in `test.rs`, so any drift
+/// between code, this const, and the README fails a test.
+pub const METHOD_SCHEMA: &[(&str, &str)] = &[
+    // ── Resource lifecycle ────────────────────────────────────────────────
+    ("register", "creator"),
+    ("set_price", "creator"),
+    ("update_metadata", "creator"),
+    ("freeze_metadata", "creator"),
+    ("set_tags", "creator"),
+    ("set_listed", "creator"),
+    ("delist", "creator"),
+    // ── Ownership transfer ────────────────────────────────────────────────
+    ("transfer_ownership", "creator"),
+    ("propose_transfer", "creator"),
+    ("accept_transfer", "proposed new_creator"),
+    ("cancel_transfer", "creator"),
+    // ── Read-only queries ─────────────────────────────────────────────────
+    ("get", "—"),
+    ("exists", "—"),
+    ("get_owner", "—"),
+    ("count", "—"),
+    ("creator_resource_count", "—"),
+    // ── Paginated catalog ─────────────────────────────────────────────────
+    ("list", "—"),
+    ("list_page", "—"),
+    ("list_listed", "—"),
+    ("list_by_creator", "—"),
+    // ── Registry introspection ────────────────────────────────────────────
+    ("registry_info", "—"),
+    ("contract_version", "—"),
+    // ── Admin role ────────────────────────────────────────────────────────
+    ("admin", "—"),
+    ("pending_admin", "—"),
+    ("nominate_new_admin", "current admin (or new_admin for bootstrap)"),
+    ("accept_admin", "pending admin"),
+    // ── Verifier role ─────────────────────────────────────────────────────
+    ("add_verifier", "admin"),
+    ("remove_verifier", "admin"),
+    ("is_verifier", "—"),
+    ("set_verification_status", "verifier"),
+    // ── Terms hashes ──────────────────────────────────────────────────────
+    ("set_terms_hash", "creator"),
+    ("get_terms_hash", "—"),
+    // ── Index repair ──────────────────────────────────────────────────────
+    ("repair_index", "admin"),
+    // ── Payment receipts ──────────────────────────────────────────────────
+    ("record_payment", "payer"),
+    ("get_payment_receipt", "—"),
+];
+
+/// Canonical list of every error code this contract can return, paired with
+/// its numeric discriminant and a short description. This is the single source
+/// of truth for error codes: `contract/README.md`'s Error codes table must
+/// document exactly these codes. Both directions are enforced by the test
+/// `readme_error_codes_table_matches_error_schema` in `test.rs`, so any drift
+/// between code, this const, and the README fails a test.
+pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
+    (1, "AlreadyRegistered", "A resource with the given `id` already exists."),
+    (2, "NotFound", "No resource (or terms hash or receipt) matches the given key."),
+    (3, "InvalidPrice", "Price is `<= 0`."),
+    (4, "MetadataTooLong", "Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes)."),
+    (5, "InvalidTag", "Tag format or count validation failed (too many tags, empty tag, or tag exceeds 32 bytes)."),
+    (6, "Unauthorized", "Caller authentication check failed or unauthorized."),
+    (7, "PendingAdminNotSet", "No pending admin is set, or caller does not match the pending admin."),
+    (8, "PendingAdminAlreadySet", "A pending admin nomination is already active."),
+    (9, "SameAdmin", "Nominated new admin is already the current contract admin."),
+    (10, "TermsHashTooLong", "Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes)."),
+    (11, "InvalidResourceId", "Resource id is empty, exceeds 24 bytes, or contains non-lowercase-alphanumeric characters."),
+    (12, "InvalidMetadataPointer", "Metadata pointer does not start with a supported prefix."),
+    (13, "EmptyMetadata", "Metadata pointer is empty."),
+    (14, "AlreadyOwner", "Proposed/target new owner is already the current owner."),
+    (15, "NoPendingTransfer", "No pending transfer exists for this resource."),
+    (16, "ReservedId", "Resource id collides with a reserved word (e.g. `admin`, `registry`)."),
+    (17, "PriceExceedsMax", "Price exceeds `MAX_PRICE`."),
+    (18, "AdminNotSet", "`add_verifier`, `remove_verifier`, or `repair_index` was called before any admin was bootstrapped."),
+    (19, "NotVerifier", "`set_verification_status` was called by an address that does not hold the verifier role."),
+    (20, "InvalidVerificationTransition", "The requested `VerificationStatus` transition is not allowed (e.g. same-status no-op, or reverting to `Pending`)."),
+    (21, "AlreadyFrozen", "`freeze_metadata` was called on a resource whose metadata is already frozen."),
+    (22, "MetadataFrozen", "`update_metadata` was called on a resource whose metadata has been frozen."),
+    (23, "DuplicateInRepair", "`repair_index` received a list with duplicate resource ids."),
+    (24, "InvalidTxHash", "`tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes)."),
+    (25, "InvalidPaymentAmount", "`amount` in `record_payment` is `<= 0`."),
+];
+
 /// Canonical list of every event topic this contract emits, paired with a
 /// human-readable description of its payload shape. This is the single
 /// source of truth for event schemas: `contract/README.md`'s Events table
@@ -84,6 +179,14 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("addverif", "true"),
     ("rmverif", "false"),
     ("reindex", "new_count: u32 (topic carries old_count: u32)"),
+    (
+        "payrec",
+        "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
+    ),
+    ("addmod", "true"),
+    ("rmmod", "false"),
+    ("flagdisp", "moderator: Address"),
+    ("unflgdisp", "moderator: Address"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -151,6 +254,21 @@ pub struct Resource {
     pub updated_at: u32,
 }
 
+/// Structured payload emitted by `register()`.
+///
+/// Consumers can reconstruct a full `Resource` from this event without an
+/// additional on-chain read.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisterEvent {
+    pub id: String,
+    pub creator: Address,
+    pub price: i128,
+    pub metadata: String,
+    pub listed: bool,
+    pub tags: Vec<String>,
+}
+
 /// One page of the on-chain catalog plus a cursor for the next page.
 ///
 /// `next_cursor` is the catalog index to pass back into `list` / `list_page`
@@ -175,6 +293,12 @@ pub enum DataKey {
     CreatorCount(Address),
     PendingTransfer(String),
     Verifier(Address),
+    /// Most-recent payment receipt for `(resource_id, payer)`.
+    /// Keyed by (resource id string, payer Address) so escrow/lease
+    /// contracts can look up a settlement without scanning event history.
+    PaymentReceipt(String, Address),
+    Moderator(Address),
+    DisputeFlag(String),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -200,6 +324,39 @@ pub struct PriceUpdated {
     pub old_price: i128,
     pub new_price: i128,
     pub updater: Address,
+}
+
+/// On-chain record of a single x402/Soroban payment settlement for a resource.
+///
+/// This is the escrow-ready payment state model: recording a settlement receipt
+/// on-chain gives future escrow and lease contracts a canonical, verifiable
+/// reference to a real payment without requiring those contracts to custody
+/// funds or replay the x402 flow themselves.
+///
+/// `tx_hash` is the Stellar transaction hash of the USDC settlement (up to
+/// [`MAX_TX_HASH_LEN`] bytes). `amount` is the amount paid in USDC stroops
+/// (must be `> 0`). `ledger` is the ledger sequence at which the receipt was
+/// recorded — set by the contract at write time from `env.ledger().sequence()`
+/// so callers cannot forge it.
+///
+/// Receipts are stored under `DataKey::PaymentReceipt(resource_id, payer)`.
+/// Recording a second payment for the same `(resource_id, payer)` pair
+/// overwrites the previous receipt, so the stored value always reflects the
+/// most recent settlement for that pair. Use the `payrec` event stream to
+/// reconstruct the full history.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PaymentReceipt {
+    /// The resource id this payment is for.
+    pub resource_id: String,
+    /// Stellar address of the buyer/payer.
+    pub payer: Address,
+    /// Stellar transaction hash of the USDC settlement (hex or `sha256:`-prefixed hex).
+    pub tx_hash: String,
+    /// Amount paid in USDC stroops (`> 0`).
+    pub amount: i128,
+    /// Ledger sequence at which this receipt was recorded (set by the contract).
+    pub ledger: u32,
 }
 
 #[contracterror]
@@ -229,6 +386,13 @@ pub enum Error {
     AlreadyFrozen = 21,
     MetadataFrozen = 22,
     DuplicateInRepair = 23,
+    /// `tx_hash` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes).
+    InvalidTxHash = 24,
+    /// `amount` supplied to `record_payment` is `<= 0`.
+    InvalidPaymentAmount = 25,
+    NotModerator = 26,
+    AlreadyFlagged = 27,
+    NotFlagged = 28,
 }
 
 #[contract]
@@ -264,7 +428,7 @@ impl VaultRegistry {
             id: id.clone(),
             creator: creator.clone(),
             price,
-            metadata,
+            metadata: metadata.clone(),
             listed: true,
             tags,
             verified: VerificationStatus::Pending,
@@ -291,8 +455,16 @@ impl VaultRegistry {
         let cur = Self::creator_count(&env, &creator);
         Self::set_creator_count(&env, &creator, cur + 1);
 
+        let event = RegisterEvent {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata,
+            listed: true,
+            tags,
+        };
         env.events()
-            .publish((symbol_short!("register"), creator), resource);
+            .publish((symbol_short!("register"), id), event);
         Ok(())
     }
 
@@ -820,6 +992,109 @@ impl VaultRegistry {
             .unwrap_or(false)
     }
 
+    // ─── Moderator role ──────────────────────────────────────────────────────
+
+    /// Grant the moderator role to `moderator`. Only the admin may call this.
+    /// Moderators can flag and unflag dispute notices on resources but cannot
+    /// change ownership, price, metadata, or verification status.
+    /// Errors `AdminNotSet` if no admin has been set yet.
+    pub fn add_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &true);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("addmod"), moderator), true);
+        Ok(())
+    }
+
+    /// Revoke the moderator role from `moderator`. Only the admin may call this.
+    pub fn remove_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &false);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("rmmod"), moderator), false);
+        Ok(())
+    }
+
+    /// Whether `address` currently holds the moderator role.
+    pub fn is_moderator(env: Env, address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Moderator(address))
+            .unwrap_or(false)
+    }
+
+    /// Flag a dispute notice on a resource. Only an address currently holding
+    /// the moderator role may call this. Errors `NotFound` if the resource
+    /// does not exist, `AlreadyFlagged` if it is already flagged.
+    pub fn flag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::NotModerator);
+        }
+        Self::validate_resource_id(&id)?;
+        // Confirm resource exists
+        Self::load(&env, &id)?;
+        let flag_key = DataKey::DisputeFlag(id.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            return Err(Error::AlreadyFlagged);
+        }
+        env.storage().persistent().set(&flag_key, &true);
+        Self::bump_persistent(&env, &flag_key);
+        env.events()
+            .publish((symbol_short!("flagdisp"), id), moderator);
+        Ok(())
+    }
+
+    /// Remove a dispute flag from a resource. Only a moderator may call this.
+    /// Errors `NotFound` if the resource does not exist, `NotFlagged` if it is
+    /// not currently flagged.
+    pub fn unflag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::NotModerator);
+        }
+        Self::validate_resource_id(&id)?;
+        // Confirm resource exists
+        Self::load(&env, &id)?;
+        let flag_key = DataKey::DisputeFlag(id.clone());
+        if !env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            return Err(Error::NotFlagged);
+        }
+        env.storage().persistent().set(&flag_key, &false);
+        Self::bump_persistent(&env, &flag_key);
+        env.events()
+            .publish((symbol_short!("unflgdisp"), id), moderator);
+        Ok(())
+    }
+
+    /// Whether a resource currently has an active dispute flag.
+    /// Returns `false` for unknown resources (no `NotFound` error).
+    pub fn is_flagged(env: Env, id: String) -> bool {
+        let flag_key = DataKey::DisputeFlag(id);
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
+            .unwrap_or(false)
+    }
+
     /// Rebuild the pagination index (`list`/`list_page`/`count`) from an
     /// authoritative, admin-supplied ordered list of resource ids. Only the
     /// admin may call this. Every id must already exist as a registered
@@ -879,10 +1154,99 @@ impl VaultRegistry {
         Ok(())
     }
 
+    /// Record a payment receipt for a resource after x402/Soroban settlement.
+    ///
+    /// This is the escrow-ready payment hook: after the x402 facilitator
+    /// settles a USDC transfer on-chain, the server (or the payer directly)
+    /// calls this to anchor the settlement reference inside the registry.
+    /// Future escrow and lease contracts can look up `(resource_id, payer)`
+    /// without scanning event history.
+    ///
+    /// Requires the **payer's** authorization so receipts cannot be fabricated
+    /// by a third party.
+    ///
+    /// `tx_hash` must be non-empty and at most [`MAX_TX_HASH_LEN`] bytes.
+    /// `amount` must be `> 0` (USDC stroops).
+    ///
+    /// Recording a receipt for a `(resource_id, payer)` pair that already has
+    /// one **overwrites** the previous entry — the stored value always reflects
+    /// the most recent settlement. The full history is available from the
+    /// `payrec` event stream.
+    ///
+    /// Errors deterministically:
+    /// - [`Error::NotFound`] — `resource_id` is not registered
+    /// - [`Error::InvalidResourceId`] — `resource_id` fails format validation
+    /// - [`Error::InvalidTxHash`] — `tx_hash` is empty or exceeds [`MAX_TX_HASH_LEN`]
+    /// - [`Error::InvalidPaymentAmount`] — `amount <= 0`
+    pub fn record_payment(
+        env: Env,
+        resource_id: String,
+        payer: Address,
+        tx_hash: String,
+        amount: i128,
+    ) -> Result<(), Error> {
+        payer.require_auth();
+        Self::validate_resource_id(&resource_id)?;
+
+        // Resource must exist — receipts must reference real registered resources.
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Resource(resource_id.clone()))
+        {
+            return Err(Error::NotFound);
+        }
+
+        // Validate tx_hash
+        let hash_len = tx_hash.len();
+        if hash_len == 0 || hash_len > MAX_TX_HASH_LEN {
+            return Err(Error::InvalidTxHash);
+        }
+
+        // Validate amount
+        if amount <= 0 {
+            return Err(Error::InvalidPaymentAmount);
+        }
+
+        let receipt = PaymentReceipt {
+            resource_id: resource_id.clone(),
+            payer: payer.clone(),
+            tx_hash,
+            amount,
+            ledger: env.ledger().sequence(),
+        };
+
+        let key = DataKey::PaymentReceipt(resource_id.clone(), payer.clone());
+        env.storage().persistent().set(&key, &receipt);
+        Self::bump_persistent(&env, &key);
+
+        env.events()
+            .publish((symbol_short!("payrec"), resource_id), receipt);
+        Ok(())
+    }
+
+    /// Fetch the most recent payment receipt for `(resource_id, payer)`.
+    /// Errors with [`Error::NotFound`] if no receipt has been recorded for
+    /// this pair. Bumps the entry's TTL on a successful read.
+    pub fn get_payment_receipt(
+        env: Env,
+        resource_id: String,
+        payer: Address,
+    ) -> Result<PaymentReceipt, Error> {
+        Self::validate_resource_id(&resource_id)?;
+        let key = DataKey::PaymentReceipt(resource_id, payer);
+        let receipt = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        Self::bump_persistent(&env, &key);
+        Ok(receipt)
+    }
+
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     /// Bumps the entry's TTL on a successful read.
-    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
-        let key = DataKey::CreatorTerms(creator);
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {        let key = DataKey::CreatorTerms(creator);
         let hash = env
             .storage()
             .persistent()

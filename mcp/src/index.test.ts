@@ -954,6 +954,159 @@ describe("buy – purchase receipt persistence", () => {
   });
 });
 
+// ── dry-run mode (#411) ─────────────────────────────────────────────────────
+
+describe("dry-run – publish validation", () => {
+  beforeEach(() => {
+    _setAgentWallet(testWallet);
+    _setAgentApiKey("test-api-key");
+  });
+
+  afterEach(() => {
+    _setAgentWallet(null);
+    _setAgentApiKey(null);
+    vi.restoreAllMocks();
+  });
+
+  it("returns dry-run result without submitting payment", async () => {
+    const result = await dispatchTool("mindvault_publish", {
+      title: "Test Resource",
+      price: "5.00",
+      externalUrl: "https://example.com/data",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.mode).toBe("dry-run");
+    expect(parsed.operation).toBe("publish");
+    expect(parsed.validation).toBeDefined();
+    expect(parsed.intentions).toBeDefined();
+    expect(parsed.steps).toBeDefined();
+  });
+
+  it("validates title in dry-run", async () => {
+    const result = await dispatchTool("mindvault_publish", {
+      title: "",
+      price: "5.00",
+      externalUrl: "https://example.com/data",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.validation.title.valid).toBe(false);
+    expect(parsed.validation.title.error).toBeDefined();
+  });
+
+  it("validates price in dry-run", async () => {
+    const result = await dispatchTool("mindvault_publish", {
+      title: "Test",
+      price: "invalid",
+      externalUrl: "https://example.com/data",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.validation.price.valid).toBe(false);
+  });
+
+  it("validates URL in dry-run", async () => {
+    const result = await dispatchTool("mindvault_publish", {
+      title: "Test",
+      price: "5.00",
+      externalUrl: "not-a-url",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.validation.externalUrl.valid).toBe(false);
+  });
+
+  it("shows required wallet state in intentions", async () => {
+    const result = await dispatchTool("mindvault_publish", {
+      title: "Test",
+      price: "5.00",
+      externalUrl: "https://example.com/data",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.intentions.requiredWalletState.wallet).toBe(true);
+    expect(parsed.intentions.requiredWalletState.publisherApiKey).toBe(true);
+  });
+
+  it("shows network and endpoint in intentions", async () => {
+    const result = await dispatchTool("mindvault_publish", {
+      title: "Test",
+      price: "5.00",
+      externalUrl: "https://example.com/data",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.intentions.network).toBeDefined();
+    expect(parsed.intentions.endpoint).toContain("POST");
+    expect(parsed.intentions.endpoint).toContain("/resources");
+  });
+});
+
+describe("dry-run – buy validation", () => {
+  beforeEach(() => {
+    _setAgentWallet(testWallet);
+  });
+
+  afterEach(() => {
+    _setAgentWallet(null);
+    vi.restoreAllMocks();
+  });
+
+  it("returns dry-run result without submitting payment", async () => {
+    const result = await dispatchTool("mindvault_buy", {
+      resourceId: "res-001",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.mode).toBe("dry-run");
+    expect(parsed.operation).toBe("buy");
+    expect(parsed.resourceId).toBe("res-001");
+    expect(parsed.validation).toBeDefined();
+    expect(parsed.intentions).toBeDefined();
+    expect(parsed.steps).toBeDefined();
+  });
+
+  it("validates resource ID in dry-run", async () => {
+    const result = await dispatchTool("mindvault_buy", {
+      resourceId: "res@invalid",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.validation.resourceId.valid).toBe(false);
+  });
+
+  it("shows required wallet state in intentions", async () => {
+    const result = await dispatchTool("mindvault_buy", {
+      resourceId: "res-001",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.intentions.requiredWalletState.wallet).toBe(true);
+  });
+
+  it("shows network and endpoint in intentions", async () => {
+    const result = await dispatchTool("mindvault_buy", {
+      resourceId: "res-001",
+      dryRun: true,
+    });
+
+    const parsed = JSON.parse(result);
+    expect(parsed.intentions.network).toBeDefined();
+    expect(parsed.intentions.endpoint).toContain("GET");
+    expect(parsed.intentions.endpoint).toContain("/resources/res-001");
+  });
+});
+
 // ── mindvault_register_onchain (#313) ───────────────────────────────────────
 
 describe("registerOnchain – happy path", () => {

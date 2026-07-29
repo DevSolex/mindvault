@@ -15,7 +15,6 @@ import {
   X402_NETWORK_IDS,
   type Resource,
 } from "@mindvault/registry-client";
-import { explorerTxUrl } from "./stellarExplorer.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
@@ -26,6 +25,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "
 import { homedir } from "os";
 import { join } from "path";
 import { cacheStalenessNotice } from "./cacheStaleness.js";
+import { explorerTxUrl } from "./stellarExplorer.js";
 import {
   collectStartupDiagnostics,
   formatDiagnostics,
@@ -53,6 +53,8 @@ import {
   mockRegistryLookup,
 } from "./mock.js";
 import { purchaseHistoryTool, recordPurchase } from "./purchaseHistory.js";
+import { dryRunPublish, dryRunBuy, dryRunOnchain } from "./dryRun.js";
+import { initAuditLogging, logToolStart, logToolSuccess, logToolError } from "./auditLog.js";
 import { REGISTRY_LIST_DEFAULT_LIMIT, REGISTRY_LIST_DEFAULT_START } from "./registryPagination.js";
 import {
   flag,
@@ -125,21 +127,6 @@ import {
 
 const STELLAR_NETWORK = resolveStellarNetwork(process.env.STELLAR_NETWORK);
 const networkPreset = registryNetworks[STELLAR_NETWORK];
-// Explorer segment for Stellar Expert links attached to mutation/payment
-// results ("testnet" or "public"). Derived from the same preset as the rest of
-// the config so links always match the network the server operates on.
-const EXPLORER_NETWORK = networkPreset.explorerNetwork;
-
-/**
- * Build the `explorerUrl` field for a mutation/payment result. Returns an empty
- * object when there is no transaction hash (e.g. an on-chain submission that
- * failed), so a failed operation never emits a dead link. Spread into the
- * result object alongside `txHash`.
- */
-function explorerFields(txHash: string | null | undefined): { explorerUrl?: string } {
-  const url = explorerTxUrl(txHash, EXPLORER_NETWORK);
-  return url ? { explorerUrl: url } : {};
-}
 
 // Startup diagnostics: collect every configuration problem in one pass so the
 // operator sees the full list (with exact variable names and expected values)
@@ -168,6 +155,10 @@ const NETWORK: X402Network = normalizeX402Network(
 // Opt-in tool-level metrics (set MINDVAULT_METRICS=1). Disabled by default so
 // there is zero bookkeeping unless an operator turns it on.
 const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
+
+// Opt-in audit logging (set MINDVAULT_AUDIT_LOG=1). Logs tool calls, network
+// requests, duration, status, and tx hashes with automatic secret redaction.
+initAuditLogging(process.env);
 
 // Contributor-friendly mock mode (set MINDVAULT_MOCK=1). When on, every HTTP
 // call and the on-chain registry lookup are served from deterministic in-memory
@@ -891,6 +882,12 @@ async function insufficientFundsMessage(
   ].join("\n");
 }
 
+function explorerFields(txHash: string | null) {
+  return {
+    explorerUrl: txHash ? explorerTxUrl(txHash, NETWORK) : null,
+  };
+}
+
 export async function txStatus(txHash: string): Promise<string> {
   const hash = (txHash ?? "").trim();
   if (!hash) return "Provide a transaction hash to look up.";
@@ -933,6 +930,7 @@ export async function txStatus(txHash: string): Promise<string> {
           "Transaction not found on the configured Soroban RPC. It may be unconfirmed, on a different network, or outside the RPC's retention window.",
         oldestLedger: tx.oldestLedger,
         latestLedger: tx.latestLedger,
+        ...explorerFields(hash),
       },
       null,
       2,
@@ -949,6 +947,7 @@ export async function txStatus(txHash: string): Promise<string> {
       envelopeXdr: tx.envelopeXdr,
       resultXdr: tx.resultXdr,
       resultMetaXdr: tx.resultMetaXdr,
+      ...explorerFields(hash),
     },
     null,
     2,
@@ -1300,7 +1299,16 @@ export async function browse(): Promise<string> {
     description?: string;
     price: string;
     externalUrl: string;
+    dryRun?: boolean;
   }): Promise<string> {
+    if (args.dryRun) {
+      return JSON.stringify(
+        dryRunPublish(args, NETWORK, BASE_URL, !!activeProfile().wallet, !!currentApiKey()),
+        null,
+        2,
+      );
+    }
+
     const wallet = requireWallet();
     const apiKey = requireApiKey();
 
@@ -1441,7 +1449,19 @@ export async function browse(): Promise<string> {
     return JSON.stringify(summary, null, 2);
   }
 
-  export async function buy(resourceId: string): Promise<string> {
+  export async function buy(
+    resourceId: string,
+    dryRun?: boolean,
+    estimatedPrice?: string | null,
+  ): Promise<string> {
+    if (dryRun) {
+      return JSON.stringify(
+        dryRunBuy(resourceId, NETWORK, BASE_URL, !!activeProfile().wallet, estimatedPrice ?? null),
+        null,
+        2,
+      );
+    }
+
     const wallet = requireWallet();
 
     // Check the wallet can cover the price before attempting payment so a
@@ -1731,7 +1751,6 @@ export async function browse(): Promise<string> {
         resourceId,
         metadata,
         txHash,
-        ...explorerFields(txHash),
       },
       null,
       2,
@@ -1813,7 +1832,6 @@ export async function browse(): Promise<string> {
         resourceId,
         price,
         txHash,
-        ...explorerFields(txHash),
       },
       null,
       2,
@@ -1893,7 +1911,6 @@ export async function browse(): Promise<string> {
         resourceId,
         newCreator,
         txHash,
-        ...explorerFields(txHash),
       },
       null,
       2,
@@ -1973,7 +1990,6 @@ export async function browse(): Promise<string> {
         resourceId,
         listed,
         txHash,
-        ...explorerFields(txHash),
       },
       null,
       2,
@@ -2467,11 +2483,12 @@ export async function browse(): Promise<string> {
           description: optionalString(args, "description"),
           price: requiredString(args, "price"),
           externalUrl: requiredString(args, "externalUrl"),
+          dryRun: flag(args, "dryRun"),
         });
       case "mindvault_publish_status":
         return publishStatus(rawRecord);
       case "mindvault_buy":
-        return buy(requiredString(args, "resourceId"));
+        return buy(requiredString(args, "resourceId"), flag(args, "dryRun"));
       case "mindvault_purchase_history":
         return purchaseHistoryTool(rawRecord);
       case "mindvault_register_onchain":

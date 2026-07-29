@@ -174,7 +174,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "mindvault_publish",
     description:
-      "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status.",
+      "Publish a link resource to the MindVault catalog. The resource undergoes AI verification (agent wallet pays ~$0.10 USDC via x402) and is automatically registered on-chain if verified. Returns resource ID, access URL, verification result, and on-chain registration status. Pass dryRun: true to validate inputs without submitting payment.",
     inputSchema: {
       type: "object",
       properties: {
@@ -203,6 +203,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description: "Public http(s) URL buyers receive after payment.",
           examples: ["https://docs.stellar.org/consensus", "https://example.com/data.json"],
         },
+        dryRun: {
+          type: "boolean",
+          description:
+            "Optional dry-run flag. When true, validates inputs and shows intended network, endpoint, and required wallet state without submitting payment or transactions.",
+        },
         confirmMainnet: {
           type: "boolean",
           description:
@@ -215,7 +220,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "mindvault_buy",
     description:
-      "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1).",
+      "Pay USDC via x402 and access a resource. On mainnet, pass confirmMainnet: true (or set MINDVAULT_ALLOW_MAINNET=1). Pass dryRun: true to validate the resource and show intended payment flow without submitting payment.",
     inputSchema: {
       type: "object",
       properties: {
@@ -224,6 +229,11 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "The resource ID to buy, from mindvault_browse or mindvault_search. Letters, digits, dot, dash, or underscore.",
           examples: ["cm7x8y9z", "swcn98besxpp6t1u8e77fqz3"],
+        },
+        dryRun: {
+          type: "boolean",
+          description:
+            "Optional dry-run flag. When true, validates the resource ID and shows intended network, endpoint, and required wallet state without submitting payment.",
         },
         confirmMainnet: {
           type: "boolean",
@@ -462,8 +472,6 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "Replacement tag list (0–8 entries, each 1–32 chars). Tags are normalized to lowercase. Use lowercase letters, digits, hyphens, or underscores. Examples: ['dataset', 'research'], [] to clear all tags.",
           examples: [["dataset", "research"], ["finance", "api"], []],
-            "The resource ID to update metadata for. Example: 'cm7x8y9z'",
-          examples: ["cm7x8y9z", "res-001"],
         },
         metadata: {
           type: "string",
@@ -492,8 +500,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         resourceId: {
           type: "string",
-          description:
-            "The resource ID to update price for. Example: 'cm7x8y9z'",
+          description: "The resource ID to update price for. Example: 'cm7x8y9z'",
           examples: ["cm7x8y9z", "res-001"],
         },
         price: {
@@ -520,14 +527,12 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         resourceId: {
           type: "string",
-          description:
-            "The resource ID to transfer ownership of. Example: 'cm7x8y9z'",
+          description: "The resource ID to transfer ownership of. Example: 'cm7x8y9z'",
           examples: ["cm7x8y9z", "res-001"],
         },
         newCreator: {
           type: "string",
-          description:
-            "The Stellar public key (G… , 56 chars) of the new resource owner.",
+          description: "The Stellar public key (G… , 56 chars) of the new resource owner.",
           examples: ["GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH"],
         },
         confirmMainnet: {
@@ -548,8 +553,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       properties: {
         resourceId: {
           type: "string",
-          description:
-            "The resource ID to change listed state for. Example: 'cm7x8y9z'",
+          description: "The resource ID to change listed state for. Example: 'cm7x8y9z'",
           examples: ["cm7x8y9z", "res-001"],
         },
         listed: {
@@ -594,8 +598,7 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         },
         profile: {
           type: "string",
-          description:
-            "Optional profile name to import into. Defaults to the active profile.",
+          description: "Optional profile name to import into. Defaults to the active profile.",
           examples: ["testnet", "mainnet-publisher"],
         },
         persist: {

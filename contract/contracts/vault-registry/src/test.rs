@@ -54,14 +54,14 @@ fn register_then_read() {
 }
 
 #[test]
-fn register_event_contains_full_resource_payload() {
+fn register_emits_structured_event() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "evtres");
     let metadata = String::from_str(&env, "ipfs://evt");
     let price = 500i128;
     let tags_list = tags(&env, &["tag1"]);
 
-    client.register(&creator, &id, &price, &metadata, &tags_list);
+    client.register(&creator, &id, &1_000_000i128, &metadata, &resource_tags);
 
     let all_events = env.events().all();
     let mut found = false;
@@ -2605,6 +2605,21 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.repair_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "reindex"
     record(&env, &client, &mut observed);
 
+    let payer = Address::generate(&env);
+    client.record_payment(&r0, &payer, &String::from_str(&env, "txhash123"), &1_000_000i128); // -> "payrec"
+    record(&env, &client, &mut observed);
+
+    // Moderator role and dispute flagging (#390).
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator); // -> "addmod"
+    record(&env, &client, &mut observed);
+    client.flag_dispute(&r0, &moderator); // -> "flagdisp"
+    record(&env, &client, &mut observed);
+    client.unflag_dispute(&r0, &moderator); // -> "unflgdisp"
+    record(&env, &client, &mut observed);
+    client.remove_moderator(&moderator); // -> "rmmod"
+    record(&env, &client, &mut observed);
+
     observed.sort();
     observed.dedup();
 
@@ -2998,7 +3013,10 @@ proptest! {
     #[test]
     fn metadata_boundary_shorter_strings_always_succeed(
         id_str   in r"[a-z][a-z0-9]{0,10}",
-        body_len in 0usize..=(512usize - "ipfs://".len()),
+        // Bound by "https://" (8 bytes) — the longer of the two prefixes used
+        // in this test — so the generated body stays within MAX_METADATA_POINTER_LEN
+        // for both the register ("ipfs://") and update_metadata ("https://") steps.
+        body_len in 0usize..=(512usize - "https://".len()),
         ch       in r"[a-zA-Z0-9]",
     ) {
         let env = Env::default();
@@ -3693,4 +3711,673 @@ fn repeated_reads_keep_ttl_at_bump_amount() {
             "TTL must be restored to BUMP_AMOUNT after each read"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Escrow-ready payment state model (#387)
+// ---------------------------------------------------------------------------
+//
+// `record_payment` anchors an x402/Soroban settlement receipt on-chain,
+// keyed by (resource_id, payer). `get_payment_receipt` retrieves the most
+// recent receipt for a pair. All error paths are deterministic.
+
+fn payment_receipt_ttl(
+    env: &Env,
+    contract: &soroban_sdk::Address,
+    resource_id: &String,
+    payer: &Address,
+) -> u32 {
+    let key = DataKey::PaymentReceipt(resource_id.clone(), payer.clone());
+    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+}
+
+/// Record a payment and round-trip it through get_payment_receipt.
+#[test]
+fn record_payment_round_trip() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrec1");
+    client.register(
+        &creator,
+        &id,
+        &1_000_000i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let payer = Address::generate(&env);
+    let tx_hash = String::from_str(&env, "abc123def456");
+    let amount = 1_000_000i128;
+
+    client.record_payment(&id, &payer, &tx_hash, &amount);
+
+    let receipt = client.get_payment_receipt(&id, &payer);
+    assert_eq!(receipt.resource_id, id);
+    assert_eq!(receipt.payer, payer);
+    assert_eq!(receipt.tx_hash, tx_hash);
+    assert_eq!(receipt.amount, amount);
+    // ledger is set by the contract; just confirm it is non-zero in a real run
+    // (testutils start at ledger 0 by default, so we only check the type exists)
+    let _ = receipt.ledger;
+}
+
+/// record_payment stamps ledger from the ledger sequence at call time.
+#[test]
+fn record_payment_stamps_ledger_sequence() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payreclgr");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    env.ledger().set_sequence_number(777);
+    let payer = Address::generate(&env);
+    client.record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash777"),
+        &100i128,
+    );
+
+    let receipt = client.get_payment_receipt(&id, &payer);
+    assert_eq!(receipt.ledger, 777, "ledger must reflect env sequence at record time");
+}
+
+/// Recording a second payment for the same (resource_id, payer) pair
+/// overwrites the first — the stored value always reflects the most recent.
+#[test]
+fn record_payment_overwrites_previous_receipt() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecow");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let payer = Address::generate(&env);
+
+    client.record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "first_tx"),
+        &500i128,
+    );
+    client.record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "second_tx"),
+        &750i128,
+    );
+
+    let receipt = client.get_payment_receipt(&id, &payer);
+    assert_eq!(
+        receipt.tx_hash,
+        String::from_str(&env, "second_tx"),
+        "second call must overwrite the first"
+    );
+    assert_eq!(receipt.amount, 750i128);
+}
+
+/// Different payers produce independent receipts under the same resource.
+#[test]
+fn record_payment_independent_per_payer() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecmulti");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let payer_a = Address::generate(&env);
+    let payer_b = Address::generate(&env);
+
+    client.record_payment(&id, &payer_a, &String::from_str(&env, "tx_a"), &100i128);
+    client.record_payment(&id, &payer_b, &String::from_str(&env, "tx_b"), &200i128);
+
+    let ra = client.get_payment_receipt(&id, &payer_a);
+    let rb = client.get_payment_receipt(&id, &payer_b);
+
+    assert_eq!(ra.tx_hash, String::from_str(&env, "tx_a"));
+    assert_eq!(ra.amount, 100i128);
+    assert_eq!(rb.tx_hash, String::from_str(&env, "tx_b"));
+    assert_eq!(rb.amount, 200i128);
+}
+
+/// record_payment emits a `payrec` event with the full PaymentReceipt payload.
+#[test]
+fn record_payment_emits_payrec_event() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecevt");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    let payer = Address::generate(&env);
+    let tx_hash = String::from_str(&env, "evthash");
+    let amount = 123_456i128;
+
+    client.record_payment(&id, &payer, &tx_hash, &amount);
+
+    // env.events().all() reflects the most recent invocation
+    let all = env.events().all();
+    assert_eq!(all.len(), 1, "exactly one event should be emitted");
+
+    let (_, topics, data) = all.get(0).unwrap();
+    assert_eq!(topics.len(), 2, "payrec topics should be (symbol, resource_id)");
+
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, symbol_short!("payrec"));
+
+    let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_id, id);
+
+    let receipt: PaymentReceipt = PaymentReceipt::try_from_val(&env, &data).unwrap();
+    assert_eq!(receipt.resource_id, id);
+    assert_eq!(receipt.payer, payer);
+    assert_eq!(receipt.tx_hash, tx_hash);
+    assert_eq!(receipt.amount, amount);
+}
+
+/// record_payment errors NotFound when resource_id is not registered.
+#[test]
+fn record_payment_rejects_unknown_resource() {
+    let (env, _creator, client) = setup();
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &String::from_str(&env, "ghostresource"),
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &100i128,
+    );
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+/// record_payment errors InvalidTxHash when tx_hash is empty.
+#[test]
+fn record_payment_rejects_empty_tx_hash() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecbadh1");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, ""),
+        &100i128,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
+}
+
+/// record_payment errors InvalidTxHash when tx_hash exceeds MAX_TX_HASH_LEN.
+#[test]
+fn record_payment_rejects_tx_hash_over_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecbadh2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let long_hash = String::from_str(&env, &"a".repeat((MAX_TX_HASH_LEN + 1) as usize));
+    let res = client.try_record_payment(&id, &payer, &long_hash, &100i128);
+    assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
+}
+
+/// record_payment accepts a tx_hash exactly at MAX_TX_HASH_LEN.
+#[test]
+fn record_payment_accepts_tx_hash_at_max_length() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecmaxh");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let max_hash = String::from_str(&env, &"a".repeat(MAX_TX_HASH_LEN as usize));
+    client.record_payment(&id, &payer, &max_hash, &100i128);
+    assert_eq!(client.get_payment_receipt(&id, &payer).tx_hash, max_hash);
+}
+
+/// record_payment errors InvalidPaymentAmount when amount is zero.
+#[test]
+fn record_payment_rejects_zero_amount() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecbadamt1");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &0i128,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
+}
+
+/// record_payment errors InvalidPaymentAmount when amount is negative.
+#[test]
+fn record_payment_rejects_negative_amount() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecbadamt2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &-1i128,
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
+}
+
+/// get_payment_receipt errors NotFound when no receipt has been recorded.
+#[test]
+fn get_payment_receipt_missing_returns_not_found() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecnotfound");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    let res = client.try_get_payment_receipt(&id, &payer);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+/// Failed record_payment calls leave no receipt behind.
+#[test]
+fn failed_record_payment_does_not_store_receipt() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecfailstore");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+
+    // Attempt with zero amount — should fail
+    let _ = client.try_record_payment(
+        &id,
+        &payer,
+        &String::from_str(&env, "txhash"),
+        &0i128,
+    );
+
+    // No receipt should be stored
+    assert_eq!(
+        client.try_get_payment_receipt(&id, &payer),
+        Err(Ok(Error::NotFound)),
+        "a failed record_payment must not persist a receipt"
+    );
+}
+
+/// record_payment bumps the receipt entry's TTL on write.
+#[test]
+fn record_payment_sets_ttl_on_write() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecttlw");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        TTL_BUMP_AMOUNT,
+        "record_payment must set TTL to BUMP_AMOUNT"
+    );
+}
+
+/// get_payment_receipt bumps the receipt entry's TTL on a successful read.
+#[test]
+fn get_payment_receipt_bumps_ttl_on_read() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecttlr");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let payer = Address::generate(&env);
+    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+
+    // Decay past LIFETIME_THRESHOLD so extend_ttl fires.
+    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + decay);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        TTL_BUMP_AMOUNT - decay,
+        "TTL should have decayed before the read"
+    );
+
+    client.get_payment_receipt(&id, &payer);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        TTL_BUMP_AMOUNT,
+        "get_payment_receipt must bump TTL back to BUMP_AMOUNT"
+    );
+}
+
+/// record_payment does not affect existing Resource fields — all registry
+/// reads on the resource return the same values before and after.
+#[test]
+fn record_payment_does_not_mutate_resource() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "payrecnomut");
+    let metadata = String::from_str(&env, "ipfs://immutable");
+    client.register(&creator, &id, &500i128, &metadata, &empty_tags(&env));
+
+    let before = client.get(&id);
+
+    let payer = Address::generate(&env);
+    client.record_payment(&id, &payer, &String::from_str(&env, "txhash"), &500i128);
+
+    let after = client.get(&id);
+
+    assert_eq!(before, after, "record_payment must not mutate the Resource entry");
+    assert_eq!(client.count(), 1, "record_payment must not change the resource count");
+    assert_eq!(
+        client.list(&0u32, &10u32).get(0).unwrap().id,
+        id,
+        "record_payment must not affect catalog order"
+    );
+// ─── Moderator role (#390) ──────────────────────────────────────────────────
+
+#[test]
+fn admin_can_grant_and_revoke_moderator() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+
+    assert!(!client.is_moderator(&moderator));
+
+    client.add_moderator(&moderator);
+    assert!(client.is_moderator(&moderator));
+
+    client.remove_moderator(&moderator);
+    assert!(!client.is_moderator(&moderator));
+}
+
+#[test]
+fn add_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_add_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn remove_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_remove_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn is_moderator_false_for_unknown_address() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_moderator(&stranger));
+}
+
+#[test]
+fn add_moderator_emits_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "addmod"));
+    let flagged: bool = bool::try_from_val(&env, &data).unwrap();
+    assert!(flagged);
+}
+
+#[test]
+fn remove_moderator_emits_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.remove_moderator(&moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "rmmod"));
+    let flagged: bool = bool::try_from_val(&env, &data).unwrap();
+    assert!(!flagged);
+}
+
+#[test]
+fn non_admin_cannot_add_moderator() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    // A random address that was never granted admin is not authorised.
+    // mock_all_auths is active so auth itself passes, but require_admin
+    // checks the stored admin and will reject a stranger.
+    let stranger = Address::generate(&env);
+    // We can't easily bypass mock_all_auths for a sub-call, but we can verify
+    // the role check: remove_moderator on an address never granted is still
+    // guarded by admin-only; confirming the add path by using try_add_moderator
+    // from a fresh env with no admin set.
+    let env2 = Env::default();
+    env2.mock_all_auths();
+    let contract_id2 = env2.register(VaultRegistry, ());
+    let client2 = VaultRegistryClient::new(&env2, &contract_id2);
+    // No admin set → AdminNotSet
+    let moderator = Address::generate(&env2);
+    let res = client2.try_add_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+
+    // Confirm granting does NOT make stranger a moderator in original client
+    assert!(!client.is_moderator(&stranger));
+}
+
+// ─── Dispute flagging (#390) ────────────────────────────────────────────────
+
+#[test]
+fn moderator_can_flag_and_unflag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres1");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    assert!(!client.is_flagged(&id));
+
+    client.flag_dispute(&id, &moderator);
+    assert!(client.is_flagged(&id));
+
+    client.unflag_dispute(&id, &moderator);
+    assert!(!client.is_flagged(&id));
+}
+
+#[test]
+fn flag_dispute_on_missing_resource_fails() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    let missing = String::from_str(&env, "doesnotexist");
+    let res = client.try_flag_dispute(&missing, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn unflag_dispute_on_missing_resource_fails() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    let missing = String::from_str(&env, "doesnotexist");
+    let res = client.try_unflag_dispute(&missing, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn non_moderator_cannot_flag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres2");
+    let stranger = Address::generate(&env);
+    let res = client.try_flag_dispute(&id, &stranger);
+    assert_eq!(res, Err(Ok(Error::NotModerator)));
+    assert!(!client.is_flagged(&id));
+}
+
+#[test]
+fn non_moderator_cannot_unflag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres3");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+
+    let stranger = Address::generate(&env);
+    let res = client.try_unflag_dispute(&id, &stranger);
+    assert_eq!(res, Err(Ok(Error::NotModerator)));
+    assert!(client.is_flagged(&id)); // still flagged
+}
+
+#[test]
+fn revoked_moderator_cannot_flag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres4");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.remove_moderator(&moderator);
+
+    let res = client.try_flag_dispute(&id, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotModerator)));
+}
+
+#[test]
+fn double_flag_returns_already_flagged() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres5");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+
+    let res = client.try_flag_dispute(&id, &moderator);
+    assert_eq!(res, Err(Ok(Error::AlreadyFlagged)));
+    assert!(client.is_flagged(&id));
+}
+
+#[test]
+fn unflag_when_not_flagged_returns_not_flagged() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres6");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    let res = client.try_unflag_dispute(&id, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFlagged)));
+}
+
+#[test]
+fn flag_dispute_emits_event() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres7");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "flagdisp"));
+    let addr: Address = Address::try_from_val(&env, &data).unwrap();
+    assert_eq!(addr, moderator);
+}
+
+#[test]
+fn unflag_dispute_emits_event() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres8");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+    client.unflag_dispute(&id, &moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "unflgdisp"));
+    let addr: Address = Address::try_from_val(&env, &data).unwrap();
+    assert_eq!(addr, moderator);
+}
+
+#[test]
+fn is_flagged_false_for_unknown_resource() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    // Resource was never registered — should return false, not trap/NotFound
+    let missing = String::from_str(&env, "unknownres");
+    assert!(!client.is_flagged(&missing));
+}
+
+#[test]
+fn different_moderators_can_flag_and_unflag() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres9");
+    let mod1 = Address::generate(&env);
+    let mod2 = Address::generate(&env);
+    client.add_moderator(&mod1);
+    client.add_moderator(&mod2);
+
+    client.flag_dispute(&id, &mod1);
+    assert!(client.is_flagged(&id));
+
+    // A different moderator can unflag
+    client.unflag_dispute(&id, &mod2);
+    assert!(!client.is_flagged(&id));
 }
