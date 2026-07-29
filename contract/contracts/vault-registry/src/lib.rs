@@ -242,6 +242,22 @@ pub enum VerificationStatus {
     Rejected,
 }
 
+/// The availability and moderation state of a resource.
+///
+/// `listed` remains on [`Resource`] as a backwards-compatible projection: it
+/// is true exactly when this value is [`ResourceState::Listed`]. Clients that
+/// need to distinguish a moderation hold from a creator delist must use this
+/// field rather than the boolean projection.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ResourceState {
+    Listed,
+    Delisted,
+    Frozen,
+    Disputed,
+    Tombstoned,
+}
+
 /// Reason code supplied when a moderator flags a resource for dispute.
 ///
 /// The discriminants are stable — do not renumber existing variants.
@@ -283,6 +299,7 @@ pub struct FlagEvent {
     pub id: String,
     pub moderator: Address,
     pub reason: FlagReason,
+>>>>>>> b6ca6a861848b07654f22b1573e9173a4e2bbfe2
 }
 
 #[contracttype]
@@ -292,7 +309,11 @@ pub struct Resource {
     pub creator: Address,
     pub price: i128,
     pub metadata: String,
+    /// Backwards-compatible projection of `state == ResourceState::Listed`.
     pub listed: bool,
+    /// Explicit resource lifecycle state. See `contract/README.md` for the
+    /// transition table and the role allowed to make each transition.
+    pub state: ResourceState,
     /// Discovery labels (e.g. "dataset", "research"). Distinct from `metadata`,
     /// which remains the off-chain content anchor (IPFS URI, content hash, etc.).
     pub tags: Vec<String>,
@@ -450,6 +471,8 @@ pub enum Error {
     NotModerator = 26,
     AlreadyFlagged = 27,
     NotFlagged = 28,
+    InvalidLifecycleTransition = 29,
+    ResourceNotMutable = 30,
 }
 
 #[contract]
@@ -487,6 +510,7 @@ impl VaultRegistry {
             price,
             metadata: metadata.clone(),
             listed: true,
+            state: ResourceState::Listed,
             tags: norm_tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
@@ -539,6 +563,7 @@ impl VaultRegistry {
         Self::validate_price(new_price)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         let old_price = resource.price;
         let updater = resource.creator.clone();
         resource.price = new_price;
@@ -565,6 +590,7 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.frozen {
             return Err(Error::MetadataFrozen);
         }
@@ -590,6 +616,7 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.frozen {
             return Err(Error::AlreadyFrozen);
         }
@@ -646,6 +673,7 @@ impl VaultRegistry {
         let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
 
         // Capture previous tags before replacement for event emission and index
         let prev_tags = resource.tags.clone();
@@ -679,6 +707,7 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.creator == new_creator {
             return Err(Error::AlreadyOwner);
         }
@@ -703,6 +732,7 @@ impl VaultRegistry {
     pub fn propose_transfer(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.creator == new_creator {
             return Err(Error::AlreadyOwner);
         }
@@ -727,6 +757,7 @@ impl VaultRegistry {
         pending_owner.require_auth();
 
         let mut resource = Self::load(&env, &id)?;
+        Self::ensure_mutable(&resource)?;
         let previous_owner = resource.creator.clone();
         resource.creator = pending_owner.clone();
         Self::save(&env, &mut resource);
@@ -745,6 +776,7 @@ impl VaultRegistry {
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
 
         let key = DataKey::PendingTransfer(id.clone());
         if !env.storage().persistent().has(&key) {
@@ -756,19 +788,29 @@ impl VaultRegistry {
         Ok(())
     }
 
-    /// Set the listing state of a resource. Only the creator may call this.
-    ///
-    /// Emits a `setlisted` event with data `(old_listed, new_listed)` so
-    /// listeners can distinguish a delist, relist, or no-op transition without
-    /// needing to query additional state. The event is always emitted, even
-    /// when the new value equals the old value.
+    /// Set a resource's creator-controlled listing state. Only
+    /// `Listed <-> Delisted` transitions are accepted; all other lifecycle
+    /// states reject this method with `InvalidLifecycleTransition`.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         let old_listed = resource.listed;
-        resource.listed = listed;
-        Self::save(&env, &mut resource);
+        let next = if listed {
+            ResourceState::Listed
+        } else {
+            ResourceState::Delisted
+        };
+        // Preserve the established `set_listed` no-op behavior for existing
+        // callers. It is not a lifecycle transition, but still refreshes the
+        // resource and emits the legacy `setlisted` event.
+        if resource.state == next {
+            Self::save(&env, &mut resource);
+            env.events()
+                .publish((symbol_short!("setlisted"), id), (old_listed, listed));
+            return Ok(());
+        }
+        Self::transition_creator_state(&env, &mut resource, next)?;
         env.events()
             .publish((symbol_short!("setlisted"), id), (old_listed, listed));
         Ok(())
@@ -777,6 +819,66 @@ impl VaultRegistry {
     /// Delist a resource (convenience method for set_listed(false)). Only the creator may call this.
     pub fn delist(env: Env, id: String) -> Result<(), Error> {
         Self::set_listed(env, id, false)
+    }
+
+    /// Freeze an otherwise active resource. The creator may freeze a listed or
+    /// delisted resource, but only an admin can restore it through dispute
+    /// resolution. This lifecycle freeze is separate from `freeze_metadata`.
+    pub fn freeze_resource(env: Env, id: String) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        let mut resource = Self::load(&env, &id)?;
+        resource.creator.require_auth();
+        Self::transition_creator_state(&env, &mut resource, ResourceState::Frozen)
+    }
+
+    /// Place an active resource under an admin-controlled dispute hold.
+    pub fn open_dispute(env: Env, id: String, admin: Address) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if !matches!(
+            resource.state,
+            ResourceState::Listed | ResourceState::Delisted | ResourceState::Frozen
+        ) {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, ResourceState::Disputed);
+        Ok(())
+    }
+
+    /// Resolve a disputed resource to `Listed`, `Delisted`, or `Frozen`.
+    pub fn resolve_dispute(
+        env: Env,
+        id: String,
+        admin: Address,
+        state: ResourceState,
+    ) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if resource.state != ResourceState::Disputed
+            || !matches!(
+                state,
+                ResourceState::Listed | ResourceState::Delisted | ResourceState::Frozen
+            )
+        {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, state);
+        Ok(())
+    }
+
+    /// Permanently retire a resource. Only an admin may tombstone it; the
+    /// tombstoned state has no outgoing transitions.
+    pub fn tombstone_resource(env: Env, id: String, admin: Address) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if resource.state == ResourceState::Tombstoned {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, ResourceState::Tombstoned);
+        Ok(())
     }
 
     /// Paginated resource list in insertion order. `limit` is capped at 20.
@@ -804,11 +906,7 @@ impl VaultRegistry {
         let mut i = cursor;
         while i < total && items.len() < page_size {
             let idx_key = DataKey::Index(i);
-            if let Some(id) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, String>(&idx_key)
-            {
+            if let Some(id) = env.storage().persistent().get::<DataKey, String>(&idx_key) {
                 Self::bump_persistent(&env, &idx_key);
                 let res_key = DataKey::Resource(id);
                 if let Some(resource) = env
@@ -841,11 +939,7 @@ impl VaultRegistry {
         let mut i = start;
         while i < total && result.len() < page_size {
             let idx_key = DataKey::Index(i);
-            if let Some(id) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, String>(&idx_key)
-            {
+            if let Some(id) = env.storage().persistent().get::<DataKey, String>(&idx_key) {
                 Self::bump_persistent(&env, &idx_key);
                 let res_key = DataKey::Resource(id);
                 if let Some(resource) = env
@@ -854,7 +948,7 @@ impl VaultRegistry {
                     .get::<DataKey, Resource>(&res_key)
                 {
                     Self::bump_persistent(&env, &res_key);
-                    if resource.listed {
+                    if resource.state == ResourceState::Listed {
                         result.push_back(resource);
                     }
                 }
@@ -1847,6 +1941,54 @@ impl VaultRegistry {
         let mut bytes = alloc::vec![0u8; value.len() as usize];
         value.copy_into_slice(&mut bytes);
         bytes
+    }
+
+    /// Content and ownership changes are allowed only while a resource is
+    /// actively listed or creator-delisted. Frozen, disputed, and tombstoned
+    /// resources are preserved as-is until an admin resolves their lifecycle.
+    fn ensure_mutable(resource: &Resource) -> Result<(), Error> {
+        if matches!(
+            resource.state,
+            ResourceState::Listed | ResourceState::Delisted
+        ) {
+            Ok(())
+        } else {
+            Err(Error::ResourceNotMutable)
+        }
+    }
+
+    fn transition_creator_state(
+        env: &Env,
+        resource: &mut Resource,
+        next: ResourceState,
+    ) -> Result<(), Error> {
+        let allowed = matches!(
+            (resource.state, next),
+            (ResourceState::Listed, ResourceState::Delisted)
+                | (ResourceState::Delisted, ResourceState::Listed)
+                | (ResourceState::Listed, ResourceState::Frozen)
+                | (ResourceState::Delisted, ResourceState::Frozen)
+        );
+        if !allowed {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(env, resource, next);
+        Ok(())
+    }
+
+    fn transition_state(env: &Env, resource: &mut Resource, next: ResourceState) {
+        resource.state = next;
+        resource.listed = next == ResourceState::Listed;
+        Self::save(env, resource);
+    }
+
+    fn require_current_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        let current = Self::require_admin(env)?;
+        if current != *admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+        Ok(())
     }
 
     fn load(env: &Env, id: &String) -> Result<Resource, Error> {
