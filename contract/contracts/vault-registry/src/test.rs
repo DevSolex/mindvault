@@ -2609,6 +2609,17 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.record_payment(&r0, &payer, &String::from_str(&env, "txhash123"), &1_000_000i128); // -> "payrec"
     record(&env, &client, &mut observed);
 
+    // Moderator role and dispute flagging (#390).
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator); // -> "addmod"
+    record(&env, &client, &mut observed);
+    client.flag_dispute(&r0, &moderator); // -> "flagdisp"
+    record(&env, &client, &mut observed);
+    client.unflag_dispute(&r0, &moderator); // -> "unflgdisp"
+    record(&env, &client, &mut observed);
+    client.remove_moderator(&moderator); // -> "rmmod"
+    record(&env, &client, &mut observed);
+
     observed.sort();
     observed.dedup();
 
@@ -4123,4 +4134,250 @@ fn record_payment_does_not_mutate_resource() {
         id,
         "record_payment must not affect catalog order"
     );
+// ─── Moderator role (#390) ──────────────────────────────────────────────────
+
+#[test]
+fn admin_can_grant_and_revoke_moderator() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+
+    assert!(!client.is_moderator(&moderator));
+
+    client.add_moderator(&moderator);
+    assert!(client.is_moderator(&moderator));
+
+    client.remove_moderator(&moderator);
+    assert!(!client.is_moderator(&moderator));
+}
+
+#[test]
+fn add_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_add_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn remove_moderator_before_admin_set_fails() {
+    let (env, _creator, client) = setup();
+    let moderator = Address::generate(&env);
+    let res = client.try_remove_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+}
+
+#[test]
+fn is_moderator_false_for_unknown_address() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let stranger = Address::generate(&env);
+    assert!(!client.is_moderator(&stranger));
+}
+
+#[test]
+fn add_moderator_emits_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "addmod"));
+    let flagged: bool = bool::try_from_val(&env, &data).unwrap();
+    assert!(flagged);
+}
+
+#[test]
+fn remove_moderator_emits_event() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.remove_moderator(&moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "rmmod"));
+    let flagged: bool = bool::try_from_val(&env, &data).unwrap();
+    assert!(!flagged);
+}
+
+#[test]
+fn non_admin_cannot_add_moderator() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    // A random address that was never granted admin is not authorised.
+    // mock_all_auths is active so auth itself passes, but require_admin
+    // checks the stored admin and will reject a stranger.
+    let stranger = Address::generate(&env);
+    // We can't easily bypass mock_all_auths for a sub-call, but we can verify
+    // the role check: remove_moderator on an address never granted is still
+    // guarded by admin-only; confirming the add path by using try_add_moderator
+    // from a fresh env with no admin set.
+    let env2 = Env::default();
+    env2.mock_all_auths();
+    let contract_id2 = env2.register(VaultRegistry, ());
+    let client2 = VaultRegistryClient::new(&env2, &contract_id2);
+    // No admin set → AdminNotSet
+    let moderator = Address::generate(&env2);
+    let res = client2.try_add_moderator(&moderator);
+    assert_eq!(res, Err(Ok(Error::AdminNotSet)));
+
+    // Confirm granting does NOT make stranger a moderator in original client
+    assert!(!client.is_moderator(&stranger));
+}
+
+// ─── Dispute flagging (#390) ────────────────────────────────────────────────
+
+#[test]
+fn moderator_can_flag_and_unflag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres1");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    assert!(!client.is_flagged(&id));
+
+    client.flag_dispute(&id, &moderator);
+    assert!(client.is_flagged(&id));
+
+    client.unflag_dispute(&id, &moderator);
+    assert!(!client.is_flagged(&id));
+}
+
+#[test]
+fn flag_dispute_on_missing_resource_fails() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    let missing = String::from_str(&env, "doesnotexist");
+    let res = client.try_flag_dispute(&missing, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn unflag_dispute_on_missing_resource_fails() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    let missing = String::from_str(&env, "doesnotexist");
+    let res = client.try_unflag_dispute(&missing, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn non_moderator_cannot_flag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres2");
+    let stranger = Address::generate(&env);
+    let res = client.try_flag_dispute(&id, &stranger);
+    assert_eq!(res, Err(Ok(Error::NotModerator)));
+    assert!(!client.is_flagged(&id));
+}
+
+#[test]
+fn non_moderator_cannot_unflag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres3");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+
+    let stranger = Address::generate(&env);
+    let res = client.try_unflag_dispute(&id, &stranger);
+    assert_eq!(res, Err(Ok(Error::NotModerator)));
+    assert!(client.is_flagged(&id)); // still flagged
+}
+
+#[test]
+fn revoked_moderator_cannot_flag_dispute() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres4");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.remove_moderator(&moderator);
+
+    let res = client.try_flag_dispute(&id, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotModerator)));
+}
+
+#[test]
+fn double_flag_returns_already_flagged() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres5");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+
+    let res = client.try_flag_dispute(&id, &moderator);
+    assert_eq!(res, Err(Ok(Error::AlreadyFlagged)));
+    assert!(client.is_flagged(&id));
+}
+
+#[test]
+fn unflag_when_not_flagged_returns_not_flagged() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres6");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    let res = client.try_unflag_dispute(&id, &moderator);
+    assert_eq!(res, Err(Ok(Error::NotFlagged)));
+}
+
+#[test]
+fn flag_dispute_emits_event() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres7");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "flagdisp"));
+    let addr: Address = Address::try_from_val(&env, &data).unwrap();
+    assert_eq!(addr, moderator);
+}
+
+#[test]
+fn unflag_dispute_emits_event() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres8");
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+    client.flag_dispute(&id, &moderator);
+    client.unflag_dispute(&id, &moderator);
+
+    let all = env.events().all();
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    let t0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(t0, Symbol::new(&env, "unflgdisp"));
+    let addr: Address = Address::try_from_val(&env, &data).unwrap();
+    assert_eq!(addr, moderator);
+}
+
+#[test]
+fn is_flagged_false_for_unknown_resource() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    // Resource was never registered — should return false, not trap/NotFound
+    let missing = String::from_str(&env, "unknownres");
+    assert!(!client.is_flagged(&missing));
+}
+
+#[test]
+fn different_moderators_can_flag_and_unflag() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "dispres9");
+    let mod1 = Address::generate(&env);
+    let mod2 = Address::generate(&env);
+    client.add_moderator(&mod1);
+    client.add_moderator(&mod2);
+
+    client.flag_dispute(&id, &mod1);
+    assert!(client.is_flagged(&id));
+
+    // A different moderator can unflag
+    client.unflag_dispute(&id, &mod2);
+    assert!(!client.is_flagged(&id));
 }

@@ -114,6 +114,12 @@ returns only the `items` body for existing callers.
 | `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
 | `is_verifier(address)`                          | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the verifier role.                                                                                                                                                                                                                                                     |
 | `repair_index(ids)`                             | `admin`                                                  | `ids: Vec<String>` — authoritative ordered id list                                                                                                                                                                                                   | `Result<(), Error>`       | Rebuild the `list`/`list_page`/`count` pagination index from `ids`. Every id must already be a registered `Resource` (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md).                                  |
+| `add_moderator(moderator)`                      | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Grant the moderator role, authorizing `flag_dispute` and `unflag_dispute`. Errors `AdminNotSet` if no admin has been set yet. Emits `addmod`.                                                                                                                                                             |
+| `remove_moderator(moderator)`                   | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Revoke the moderator role. Emits `rmmod`.                                                                                                                                                                                                                                                                |
+| `is_moderator(address)`                         | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the moderator role.                                                                                                                                                                                                                                                    |
+| `flag_dispute(id, moderator)`                   | `moderator`                                              | `id: String`; `moderator: Address`                                                                                                                                                                                                                   | `Result<(), Error>`       | Flag a resource as disputed. Errors `NotFound` if the resource does not exist, `NotModerator` if caller is not a moderator, `AlreadyFlagged` if already flagged. Emits `flagdisp`.                                                                                                                       |
+| `unflag_dispute(id, moderator)`                 | `moderator`                                              | `id: String`; `moderator: Address`                                                                                                                                                                                                                   | `Result<(), Error>`       | Remove a dispute flag from a resource. Errors `NotFound` if the resource does not exist, `NotModerator` if caller is not a moderator, `NotFlagged` if not currently flagged. Emits `unflgdisp`.                                                                                                          |
+| `is_flagged(id)`                                | —                                                        | `id: String`                                                                                                                                                                                                                                         | `bool`                    | Whether a resource is currently flagged as disputed.                                                                                                                                                                                                                                                     |
 
 ### Roles
 
@@ -124,33 +130,36 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 
 ### Error codes
 
-| Code | Error                           | Description                                                                                          |
-| ---- | ------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `1`  | `AlreadyRegistered`             | A resource with the given `id` already exists.                                                       |
-| `2`  | `NotFound`                      | No resource (or terms hash) matches the given key.                                                   |
-| `3`  | `InvalidPrice`                  | Price is `<= 0`.                                                                                     |
-| `4`  | `MetadataTooLong`               | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes).                                     |
-| `5`  | `InvalidTag`                    | Tag format or count validation failed.                                                               |
-| `6`  | `Unauthorized`                  | Caller authentication check failed or unauthorized.                                                  |
-| `7`  | `PendingAdminNotSet`            | No pending admin is set, or caller does not match the pending admin.                                 |
-| `8`  | `PendingAdminAlreadySet`        | A pending admin nomination is already active.                                                        |
-| `9`  | `SameAdmin`                     | Nominated new admin is already the current contract admin.                                           |
-| `10` | `TermsHashTooLong`              | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes).                                                  |
-| `11` | `InvalidResourceId`             | Resource id is empty or exceeds 24 bytes.                                                            |
-| `12` | `InvalidMetadataPointer`        | Metadata pointer does not start with a supported prefix.                                             |
-| `13` | `EmptyMetadata`                 | Metadata pointer is empty.                                                                           |
-| `14` | `AlreadyOwner`                  | Proposed/target new owner is already the current owner.                                              |
-| `15` | `NoPendingTransfer`             | No pending transfer exists for this resource.                                                        |
-| `16` | `ReservedId`                    | Resource id collides with a reserved word (e.g. `admin`, `registry`).                                |
-| `17` | `PriceExceedsMax`               | Price exceeds `MAX_PRICE`.                                                                           |
-| `18` | `AdminNotSet`                   | No contract admin has been set yet.                                                                  |
-| `19` | `NotVerifier`                   | Caller does not hold the verifier role.                                                              |
-| `20` | `InvalidVerificationTransition` | Verification status transition is not permitted (e.g. reverting to `Pending`, or a self-transition). |
-| `21` | `AlreadyFrozen`                 | `freeze_metadata` was already called for this resource.                                              |
-| `22` | `MetadataFrozen`                | Metadata pointer is permanently frozen; `update_metadata` is rejected.                               |
-| `23` | `DuplicateInRepair`             | `repair_index` received a duplicate id in the supplied list.                                         |
-| `24` | `InvalidTxHash`                 | `tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes).                     |
-| `25` | `InvalidPaymentAmount`          | `amount` in `record_payment` is `<= 0`.                                                              |
+| Code | Error                    | Description                                                           |
+| ---- | ------------------------ | --------------------------------------------------------------------- |
+| `1`  | `AlreadyRegistered`      | A resource with the given `id` already exists.                        |
+| `2`  | `NotFound`               | No resource (or terms hash or receipt) matches the given key.         |
+| `3`  | `InvalidPrice`           | Price is `<= 0`.                                                      |
+| `4`  | `MetadataTooLong`        | Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes).      |
+| `5`  | `InvalidTag`             | Tag format or count validation failed.                                |
+| `6`  | `Unauthorized`           | Caller authentication check failed or unauthorized.                   |
+| `7`  | `PendingAdminNotSet`     | No pending admin is set, or caller does not match the pending admin.  |
+| `8`  | `PendingAdminAlreadySet` | A pending admin nomination is already active.                         |
+| `9`  | `SameAdmin`              | Nominated new admin is already the current contract admin.            |
+| `10` | `TermsHashTooLong`       | Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes).                   |
+| `11` | `InvalidResourceId`      | Resource id is empty or exceeds 24 bytes.                             |
+| `12` | `InvalidMetadataPointer` | Metadata pointer does not start with a supported prefix.              |
+| `13` | `EmptyMetadata`          | Metadata pointer is empty.                                            |
+| `14` | `AlreadyOwner`           | Proposed/target new owner is already the current owner.               |
+| `15` | `NoPendingTransfer`      | No pending transfer exists for this resource.                         |
+| `16` | `ReservedId`             | Resource id collides with a reserved word (e.g. `admin`, `registry`). |
+| `17` | `PriceExceedsMax`        | Price exceeds `MAX_PRICE`.                                            |
+| `18` | `AdminNotSet`            | No admin has been set yet (`nominate_new_admin` never called).        |
+| `19` | `NotVerifier`            | Caller does not hold the verifier role.                               |
+| `20` | `InvalidVerificationTransition` | Verification status transition is not allowed (self-transition or revert to `Pending`). |
+| `21` | `AlreadyFrozen`          | `freeze_metadata` was already called on this resource.                |
+| `22` | `MetadataFrozen`         | `update_metadata` rejected because the metadata pointer is frozen.    |
+| `23` | `DuplicateInRepair`      | `repair_index` received a duplicate id in the supplied list.          |
+| `24` | `InvalidTxHash`          | `tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes). |
+| `25` | `InvalidPaymentAmount`   | `amount` in `record_payment` is `<= 0`.                               |
+| `26` | `NotModerator`           | Caller does not hold the moderator role.                              |
+| `27` | `AlreadyFlagged`         | Resource is already flagged as disputed.                              |
+| `28` | `NotFlagged`             | Resource is not currently flagged as disputed.                        |
 
 ### Events
 
@@ -162,26 +171,30 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
 
-| Event       | Payload                                                            | Triggered by                                               |
-| ----------- | ------------------------------------------------------------------ | ---------------------------------------------------------- |
-| `register`  | `Resource` (full resource record)                                  | `register()` succeeds                                      |
-| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`               | `set_price()` succeeds                                     |
-| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`           | `update_metadata()` succeeds                               |
-| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`                 | `set_tags()` succeeds                                      |
-| `transfer`  | `(previous_owner: Address, new_owner: Address)`                    | `transfer_ownership()` or `accept_transfer()` succeeds     |
-| `propose`   | `(owner: Address, proposed: Address)`                              | `propose_transfer()` succeeds                              |
-| `cancel`    | `owner: Address`                                                   | `cancel_transfer()` succeeds                               |
-| `setlisted` | `(old_listed: bool, new_listed: bool)`                             | `set_listed()` (and `delist()`) succeeds                   |
-| `setterms`  | `terms_hash: String`                                               | `set_terms_hash()` succeeds                                |
-| `setadmin`  | `new_admin: Address`                                               | The first (bootstrap) `nominate_new_admin()` call succeeds |
-| `nomadmin`  | `new_admin: Address`                                               | A subsequent `nominate_new_admin()` call succeeds          |
-| `accadmin`  | `new_admin: Address`                                               | `accept_admin()` succeeds                                  |
-| `freeze`    | `()`                                                               | `freeze_metadata()` succeeds                               |
-| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds                       |
-| `addverif`  | `true`                                                             | `add_verifier()` succeeds                                  |
-| `rmverif`   | `false`                                                            | `remove_verifier()` succeeds                               |
-| `reindex`   | `new_count: u32 (topic carries old_count: u32)`                    | `repair_index()` succeeds                                  |
-| `payrec`    | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }`   | `record_payment()` succeeds                                |
+| Event       | Payload                                                  | Triggered by                                               |
+| ----------- | -------------------------------------------------------- | ---------------------------------------------------------- |
+| `register`  | `Resource` (full resource record)                        | `register()` succeeds                                      |
+| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`     | `set_price()` succeeds                                     |
+| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }` | `update_metadata()` succeeds                               |
+| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`       | `set_tags()` succeeds                                      |
+| `transfer`  | `(previous_owner: Address, new_owner: Address)`          | `transfer_ownership()` or `accept_transfer()` succeeds     |
+| `propose`   | `(owner: Address, proposed: Address)`                    | `propose_transfer()` succeeds                              |
+| `cancel`    | `owner: Address`                                         | `cancel_transfer()` succeeds                               |
+| `setlisted` | `(old_listed: bool, new_listed: bool)`                   | `set_listed()` (and `delist()`) succeeds                   |
+| `setterms`  | `terms_hash: String`                                     | `set_terms_hash()` succeeds                                |
+| `setadmin`  | `new_admin: Address`                                     | The first (bootstrap) `nominate_new_admin()` call succeeds |
+| `nomadmin`  | `new_admin: Address`                                     | A subsequent `nominate_new_admin()` call succeeds          |
+| `accadmin`  | `new_admin: Address`                                     | `accept_admin()` succeeds                                  |
+| `freeze`    | `()`                                                     | `freeze_metadata()` succeeds                               |
+| `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds           |
+| `addverif`  | `true`                                                   | `add_verifier()` succeeds                                  |
+| `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
+| `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
+| `payrec`    | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }` | `record_payment()` succeeds                        |
+| `addmod`    | `true`                                                   | `add_moderator()` succeeds                                 |
+| `rmmod`     | `false`                                                  | `remove_moderator()` succeeds                              |
+| `flagdisp`  | `moderator: Address`                                     | `flag_dispute()` succeeds                                  |
+| `unflgdisp` | `moderator: Address`                                     | `unflag_dispute()` succeeds                                |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
