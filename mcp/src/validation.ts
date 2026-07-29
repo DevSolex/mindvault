@@ -28,9 +28,7 @@
  */
 
 import { parseMetadataHash, MetadataHashError, METADATA_HASH_FORMAT_HINT } from "./metadataHash.js";
-import {
-  REGISTRY_LIST_MAX_LIMIT,
-} from "./registryPagination.js";
+import { REGISTRY_LIST_MAX_LIMIT } from "./registryPagination.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
 // ── Spec model ────────────────────────────────────────────────────────────────
@@ -55,8 +53,7 @@ import { TOOL_DEFINITIONS } from "./tools.js";
  *   - Leading/trailing whitespace is stripped from each tag.
  *   - An empty array (`[]`) is valid and clears all tags from the resource.
  */
-export type ArgumentKind = "string" | "enum" | "flag" | "hash" | "tag_array";
-export type ArgumentKind = "string" | "enum" | "flag" | "hash" | "integer";
+export type ArgumentKind = "string" | "enum" | "flag" | "hash" | "tag_array" | "integer";
 
 export interface ArgumentSpec {
   kind: ArgumentKind;
@@ -219,6 +216,7 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
   mindvault_set_tags: {
     resourceId: RESOURCE_ID,
     tags: { kind: "tag_array", required: true },
+  },
   mindvault_update_metadata: {
     resourceId: RESOURCE_ID,
     metadata: METADATA_POINTER,
@@ -597,8 +595,7 @@ function validateHash(
 }
 
 /** Validated, normalized arguments for a tool call. */
-export type ValidatedArgs = Record<string, string | boolean | string[]>;
-export type ValidatedArgs = Record<string, string | boolean | number>;
+export type ValidatedArgs = Record<string, string | boolean | string[] | number>;
 
 /**
  * Validate and normalize a tool call's arguments.
