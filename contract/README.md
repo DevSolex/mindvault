@@ -109,8 +109,6 @@ returns only the `items` body for existing callers.
 | `accept_admin(new_admin)`                       | pending admin                                            | `new_admin: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Accept a pending admin nomination. Errors `PendingAdminNotSet` if `new_admin` doesn't match the pending nomination.                                                                                                                                                                                      |
 | `set_terms_hash(creator, terms_hash)`           | `creator`                                                | `creator: Address`; `terms_hash: String` — max 64 bytes                                                                                                                                                                                              | `Result<(), Error>`       | Store a hash of the creator's accepted marketplace terms.                                                                                                                                                                                                                                                |
 | `get_terms_hash(creator)`                       | —                                                        | `creator: Address`                                                                                                                                                                                                                                   | `Result<String, Error>`   | Fetch a creator's terms hash. Errors `NotFound` if absent.                                                                                                                                                                                                                                               |
-| `record_payment(resource_id, payer, tx_hash, amount)` | `payer`                                            | `resource_id: String`; `payer: Address`; `tx_hash: String` — settlement tx hash (1–128 bytes); `amount: i128` — USDC stroops `> 0`                                                                                                                   | `Result<(), Error>`       | Anchor an x402/Soroban settlement receipt on-chain, keyed by `(resource_id, payer)`. Overwrites the previous receipt for the same pair. Emits `payrec`. Errors `NotFound` if `resource_id` is not registered, `InvalidTxHash` if `tx_hash` is empty or over 128 bytes, `InvalidPaymentAmount` if `amount <= 0`. |
-| `get_payment_receipt(resource_id, payer)`       | —                                                        | `resource_id: String`; `payer: Address`                                                                                                                                                                                                              | `Result<PaymentReceipt, Error>` | Fetch the most recent payment receipt for `(resource_id, payer)`. Errors `NotFound` if none recorded.                                                                                                                                                                                             |
 | `set_verification_status(id, verifier, status)` | `verifier`                                               | `id: String`; `verifier: Address`; `status: VerificationStatus`                                                                                                                                                                                      | `Result<(), Error>`       | Mirror off-chain verification status on-chain. Only `Pending→Verified`, `Pending→Rejected`, `Verified→Rejected`, and `Rejected→Verified` are allowed; other transitions (including no-ops and reverting to `Pending`) error `InvalidVerificationTransition`. Emits `verify` with the old and new status. |
 | `add_verifier(verifier)`                        | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                                       |
 | `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
@@ -248,24 +246,12 @@ separate config lookup. It always succeeds; there is no error case.
 | -------------------------- | ---------------------------- | ----------------------------------------------------- |
 | `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.      |
 | `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.    |
-| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash in bytes. |
 | `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
 | `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
 `price` is an `i128` in **USDC stroops** (7 decimal places).
 Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
-
-### Constants
-
-| Constant                   | Value                        | Description                                           |
-| -------------------------- | ---------------------------- | ----------------------------------------------------- |
-| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer, in bytes.     |
-| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash, in bytes.   |
-| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash, in bytes.|
-| `MAX_PRICE`                | `10^18`                      | Maximum price, in USDC stroops.                       |
-| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
-| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
 ### WASM size budget
 
@@ -350,19 +336,6 @@ record/read resources on this contract.
 > This deployment predates `registry_info()`, `creator_resource_count()`,
 > `list_by_creator()`, and the two-step admin model. Redeploy and update this
 > table's Contract ID / Wasm Hash after shipping those changes to testnet.
-
-### Emergency pause
-
-See [contract-registry-pause-decision.md](../docs/contract-registry-pause-decision.md)
-for the architecture spike on admin pause/unpause. **v1 does not implement pause**
-(creator-scoped writes + off-chain ops are sufficient for the current trust model).
-
-> **Note:** the deployment above predates `tags`, the two-step admin/transfer
-> flows, `creator_resource_count`, terms hashes, the verifier role, the
-> on-chain verification mirror, metadata freezing, and index repair
-> described in this README. Redeploy from current source and update this
-> table (plus `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
-> `pnpm contract:bindings`) to pick them up.
 
 ### Ideas for contributors
 

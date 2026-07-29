@@ -3013,7 +3013,10 @@ proptest! {
     #[test]
     fn metadata_boundary_shorter_strings_always_succeed(
         id_str   in r"[a-z][a-z0-9]{0,10}",
-        body_len in 0usize..=(512usize - "ipfs://".len()),
+        // Bound by "https://" (8 bytes) — the longer of the two prefixes used
+        // in this test — so the generated body stays within MAX_METADATA_POINTER_LEN
+        // for both the register ("ipfs://") and update_metadata ("https://") steps.
+        body_len in 0usize..=(512usize - "https://".len()),
         ch       in r"[a-zA-Z0-9]",
     ) {
         let env = Env::default();
