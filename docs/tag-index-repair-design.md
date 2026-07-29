@@ -1,9 +1,8 @@
 # ADR: Tag Index Repair Design
 
-**Status:** Proposed — no on-chain tag index exists yet. This ADR specifies
-the repair contract a future `list_by_tag`/`TagIndex` feature must satisfy
-before it ships, so drift has defined, tested recovery behavior from day one
-instead of being discovered (and designed) after the fact.
+**Status:** Accepted — implemented in `src/lib.rs` as part of issue #359.
+`DataKey::TagIndex(String)`, `list_by_tag`, and `repair_tag_index` are live.
+The original proposal text below is preserved for context.
 
 ## Context
 
