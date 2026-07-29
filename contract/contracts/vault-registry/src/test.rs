@@ -5466,3 +5466,139 @@ proptest! {
     }
 }
 
+#[test]
+fn test_tag_normalization_trimming_and_uniqueness() {
+    let (env, creator, client) = setup();
+
+    // 1. Valid tags with leading/trailing whitespaces and mixed case
+    let id1 = String::from_str(&env, "tagres1");
+    let mut tags1 = Vec::new(&env);
+    tags1.push_back(String::from_str(&env, "  Data  "));
+    tags1.push_back(String::from_str(&env, "ReSeArCh"));
+    client.register(&creator, &id1, &100i128, &String::from_str(&env, "ipfs://meta"), &tags1);
+    
+    let r1 = client.get(&id1);
+    assert_eq!(r1.tags.len(), 2);
+    assert_eq!(r1.tags.get(0).unwrap(), String::from_str(&env, "data"));
+    assert_eq!(r1.tags.get(1).unwrap(), String::from_str(&env, "research"));
+
+    // 2. Reject whitespace-only tags
+    let id2 = String::from_str(&env, "tagres2");
+    let mut tags2 = Vec::new(&env);
+    tags2.push_back(String::from_str(&env, "   "));
+    let res2 = client.try_register(&creator, &id2, &100i128, &String::from_str(&env, "ipfs://meta"), &tags2);
+    assert_eq!(res2, Err(Ok(Error::InvalidTag)));
+
+    // 3. Reject duplicate tags (case and space insensitive)
+    let id3 = String::from_str(&env, "tagres3");
+    let mut tags3 = Vec::new(&env);
+    tags3.push_back(String::from_str(&env, "data"));
+    tags3.push_back(String::from_str(&env, "  DaTa "));
+    let res3 = client.try_register(&creator, &id3, &100i128, &String::from_str(&env, "ipfs://meta"), &tags3);
+    assert_eq!(res3, Err(Ok(Error::InvalidTag)));
+}
+
+#[test]
+fn test_optional_immutable_content_hash() {
+    let (env, creator, client) = setup();
+
+    // 1. Register with content hash
+    let id = String::from_str(&env, "hashres1");
+    let hash = String::from_str(&env, "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+    client.register_with_hash(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://meta"),
+        &empty_tags(&env),
+        &Some(hash.clone()),
+    );
+
+    let r = client.get(&id);
+    assert_eq!(r.content_hash, Some(hash));
+
+    // 2. Register without content hash (None)
+    let id_none = String::from_str(&env, "hashres2");
+    client.register_with_hash(
+        &creator,
+        &id_none,
+        &100i128,
+        &String::from_str(&env, "ipfs://meta"),
+        &empty_tags(&env),
+        &None,
+    );
+    let r_none = client.get(&id_none);
+    assert_eq!(r_none.content_hash, None);
+
+    // 3. Content hash validation: empty hash is rejected
+    let id_empty = String::from_str(&env, "hashres3");
+    let res_empty = client.try_register_with_hash(
+        &creator,
+        &id_empty,
+        &100i128,
+        &String::from_str(&env, "ipfs://meta"),
+        &empty_tags(&env),
+        &Some(String::from_str(&env, "")),
+    );
+    assert_eq!(res_empty, Err(Ok(Error::ContentHashTooLong)));
+
+    // 4. Content hash validation: too long hash is rejected
+    let id_too_long = String::from_str(&env, "hashres4");
+    // 129 characters exceeds MAX_CONTENT_HASH_LEN of 128
+    let long_hash = String::from_str(&env, "123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789");
+    let res_too_long = client.try_register_with_hash(
+        &creator,
+        &id_too_long,
+        &100i128,
+        &String::from_str(&env, "ipfs://meta"),
+        &empty_tags(&env),
+        &Some(long_hash),
+    );
+    assert_eq!(res_too_long, Err(Ok(Error::ContentHashTooLong)));
+}
+
+#[test]
+fn test_explicit_resource_version_counter() {
+    let (env, creator, client) = setup();
+
+    // 1. Initial version is 1 on registration
+    let id = String::from_str(&env, "versionres");
+    client.register(&creator, &id, &100i128, &String::from_str(&env, "ipfs://meta"), &empty_tags(&env));
+    let r1 = client.get(&id);
+    assert_eq!(r1.version, 1);
+
+    // 2. Increments to 2 on price mutation
+    client.set_price(&id, &200i128);
+    let r2 = client.get(&id);
+    assert_eq!(r2.version, 2);
+
+    // 3. Increments to 3 on metadata update mutation
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://updated"));
+    let r3 = client.get(&id);
+    assert_eq!(r3.version, 3);
+
+    // 4. Increments to 4 on freeze metadata mutation
+    client.freeze_metadata(&id);
+    let r4 = client.get(&id);
+    assert_eq!(r4.version, 4);
+
+    // 5. Increments to 5 on set tags mutation
+    let mut new_tags = Vec::new(&env);
+    new_tags.push_back(String::from_str(&env, "update"));
+    client.set_tags(&id, &new_tags);
+    let r5 = client.get(&id);
+    assert_eq!(r5.version, 5);
+
+    // 6. Increments to 6 on listed state mutation
+    client.set_listed(&id, &false);
+    let r6 = client.get(&id);
+    assert_eq!(r6.version, 6);
+
+    // 7. Increments to 7 on transfer ownership mutation
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&id, &new_owner);
+    let r7 = client.get(&id);
+    assert_eq!(r7.version, 7);
+}
+
+

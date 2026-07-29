@@ -34,6 +34,7 @@ const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// Max length for metadata pointers (IPFS URI, content hash, compact JSON anchor).
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
 pub const MAX_TERMS_HASH_LEN: u32 = 64;
+pub const MAX_CONTENT_HASH_LEN: u32 = 128;
 const MAX_TAGS: u32 = 8;
 /// Maximum price in USDC stroops (6 decimals). Represents 1 trillion USDC.
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
@@ -53,7 +54,7 @@ pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
 /// `Resource` struct's fields would require callers to change how they decode
 /// it (e.g. the tags field added in schema version 2, dispute_flag added in
 /// schema version 4).
-pub const RESOURCE_SCHEMA_VERSION: u32 = 4;
+pub const RESOURCE_SCHEMA_VERSION: u32 = 5;
 
 /// Maximum byte length of a settlement transaction hash stored in a
 /// [`PaymentReceipt`]. Stellar transaction hashes are 64 hex characters
@@ -71,6 +72,7 @@ pub const MAX_TX_HASH_LEN: u32 = 128;
 pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     // ── Resource lifecycle ────────────────────────────────────────────────
     ("register", "creator"),
+    ("register_with_hash", "creator"),
     ("set_price", "creator"),
     ("update_metadata", "creator"),
     ("freeze_metadata", "creator"),
@@ -148,6 +150,7 @@ pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
     (23, "DuplicateInRepair", "`repair_index` received a list with duplicate resource ids."),
     (24, "InvalidTxHash", "`tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes)."),
     (25, "InvalidPaymentAmount", "`amount` in `record_payment` is `<= 0`."),
+    (29, "ContentHashTooLong", "Content hash exceeds `MAX_CONTENT_HASH_LEN` (128 bytes)."),
 ];
 
 /// Canonical list of every event topic this contract emits, paired with a
@@ -309,6 +312,12 @@ pub struct Resource {
     /// it is informational state that callers can filter on. Only a moderator may
     /// set or clear this field (see `flag_resource` / `unflag_resource`).
     pub dispute_flag: DisputeFlag,
+    /// On-chain `Resource` schema version (`RESOURCE_SCHEMA_VERSION`).
+    pub schema_version: u32,
+    /// Monotonically increasing version counter incremented on each mutation.
+    pub version: u32,
+    /// Optional immutable content hash.
+    pub content_hash: Option<String>,
 }
 
 /// Structured payload emitted by `register()`.
@@ -324,6 +333,7 @@ pub struct RegisterEvent {
     pub metadata: String,
     pub listed: bool,
     pub tags: Vec<String>,
+    pub content_hash: Option<String>,
 }
 
 /// One page of the on-chain catalog plus a cursor for the next page.
@@ -450,6 +460,7 @@ pub enum Error {
     NotModerator = 26,
     AlreadyFlagged = 27,
     NotFlagged = 28,
+    ContentHashTooLong = 29,
 }
 
 #[contract]
@@ -468,65 +479,19 @@ impl VaultRegistry {
         metadata: String,
         tags: Vec<String>,
     ) -> Result<(), Error> {
-        creator.require_auth();
-        Self::validate_price(price)?;
-        Self::validate_resource_id(&id)?;
-        Self::validate_metadata_pointer(&metadata)?;
-        let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
-        if Self::is_reserved_id(&id) {
-            return Err(Error::ReservedId);
-        }
-        let key = DataKey::Resource(id.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(Error::AlreadyRegistered);
-        }
+        Self::register_internal(env, creator, id, price, metadata, tags, None)
+    }
 
-        let resource = Resource {
-            id: id.clone(),
-            creator: creator.clone(),
-            price,
-            metadata: metadata.clone(),
-            listed: true,
-            tags: norm_tags.clone(),
-            verified: VerificationStatus::Pending,
-            frozen: false,
-            updated_at: env.ledger().sequence(),
-            dispute_flag: DisputeFlag::NoFlag,
-        };
-        env.storage().persistent().set(&key, &resource);
-        Self::bump_persistent(&env, &key);
-
-        let count: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
-        let idx_key = DataKey::Index(count);
-        env.storage().persistent().set(&idx_key, &id);
-        Self::bump_persistent(&env, &idx_key);
-        env.storage().instance().set(&DataKey::Count, &count.checked_add(1).ok_or(Error::CountOverflow)?);
-        Self::bump_instance(&env);
-
-        let mut list = Self::creator_list(&env, &creator);
-        list.push_back(id.clone());
-        env.storage()
-            .persistent()
-            .set(&Self::creator_key(&env, &creator), &list);
-        Self::bump_persistent(&env, &Self::creator_key(&env, &creator));
-
-        let cur = Self::creator_count(&env, &creator);
-        Self::set_creator_count(&env, &creator, cur + 1);
-
-        // Maintain tag index: add id to each tag's index entry.
-        Self::tag_index_add(&env, &tags, &id);
-
-        let event = RegisterEvent {
-            id: id.clone(),
-            creator: creator.clone(),
-            price,
-            metadata,
-            listed: true,
-            tags,
-        };
-        env.events()
-            .publish((symbol_short!("register"), id), event);
-        Ok(())
+    pub fn register_with_hash(
+        env: Env,
+        creator: Address,
+        id: String,
+        price: i128,
+        metadata: String,
+        tags: Vec<String>,
+        content_hash: Option<String>,
+    ) -> Result<(), Error> {
+        Self::register_internal(env, creator, id, price, metadata, tags, content_hash)
     }
 
     /// Update a resource's price. Rejects `new_price <= 0` or `new_price > MAX_PRICE`.
@@ -650,24 +615,12 @@ impl VaultRegistry {
         // Capture previous tags before replacement for event emission and index
         let prev_tags = resource.tags.clone();
 
-        // Remove resource from all tag index entries it was previously in
-        for i in 0..prev_tags.len() {
-            let tag = prev_tags.get(i).unwrap();
-            Self::tag_index_remove(&env, &tag, &id);
-        }
-
-        // Add resource to tag index for each new normalized tag
-        for i in 0..norm_tags.len() {
-            let tag = norm_tags.get(i).unwrap();
-            Self::tag_index_add(&env, &tag, &id);
-        }
+        // Maintain tag index: remove id from prev tags, add to new tags.
+        Self::tag_index_remove(&env, &prev_tags, &id);
+        Self::tag_index_add(&env, &norm_tags, &id);
 
         resource.tags = norm_tags.clone();
         Self::save(&env, &mut resource);
-
-        // Maintain tag index: remove id from prev tags, add to new tags.
-        Self::tag_index_remove(&env, &prev_tags, &id);
-        Self::tag_index_add(&env, &tags, &id);
 
         // Emit event with both previous and next tags for indexer reconciliation
         env.events()
@@ -1634,7 +1587,6 @@ impl VaultRegistry {
             .publish((symbol_short!("unflag"), id.clone()), id);
         Ok(())
     }
-}
 
     /// Extend the TTL of a resource's persistent storage entry.
     ///
@@ -1657,6 +1609,7 @@ impl VaultRegistry {
             .publish((symbol_short!("ttlext"), resource_id), ());
         Ok(())
     }
+}
 
 impl VaultRegistry {
     fn validate_price(price: i128) -> Result<(), Error> {
@@ -1741,20 +1694,30 @@ impl VaultRegistry {
         }
     }
 
-    /// Normalize a single tag to lowercase ASCII. Non-ASCII bytes are
-    /// preserved as-is (lowercasing is only applied to ASCII alphabetic
-    /// bytes, matching the tag input surface which is already constrained
-    /// to short human-readable labels in practice).
+    /// Normalize a single tag to lowercase ASCII with leading and trailing
+    /// whitespace trimmed. Non-ASCII bytes are preserved as-is.
     fn normalize_tag(env: &Env, tag: &String) -> String {
         let len = tag.len() as usize;
         let mut buf = alloc::vec![0u8; len];
         tag.copy_into_slice(&mut buf);
-        for b in buf.iter_mut() {
+
+        let mut start = 0;
+        while start < len && buf[start].is_ascii_whitespace() {
+            start += 1;
+        }
+
+        let mut end = len;
+        while end > start && buf[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+
+        let trimmed = &mut buf[start..end];
+        for b in trimmed.iter_mut() {
             if b.is_ascii_uppercase() {
                 *b = b.to_ascii_lowercase();
             }
         }
-        String::from_bytes(env, &buf)
+        String::from_bytes(env, trimmed)
     }
 
     /// Normalize every tag in the input list to lowercase ASCII, validate
@@ -1768,11 +1731,20 @@ impl VaultRegistry {
         let mut norm: Vec<String> = Vec::new(env);
         for i in 0..tags.len() {
             let tag = tags.get(i).unwrap();
-            let len = tag.len();
-            if len == 0 || len > MAX_TAG_LEN {
+            if tag.len() == 0 {
                 return Err(Error::InvalidTag);
             }
-            norm.push_back(Self::normalize_tag(env, &tag));
+            let normalized = Self::normalize_tag(env, &tag);
+            let norm_len = normalized.len();
+            if norm_len == 0 || norm_len > MAX_TAG_LEN {
+                return Err(Error::InvalidTag);
+            }
+            for j in 0..norm.len() {
+                if norm.get(j).unwrap() == normalized {
+                    return Err(Error::InvalidTag);
+                }
+            }
+            norm.push_back(normalized);
         }
         Ok(norm)
     }
@@ -1827,6 +1799,7 @@ impl VaultRegistry {
     }
 
     fn save(env: &Env, resource: &mut Resource) {
+        resource.version = resource.version.checked_add(1).unwrap_or(resource.version);
         resource.updated_at = env.ledger().sequence();
         let key = DataKey::Resource(resource.id.clone());
         env.storage().persistent().set(&key, resource as &Resource);
@@ -1920,26 +1893,7 @@ impl VaultRegistry {
             .ok_or(Error::AdminNotSet)
     }
 
-    /// Normalize a tag for index keying: lowercase ASCII.
-    /// `Resource.tags` stores tags as submitted (no mutation); only the index
-    /// key is normalized so lookups are case-insensitive.
-    fn normalize_tag(env: &Env, tag: &String) -> String {
-        let len = tag.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        tag.copy_into_slice(&mut buf);
-        for b in buf.iter_mut() {
-            if b.is_ascii_uppercase() {
-                *b = b.to_ascii_lowercase();
-            }
-        }
-        // Build a Soroban String from the lowercased bytes via the &str path.
-        // All tag bytes are ASCII (validated by validate_tags), so from_utf8
-        // is infallible in practice.
-        match core::str::from_utf8(&buf) {
-            Ok(s) => String::from_str(env, s),
-            Err(_) => tag.clone(), // fallback: return original (should never happen)
-        }
-    }
+
 
     /// Add `id` to the `TagIndex` entry for each tag in `tags`.
     fn tag_index_add(env: &Env, tags: &Vec<String>, id: &String) {
@@ -1995,6 +1949,86 @@ impl VaultRegistry {
                 Self::bump_persistent(env, &idx_key);
             }
         }
+    }
+
+    fn register_internal(
+        env: Env,
+        creator: Address,
+        id: String,
+        price: i128,
+        metadata: String,
+        tags: Vec<String>,
+        content_hash: Option<String>,
+    ) -> Result<(), Error> {
+        creator.require_auth();
+        Self::validate_price(price)?;
+        Self::validate_resource_id(&id)?;
+        Self::validate_metadata_pointer(&metadata)?;
+        let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
+        if Self::is_reserved_id(&id) {
+            return Err(Error::ReservedId);
+        }
+        if let Some(ref hash) = content_hash {
+            let hash_len = hash.len();
+            if hash_len == 0 || hash_len > MAX_CONTENT_HASH_LEN {
+                return Err(Error::ContentHashTooLong);
+            }
+        }
+        let key = DataKey::Resource(id.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::AlreadyRegistered);
+        }
+
+        let resource = Resource {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata: metadata.clone(),
+            listed: true,
+            tags: norm_tags.clone(),
+            verified: VerificationStatus::Pending,
+            frozen: false,
+            updated_at: env.ledger().sequence(),
+            dispute_flag: DisputeFlag::NoFlag,
+            schema_version: RESOURCE_SCHEMA_VERSION,
+            version: 1,
+            content_hash: content_hash.clone(),
+        };
+        env.storage().persistent().set(&key, &resource);
+        Self::bump_persistent(&env, &key);
+
+        let count: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+        let idx_key = DataKey::Index(count);
+        env.storage().persistent().set(&idx_key, &id);
+        Self::bump_persistent(&env, &idx_key);
+        env.storage().instance().set(&DataKey::Count, &count.checked_add(1).ok_or(Error::CountOverflow)?);
+        Self::bump_instance(&env);
+
+        let mut list = Self::creator_list(&env, &creator);
+        list.push_back(id.clone());
+        env.storage()
+            .persistent()
+            .set(&Self::creator_key(&env, &creator), &list);
+        Self::bump_persistent(&env, &Self::creator_key(&env, &creator));
+
+        let cur = Self::creator_count(&env, &creator);
+        Self::set_creator_count(&env, &creator, cur + 1);
+
+        // Maintain tag index: add id to each tag's index entry.
+        Self::tag_index_add(&env, &norm_tags, &id);
+
+        let event = RegisterEvent {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata,
+            listed: true,
+            tags: norm_tags,
+            content_hash,
+        };
+        env.events()
+            .publish((symbol_short!("register"), id), event);
+        Ok(())
     }
 }
 
