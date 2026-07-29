@@ -1375,10 +1375,14 @@ describe("setupWallet – sponsored account failure diagnostics", () => {
 
   it("does not leak internal service details in error message", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({
-        internalErrorCode: "SPONSOR_DB_FAILED",
-        debugStackTrace: "at Function.doSomething...",
-      }, false, 500),
+      mockResponse(
+        {
+          internalErrorCode: "SPONSOR_DB_FAILED",
+          debugStackTrace: "at Function.doSomething...",
+        },
+        false,
+        500,
+      ),
     );
 
     try {
@@ -1406,9 +1410,7 @@ describe("setupWallet – sponsored account failure diagnostics", () => {
   });
 
   it("handles network errors deterministically", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(
-      new Error("ECONNREFUSED: Connection refused"),
-    );
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED: Connection refused"));
 
     try {
       await dispatchTool("mindvault_setup_wallet", {});
@@ -1847,10 +1849,7 @@ describe("transferOwnership", () => {
 
   it("throws when no wallet is set up", async () => {
     await expect(
-      transferOwnership(
-        "res-001",
-        "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
-      ),
+      transferOwnership("res-001", "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH"),
     ).rejects.toThrow("No wallet");
   });
 
@@ -1868,9 +1867,7 @@ describe("transferOwnership", () => {
       const parsed = JSON.parse(res);
       expect(parsed.status).toBe("success");
       expect(parsed.resourceId).toBe("res-001");
-      expect(parsed.newCreator).toBe(
-        "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
-      );
+      expect(parsed.newCreator).toBe("GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH");
       expect(parsed.txHash).toBeTruthy();
     } finally {
       delete process.env.MINDVAULT_MOCK;

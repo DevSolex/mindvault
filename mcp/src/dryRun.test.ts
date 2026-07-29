@@ -2,12 +2,7 @@
  * Tests for dry-run mode validation and reporting.
  */
 import { describe, it, expect } from "vitest";
-import {
-  dryRunPublish,
-  dryRunBuy,
-  dryRunOnchain,
-  type DryRunPublishInput,
-} from "./dryRun.js";
+import { dryRunPublish, dryRunBuy, dryRunOnchain, type DryRunPublishInput } from "./dryRun.js";
 
 describe("dryRunPublish – input validation", () => {
   const baseUrl = "https://example.com";
