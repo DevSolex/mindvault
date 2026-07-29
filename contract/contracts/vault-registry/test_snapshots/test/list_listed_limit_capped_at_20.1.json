@@ -2270,6 +2270,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -2391,6 +2403,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -2520,6 +2544,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -2641,6 +2677,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -2770,6 +2818,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -2891,6 +2951,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -3020,6 +3092,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -3141,6 +3225,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -3270,6 +3366,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -3391,6 +3499,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -3520,6 +3640,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -3641,6 +3773,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -3770,6 +3914,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -3891,6 +4047,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -4020,6 +4188,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -4141,6 +4321,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -4270,6 +4462,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -4391,6 +4595,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -4520,6 +4736,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -4641,6 +4869,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -4770,6 +5010,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -4891,6 +5143,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -5020,6 +5284,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -5145,6 +5421,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -5266,6 +5554,18 @@
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
