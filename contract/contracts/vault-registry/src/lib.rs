@@ -500,7 +500,7 @@ impl VaultRegistry {
         let idx_key = DataKey::Index(count);
         env.storage().persistent().set(&idx_key, &id);
         Self::bump_persistent(&env, &idx_key);
-        env.storage().instance().set(&DataKey::Count, &(count + 1));
+        env.storage().instance().set(&DataKey::Count, &count.checked_add(1).ok_or(Error::CountOverflow)?);
         Self::bump_instance(&env);
 
         let mut list = Self::creator_list(&env, &creator);
@@ -1635,6 +1635,28 @@ impl VaultRegistry {
         Ok(())
     }
 }
+
+    /// Extend the TTL of a resource's persistent storage entry.
+    ///
+    /// Only the resource's current creator (owner) may call this.
+    /// Emits a `"ttlext"` event with the `resource_id` as payload.
+    ///
+    /// # Errors
+    /// - [`Error::NotFound`] — `resource_id` is not registered
+    /// - [`Error::InvalidResourceId`] — `resource_id` fails format validation
+    pub fn extend_resource_ttl(env: Env, creator: Address, resource_id: String) -> Result<(), Error> {
+        Self::validate_resource_id(&resource_id)?;
+        creator.require_auth();
+        let resource = Self::load(&env, &resource_id)?;
+        if resource.creator != creator {
+            return Err(Error::Unauthorized);
+        }
+        let key = DataKey::Resource(resource_id.clone());
+        Self::bump_persistent(&env, &key);
+        env.events()
+            .publish((symbol_short!("ttlext"), resource_id), ());
+        Ok(())
+    }
 
 impl VaultRegistry {
     fn validate_price(price: i128) -> Result<(), Error> {
