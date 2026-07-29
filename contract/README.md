@@ -55,12 +55,28 @@ pub struct Resource {
     pub tags: Vec<String>, // discovery labels (0-8 items, max 32 bytes each)
     pub verified: VerificationStatus, // on-chain mirror of off-chain verification, settable only by a verifier
     pub frozen: bool,      // once true, update_metadata is permanently rejected
+    pub updated_at: u32,   // ledger sequence of the last write (register or any mutation)
+    pub dispute_flag: DisputeFlag, // NoFlag = no dispute; Flagged(reason) = active moderator flag
 }
 
 pub enum VerificationStatus {
     Pending,
     Verified,
     Rejected,
+}
+
+/// Optional dispute flag stored on a resource. Uses an enum rather than
+/// `Option<FlagReason>` to satisfy Soroban's `contracttype` encoding requirements.
+pub enum DisputeFlag {
+    NoFlag,              // no active dispute flag
+    Flagged(FlagReason), // actively flagged with a reason code
+}
+
+pub enum FlagReason {
+    Spam      = 0,
+    Copyright = 1,
+    Malicious = 2,
+    Other     = 3,
 }
 ```
 
@@ -139,6 +155,11 @@ See [`docs/adr-fee-config.md`](../docs/adr-fee-config.md) for the full design ra
 | `add_verifier(verifier)`                        | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                                       |
 | `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
 | `is_verifier(address)`                          | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the verifier role.                                                                                                                                                                                                                                                     |
+| `add_moderator(moderator)`                      | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Grant the moderator role, authorizing `flag_resource` and `unflag_resource`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                           |
+| `remove_moderator(moderator)`                   | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Revoke the moderator role.                                                                                                                                                                                                                                                                               |
+| `is_moderator(address)`                         | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the moderator role.                                                                                                                                                                                                                                                    |
+| `flag_resource(id, moderator, reason)`          | `moderator`                                              | `id: String`; `moderator: Address`; `reason: FlagReason`                                                                                                                                                                                             | `Result<(), Error>`       | Set `Resource.dispute_flag` to `Flagged(reason)`. Flagging is informational — it does not delist or delete the resource. Re-flagging an already-flagged resource replaces the reason. Errors `Unauthorized` if caller lacks the moderator role. Emits `flag`.                                             |
+| `unflag_resource(id, moderator)`                | `moderator`                                              | `id: String`; `moderator: Address`                                                                                                                                                                                                                   | `Result<(), Error>`       | Clear `Resource.dispute_flag` to `NoFlag`. No-op if the resource is not currently flagged (event still emitted). Errors `Unauthorized` if caller lacks the moderator role. Emits `unflag`.                                                                                                               |
 | `repair_index(ids)`                             | `admin`                                                  | `ids: Vec<String>` — authoritative ordered id list                                                                                                                                                                                                   | `Result<(), Error>`       | Rebuild the `list`/`list_page`/`count` pagination index from `ids`. Every id must already be a registered `Resource` (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md).                                  |
 | `add_moderator(moderator)`                      | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Grant the moderator role, authorizing `flag_dispute` and `unflag_dispute`. Errors `AdminNotSet` if no admin has been set yet. Emits `addmod`.                                                                                                                                                             |
 | `remove_moderator(moderator)`                   | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Revoke the moderator role. Emits `rmmod`.                                                                                                                                                                                                                                                                |
@@ -149,7 +170,7 @@ See [`docs/adr-fee-config.md`](../docs/adr-fee-config.md) for the full design ra
 
 ### Roles
 
-Two roles sit alongside the per-resource `creator` and the pre-existing admin:
+Three roles sit alongside the per-resource `creator` and the pre-existing admin:
 
 - **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`), repair the pagination index (`repair_index`) or tag index (`repair_tag_index`), and set the registry fee config (`set_fee_config`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
 - **verifier** — zero or more addresses granted by the admin. Can only call `set_verification_status`. Cannot touch price, metadata, listing, tags, ownership, or the admin/verifier role list itself.
@@ -273,7 +294,7 @@ separate config lookup. It always succeeds; there is no error case.
 | `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.      |
 | `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.    |
 | `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
-| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
+| `RESOURCE_SCHEMA_VERSION`  | `4`                          | Current `Resource` schema version (`dispute_flag` added in v4). |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 | `MAX_FEE_BPS`              | `5_000`                      | Maximum fee in basis points (50 %). Neither `platform_fee_bps` nor `royalty_bps` may exceed this individually, and their sum may not either. |
 | `FEE_BPS_DENOM`            | `10_000`                     | Basis-point denominator. `amount * fee_bps / FEE_BPS_DENOM` converts a fee to a USDC stroop amount. |
