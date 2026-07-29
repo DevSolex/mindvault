@@ -3176,6 +3176,84 @@ fn admin_can_dispute_resolve_and_tombstone_resource() {
 }
 
 #[test]
+fn tombstoned_resource_is_not_discoverable_by_tag_but_stays_auditable() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = String::from_str(&env, "lifecyc5");
+    let tags_before = tags(&env, &["archive", "proof"]);
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://audit"),
+        &tags_before,
+    );
+
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "archive"), &0u32, &20u32)
+            .len(),
+        1
+    );
+
+    let before = client.get(&id);
+    client.tombstone_resource(&id, &admin);
+
+    assert_eq!(
+        client
+            .list_by_tag(&String::from_str(&env, "archive"), &0u32, &20u32)
+            .len(),
+        0,
+        "tombstoned resources must not be discoverable by tag"
+    );
+
+    let after = client.get(&id);
+    assert_eq!(after.state, ResourceState::Tombstoned);
+    assert_eq!(after.id, before.id);
+    assert_eq!(after.metadata, before.metadata);
+    assert_eq!(after.creator, before.creator);
+
+    // Tombstoned resources remain in canonical storage for auditability.
+    let all = client.list(&0u32, &20u32);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all.get(0).unwrap().id, id);
+}
+
+#[test]
+fn tombstoned_resource_blocks_creator_mutations_deterministically() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = String::from_str(&env, "lifecyc6");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://audit2"),
+        &tags(&env, &["tag1"]),
+    );
+    client.tombstone_resource(&id, &admin);
+
+    assert_eq!(
+        client.try_set_price(&id, &200i128),
+        Err(Ok(Error::ResourceNotMutable))
+    );
+    assert_eq!(
+        client.try_update_metadata(&id, &String::from_str(&env, "ipfs://new")),
+        Err(Ok(Error::ResourceNotMutable))
+    );
+    assert_eq!(
+        client.try_set_tags(&id, &tags(&env, &["tag2"])),
+        Err(Ok(Error::ResourceNotMutable))
+    );
+    assert_eq!(
+        client.try_transfer_ownership(&id, &Address::generate(&env)),
+        Err(Ok(Error::ResourceNotMutable))
+    );
+    assert_eq!(
+        client.try_set_listed(&id, &true),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
+}
+
+#[test]
 fn lifecycle_admin_methods_reject_wrong_role_and_invalid_resolution() {
     let (env, creator, admin, client) = setup_with_admin();
     let id = register_default(&env, &creator, &client, "lifecyc4");

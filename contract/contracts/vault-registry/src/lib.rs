@@ -883,6 +883,9 @@ impl VaultRegistry {
         if resource.state == ResourceState::Tombstoned {
             return Err(Error::InvalidLifecycleTransition);
         }
+
+        // Tombstoned resources must no longer be discoverable by tag.
+        Self::tag_index_remove(&env, &resource.tags, &id);
         Self::transition_state(&env, &mut resource, ResourceState::Tombstoned);
         Ok(())
     }
@@ -1045,7 +1048,9 @@ impl VaultRegistry {
                 .get::<DataKey, Resource>(&res_key)
             {
                 Self::bump_persistent(&env, &res_key);
-                result.push_back(resource);
+                if resource.state != ResourceState::Tombstoned {
+                    result.push_back(resource);
+                }
             }
             idx += 1;
         }
