@@ -5,7 +5,7 @@ use alloc::{format, string::ToString};
 use proptest::prelude::*;
 use soroban_sdk::{
     testutils::{storage::Persistent as _, Address as _, Events as _, Ledger as _},
-    Address, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
+    Address, BytesN, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
@@ -233,6 +233,21 @@ fn valid_resource_id_is_accepted() {
     let metadata = String::from_str(&env, "ipfs://x");
 
     client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert!(client.exists(&id));
+}
+
+#[test]
+fn resource_id_at_max_length_is_accepted() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "abcdefghijklmnopqrstuvwx"); // 24 bytes
+
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://x"),
+        &empty_tags(&env),
+    );
     assert!(client.exists(&id));
 }
 
@@ -2694,6 +2709,15 @@ fn set_terms_hash_rejects_over_max_length() {
     );
 }
 
+#[test]
+fn set_terms_hash_accepts_max_length() {
+    let (env, creator, client) = setup();
+    let terms = String::from_str(&env, &"a".repeat(MAX_TERMS_HASH_LEN as usize));
+
+    client.set_terms_hash(&creator, &terms);
+    assert_eq!(client.get_terms_hash(&creator), terms);
+}
+
 // Admin bootstrap/uninitialized-state behavior is covered by
 // `admin_transfer_nominate_then_accept` (bootstrap via the first
 // `nominate_new_admin` call) — see the two-step admin model above.
@@ -2733,6 +2757,59 @@ fn registry_info_is_stable_across_calls_and_registrations() {
         before, after,
         "registry_info must not depend on registry contents"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Deployment network identifier guard (#457)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn network_id_requires_initialization() {
+    let (env, _creator, client) = setup();
+    assert_eq!(
+        client.try_network_id(),
+        Err(Ok(Error::NetworkNotInitialized))
+    );
+    assert_eq!(client.registry_info().network_id, env.ledger().network_id());
+}
+
+#[test]
+fn initialize_network_records_and_exposes_current_ledger_id() {
+    let (env, _creator, client) = setup();
+    let expected = env.ledger().network_id();
+
+    client.initialize_network(&expected);
+    assert_eq!(client.network_id(), expected);
+}
+
+#[test]
+fn initialize_network_rejects_mismatched_network_id_without_writing() {
+    let (env, _creator, client) = setup();
+    let mut wrong = env.ledger().network_id().to_array();
+    wrong[0] ^= 1;
+    let wrong = BytesN::from_array(&env, &wrong);
+
+    assert_eq!(
+        client.try_initialize_network(&wrong),
+        Err(Ok(Error::NetworkIdMismatch))
+    );
+    assert_eq!(
+        client.try_network_id(),
+        Err(Ok(Error::NetworkNotInitialized))
+    );
+}
+
+#[test]
+fn initialize_network_rejects_duplicate_initialization() {
+    let (env, _creator, client) = setup();
+    let network_id = env.ledger().network_id();
+    client.initialize_network(&network_id);
+
+    assert_eq!(
+        client.try_initialize_network(&network_id),
+        Err(Ok(Error::NetworkAlreadyInitialized))
+    );
+    assert_eq!(client.network_id(), network_id);
 }
 
 // ---------------------------------------------------------------------------

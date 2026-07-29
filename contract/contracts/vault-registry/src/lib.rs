@@ -148,6 +148,14 @@ pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
     (23, "DuplicateInRepair", "`repair_index` received a list with duplicate resource ids."),
     (24, "InvalidTxHash", "`tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes)."),
     (25, "InvalidPaymentAmount", "`amount` in `record_payment` is `<= 0`."),
+    (26, "NotModerator", "Caller does not hold the moderator role."),
+    (27, "AlreadyFlagged", "Resource is already flagged as disputed."),
+    (28, "NotFlagged", "Resource is not currently flagged as disputed."),
+    (29, "InvalidLifecycleTransition", "The requested lifecycle transition is not allowed from the current state."),
+    (30, "ResourceNotMutable", "A frozen, disputed, or tombstoned resource cannot be changed by its creator."),
+    (31, "NetworkAlreadyInitialized", "Network identifier has already been initialized for this contract instance."),
+    (32, "NetworkIdMismatch", "Invocation network identifier does not match configured network ID."),
+    (33, "NetworkNotInitialized", "Network identifier has not been initialized."),
 ];
 
 /// Canonical list of every event topic this contract emits, paired with a
@@ -371,6 +379,7 @@ pub enum DataKey {
     CreatorCount(Address),
     PendingTransfer(String),
     Verifier(Address),
+    NetworkId,
     /// Most-recent payment receipt for `(resource_id, payer)`.
     /// Keyed by (resource id string, payer Address) so escrow/lease
     /// contracts can look up a settlement without scanning event history.
@@ -473,6 +482,9 @@ pub enum Error {
     NotFlagged = 28,
     InvalidLifecycleTransition = 29,
     ResourceNotMutable = 30,
+    NetworkAlreadyInitialized = 31,
+    NetworkIdMismatch = 32,
+    NetworkNotInitialized = 33,
 }
 
 #[contract]
@@ -1172,6 +1184,32 @@ impl VaultRegistry {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
     }
 
+    /// Store the intended network identifier once. The supplied ID must match
+    /// the ledger this contract is executing on, preventing a deployment
+    /// script from accidentally recording a different Stellar network.
+    pub fn initialize_network(env: Env, network_id: BytesN<32>) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::NetworkId) {
+            return Err(Error::NetworkAlreadyInitialized);
+        }
+        if network_id != env.ledger().network_id() {
+            return Err(Error::NetworkIdMismatch);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkId, &network_id);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Return the initialized network identifier. Callers can use this value
+    /// as a deployment guard before submitting network-sensitive operations.
+    pub fn network_id(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::NetworkId)
+            .ok_or(Error::NetworkNotInitialized)
+    }
+
     /// Discover this registry's stable identity and capabilities in one
     /// read-only call: name, crate version, `Resource` schema version, and
     /// the network this contract is deployed on. Always succeeds — there is
@@ -1510,9 +1548,13 @@ impl VaultRegistry {
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
-        if terms_hash.len() > MAX_TERMS_HASH_LEN {
-            return Err(Error::TermsHashTooLong);
-        }
+        Self::validate_bounded_string(
+            &terms_hash,
+            0,
+            MAX_TERMS_HASH_LEN,
+            Error::TermsHashTooLong,
+            Error::TermsHashTooLong,
+        )?;
         let key = DataKey::CreatorTerms(creator.clone());
         env.storage().persistent().set(&key, &terms_hash);
         Self::bump_persistent(&env, &key);
@@ -1764,12 +1806,14 @@ impl VaultRegistry {
     }
 
     fn validate_resource_id(id: &String) -> Result<(), Error> {
-        let len = id.len();
-        if len == 0 || len > 24 {
-            return Err(Error::InvalidResourceId);
-        }
-        let mut buf = alloc::vec![0u8; len as usize];
-        id.copy_into_slice(&mut buf);
+        Self::validate_bounded_string(
+            id,
+            1,
+            24,
+            Error::InvalidResourceId,
+            Error::InvalidResourceId,
+        )?;
+        let buf = Self::string_bytes(id);
         for &b in buf.iter() {
             if !(b.is_ascii_lowercase() || b.is_ascii_digit()) {
                 return Err(Error::InvalidResourceId);
@@ -1779,9 +1823,7 @@ impl VaultRegistry {
     }
 
     fn is_reserved_id(id: &soroban_sdk::String) -> bool {
-        let len = id.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        id.copy_into_slice(&mut buf);
+        let buf = Self::string_bytes(id);
         let eq_ignore_case = |expected: &[u8]| -> bool {
             if buf.len() != expected.len() {
                 return false;
@@ -1805,16 +1847,14 @@ impl VaultRegistry {
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
-        if metadata.is_empty() {
-            return Err(Error::EmptyMetadata);
-        }
-        if metadata.len() > MAX_METADATA_POINTER_LEN {
-            return Err(Error::MetadataTooLong);
-        }
-
-        let len = metadata.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        metadata.copy_into_slice(&mut buf);
+        Self::validate_bounded_string(
+            metadata,
+            1,
+            MAX_METADATA_POINTER_LEN,
+            Error::EmptyMetadata,
+            Error::MetadataTooLong,
+        )?;
+        let buf = Self::string_bytes(metadata);
         let starts_with = |prefix: &[u8]| -> bool {
             if buf.len() < prefix.len() {
                 return false;
@@ -1862,10 +1902,13 @@ impl VaultRegistry {
         let mut norm: Vec<String> = Vec::new(env);
         for i in 0..tags.len() {
             let tag = tags.get(i).unwrap();
-            let len = tag.len();
-            if len == 0 || len > MAX_TAG_LEN {
-                return Err(Error::InvalidTag);
-            }
+            Self::validate_bounded_string(
+                &tag,
+                1,
+                MAX_TAG_LEN,
+                Error::InvalidTag,
+                Error::InvalidTag,
+            )?;
             norm.push_back(Self::normalize_tag(env, &tag));
         }
         Ok(norm)
@@ -1907,6 +1950,35 @@ impl VaultRegistry {
         let key = DataKey::TagIndex(tag.clone());
         env.storage().persistent().set(&key, &out);
         Self::bump_persistent(env, &key);
+    }
+
+    /// Validate a string's byte length while preserving the contract's
+    /// caller-visible error for both lower- and upper-bound failures. Keep
+    /// all bounded text fields on this helper so future fields cannot drift
+    /// into inconsistent boundary handling.
+    fn validate_bounded_string(
+        value: &String,
+        min_len: u32,
+        max_len: u32,
+        below_min_error: Error,
+        above_max_error: Error,
+    ) -> Result<(), Error> {
+        let len = value.len();
+        if len < min_len {
+            return Err(below_min_error);
+        }
+        if len > max_len {
+            return Err(above_max_error);
+        }
+        Ok(())
+    }
+
+    /// Materialize Soroban string bytes once for validators that need to
+    /// inspect content after a shared length check.
+    fn string_bytes(value: &String) -> alloc::vec::Vec<u8> {
+        let mut bytes = alloc::vec![0u8; value.len() as usize];
+        value.copy_into_slice(&mut bytes);
+        bytes
     }
 
     /// Content and ownership changes are allowed only while a resource is
