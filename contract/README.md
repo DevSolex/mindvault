@@ -134,14 +134,17 @@ See [`docs/adr-fee-config.md`](../docs/adr-fee-config.md) for the full design ra
 | `accept_admin(new_admin)`                       | pending admin                                            | `new_admin: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Accept a pending admin nomination. Errors `PendingAdminNotSet` if `new_admin` doesn't match the pending nomination.                                                                                                                                                                                      |
 | `set_terms_hash(creator, terms_hash)`           | `creator`                                                | `creator: Address`; `terms_hash: String` — max 64 bytes                                                                                                                                                                                              | `Result<(), Error>`       | Store a hash of the creator's accepted marketplace terms.                                                                                                                                                                                                                                                |
 | `get_terms_hash(creator)`                       | —                                                        | `creator: Address`                                                                                                                                                                                                                                   | `Result<String, Error>`   | Fetch a creator's terms hash. Errors `NotFound` if absent.                                                                                                                                                                                                                                               |
-| `record_payment(resource_id, payer, tx_hash, amount)` | `payer`                                            | `resource_id: String`; `payer: Address`; `tx_hash: String` — settlement tx hash (1–128 bytes); `amount: i128` — USDC stroops `> 0`                                                                                                                   | `Result<(), Error>`       | Anchor an x402/Soroban settlement receipt on-chain, keyed by `(resource_id, payer)`. Overwrites the previous receipt for the same pair. Emits `payrec`. Errors `NotFound` if `resource_id` is not registered, `InvalidTxHash` if `tx_hash` is empty or over 128 bytes, `InvalidPaymentAmount` if `amount <= 0`. |
-| `get_payment_receipt(resource_id, payer)`       | —                                                        | `resource_id: String`; `payer: Address`                                                                                                                                                                                                              | `Result<PaymentReceipt, Error>` | Fetch the most recent payment receipt for `(resource_id, payer)`. Errors `NotFound` if none recorded.                                                                                                                                                                                             |
 | `set_verification_status(id, verifier, status)` | `verifier`                                               | `id: String`; `verifier: Address`; `status: VerificationStatus`                                                                                                                                                                                      | `Result<(), Error>`       | Mirror off-chain verification status on-chain. Only `Pending→Verified`, `Pending→Rejected`, `Verified→Rejected`, and `Rejected→Verified` are allowed; other transitions (including no-ops and reverting to `Pending`) error `InvalidVerificationTransition`. Emits `verify` with the old and new status. |
 | `add_verifier(verifier)`                        | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Grant the verifier role, authorizing `set_verification_status`. Errors `AdminNotSet` if no admin has been set yet.                                                                                                                                                                                       |
 | `remove_verifier(verifier)`                     | `admin`                                                  | `verifier: Address`                                                                                                                                                                                                                                  | `Result<(), Error>`       | Revoke the verifier role.                                                                                                                                                                                                                                                                                |
 | `is_verifier(address)`                          | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the verifier role.                                                                                                                                                                                                                                                     |
 | `repair_index(ids)`                             | `admin`                                                  | `ids: Vec<String>` — authoritative ordered id list                                                                                                                                                                                                   | `Result<(), Error>`       | Rebuild the `list`/`list_page`/`count` pagination index from `ids`. Every id must already be a registered `Resource` (else `NotFound`); duplicates error `DuplicateInRepair`. Never touches `Resource` storage — see [`docs/index-repair.md`](../docs/index-repair.md).                                  |
-| `repair_tag_index(ids)`                         | `admin`                                                  | `ids: Vec<String>` — resource ids to re-index                                                                                                                                                                                                        | `Result<(), Error>`       | Rebuild the `DataKey::TagIndex` entries for each listed id by reading `Resource.tags` directly from storage. Every id must already exist (else `NotFound`); duplicate ids in input are silently de-duplicated (idempotent). Never writes `Resource` storage — see [`docs/tag-index-repair-design.md`](../docs/tag-index-repair-design.md). |
+| `add_moderator(moderator)`                      | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Grant the moderator role, authorizing `flag_dispute` and `unflag_dispute`. Errors `AdminNotSet` if no admin has been set yet. Emits `addmod`.                                                                                                                                                             |
+| `remove_moderator(moderator)`                   | `admin`                                                  | `moderator: Address`                                                                                                                                                                                                                                 | `Result<(), Error>`       | Revoke the moderator role. Emits `rmmod`.                                                                                                                                                                                                                                                                |
+| `is_moderator(address)`                         | —                                                        | `address: Address`                                                                                                                                                                                                                                   | `bool`                    | Whether `address` currently holds the moderator role.                                                                                                                                                                                                                                                    |
+| `flag_dispute(id, moderator)`                   | `moderator`                                              | `id: String`; `moderator: Address`                                                                                                                                                                                                                   | `Result<(), Error>`       | Flag a resource as disputed. Errors `NotFound` if the resource does not exist, `NotModerator` if caller is not a moderator, `AlreadyFlagged` if already flagged. Emits `flagdisp`.                                                                                                                       |
+| `unflag_dispute(id, moderator)`                 | `moderator`                                              | `id: String`; `moderator: Address`                                                                                                                                                                                                                   | `Result<(), Error>`       | Remove a dispute flag from a resource. Errors `NotFound` if the resource does not exist, `NotModerator` if caller is not a moderator, `NotFlagged` if not currently flagged. Emits `unflgdisp`.                                                                                                          |
+| `is_flagged(id)`                                | —                                                        | `id: String`                                                                                                                                                                                                                                         | `bool`                    | Whether a resource is currently flagged as disputed.                                                                                                                                                                                                                                                     |
 
 ### Roles
 
@@ -179,6 +182,9 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 | `23` | `DuplicateInRepair`      | `repair_index` received a duplicate id in the supplied list.          |
 | `24` | `InvalidTxHash`          | `tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes). |
 | `25` | `InvalidPaymentAmount`   | `amount` in `record_payment` is `<= 0`.                               |
+| `26` | `NotModerator`           | Caller does not hold the moderator role.                              |
+| `27` | `AlreadyFlagged`         | Resource is already flagged as disputed.                              |
+| `28` | `NotFlagged`             | Resource is not currently flagged as disputed.                        |
 
 ### Events
 
@@ -210,6 +216,10 @@ apart, so update all three together.
 | `rmverif`   | `false`                                                  | `remove_verifier()` succeeds                               |
 | `reindex`   | `new_count: u32 (topic carries old_count: u32)`          | `repair_index()` succeeds                                  |
 | `payrec`    | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }` | `record_payment()` succeeds                        |
+| `addmod`    | `true`                                                   | `add_moderator()` succeeds                                 |
+| `rmmod`     | `false`                                                  | `remove_moderator()` succeeds                              |
+| `flagdisp`  | `moderator: Address`                                     | `flag_dispute()` succeeds                                  |
+| `unflgdisp` | `moderator: Address`                                     | `unflag_dispute()` succeeds                                |
 
 The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
 listeners can determine the transition direction without querying additional state:
@@ -261,7 +271,6 @@ separate config lookup. It always succeeds; there is no error case.
 | -------------------------- | ---------------------------- | ----------------------------------------------------- |
 | `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.      |
 | `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.    |
-| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash in bytes. |
 | `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
 | `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
@@ -270,17 +279,6 @@ separate config lookup. It always succeeds; there is no error case.
 
 `price` is an `i128` in **USDC stroops** (7 decimal places).
 Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 USDC.
-
-### Constants
-
-| Constant                   | Value                        | Description                                           |
-| -------------------------- | ---------------------------- | ----------------------------------------------------- |
-| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer, in bytes.     |
-| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash, in bytes.   |
-| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash, in bytes.|
-| `MAX_PRICE`                | `10^18`                      | Maximum price, in USDC stroops.                       |
-| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
-| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
 ### WASM size budget
 
@@ -365,19 +363,6 @@ record/read resources on this contract.
 > This deployment predates `registry_info()`, `creator_resource_count()`,
 > `list_by_creator()`, and the two-step admin model. Redeploy and update this
 > table's Contract ID / Wasm Hash after shipping those changes to testnet.
-
-### Emergency pause
-
-See [contract-registry-pause-decision.md](../docs/contract-registry-pause-decision.md)
-for the architecture spike on admin pause/unpause. **v1 does not implement pause**
-(creator-scoped writes + off-chain ops are sufficient for the current trust model).
-
-> **Note:** the deployment above predates `tags`, the two-step admin/transfer
-> flows, `creator_resource_count`, terms hashes, the verifier role, the
-> on-chain verification mirror, metadata freezing, and index repair
-> described in this README. Redeploy from current source and update this
-> table (plus `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
-> `pnpm contract:bindings`) to pick them up.
 
 ### Ideas for contributors
 

@@ -60,6 +60,95 @@ pub const RESOURCE_SCHEMA_VERSION: u32 = 2;
 /// (e.g. a `sha256:` prefixed hex string).
 pub const MAX_TX_HASH_LEN: u32 = 128;
 
+/// Canonical list of every exported method this contract exposes, paired with
+/// the required authorisation rule (who must sign the call). This is the
+/// single source of truth for the API surface: `contract/README.md`'s Methods
+/// table must document exactly these function names, and every entry here must
+/// appear as a row in that table. Both directions are enforced by the test
+/// `readme_methods_table_matches_method_schema` in `test.rs`, so any drift
+/// between code, this const, and the README fails a test.
+pub const METHOD_SCHEMA: &[(&str, &str)] = &[
+    // ── Resource lifecycle ────────────────────────────────────────────────
+    ("register", "creator"),
+    ("set_price", "creator"),
+    ("update_metadata", "creator"),
+    ("freeze_metadata", "creator"),
+    ("set_tags", "creator"),
+    ("set_listed", "creator"),
+    ("delist", "creator"),
+    // ── Ownership transfer ────────────────────────────────────────────────
+    ("transfer_ownership", "creator"),
+    ("propose_transfer", "creator"),
+    ("accept_transfer", "proposed new_creator"),
+    ("cancel_transfer", "creator"),
+    // ── Read-only queries ─────────────────────────────────────────────────
+    ("get", "—"),
+    ("exists", "—"),
+    ("get_owner", "—"),
+    ("count", "—"),
+    ("creator_resource_count", "—"),
+    // ── Paginated catalog ─────────────────────────────────────────────────
+    ("list", "—"),
+    ("list_page", "—"),
+    ("list_listed", "—"),
+    ("list_by_creator", "—"),
+    // ── Registry introspection ────────────────────────────────────────────
+    ("registry_info", "—"),
+    ("contract_version", "—"),
+    // ── Admin role ────────────────────────────────────────────────────────
+    ("admin", "—"),
+    ("pending_admin", "—"),
+    ("nominate_new_admin", "current admin (or new_admin for bootstrap)"),
+    ("accept_admin", "pending admin"),
+    // ── Verifier role ─────────────────────────────────────────────────────
+    ("add_verifier", "admin"),
+    ("remove_verifier", "admin"),
+    ("is_verifier", "—"),
+    ("set_verification_status", "verifier"),
+    // ── Terms hashes ──────────────────────────────────────────────────────
+    ("set_terms_hash", "creator"),
+    ("get_terms_hash", "—"),
+    // ── Index repair ──────────────────────────────────────────────────────
+    ("repair_index", "admin"),
+    // ── Payment receipts ──────────────────────────────────────────────────
+    ("record_payment", "payer"),
+    ("get_payment_receipt", "—"),
+];
+
+/// Canonical list of every error code this contract can return, paired with
+/// its numeric discriminant and a short description. This is the single source
+/// of truth for error codes: `contract/README.md`'s Error codes table must
+/// document exactly these codes. Both directions are enforced by the test
+/// `readme_error_codes_table_matches_error_schema` in `test.rs`, so any drift
+/// between code, this const, and the README fails a test.
+pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
+    (1, "AlreadyRegistered", "A resource with the given `id` already exists."),
+    (2, "NotFound", "No resource (or terms hash or receipt) matches the given key."),
+    (3, "InvalidPrice", "Price is `<= 0`."),
+    (4, "MetadataTooLong", "Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes)."),
+    (5, "InvalidTag", "Tag format or count validation failed (too many tags, empty tag, or tag exceeds 32 bytes)."),
+    (6, "Unauthorized", "Caller authentication check failed or unauthorized."),
+    (7, "PendingAdminNotSet", "No pending admin is set, or caller does not match the pending admin."),
+    (8, "PendingAdminAlreadySet", "A pending admin nomination is already active."),
+    (9, "SameAdmin", "Nominated new admin is already the current contract admin."),
+    (10, "TermsHashTooLong", "Terms hash exceeds `MAX_TERMS_HASH_LEN` (64 bytes)."),
+    (11, "InvalidResourceId", "Resource id is empty, exceeds 24 bytes, or contains non-lowercase-alphanumeric characters."),
+    (12, "InvalidMetadataPointer", "Metadata pointer does not start with a supported prefix."),
+    (13, "EmptyMetadata", "Metadata pointer is empty."),
+    (14, "AlreadyOwner", "Proposed/target new owner is already the current owner."),
+    (15, "NoPendingTransfer", "No pending transfer exists for this resource."),
+    (16, "ReservedId", "Resource id collides with a reserved word (e.g. `admin`, `registry`)."),
+    (17, "PriceExceedsMax", "Price exceeds `MAX_PRICE`."),
+    (18, "AdminNotSet", "`add_verifier`, `remove_verifier`, or `repair_index` was called before any admin was bootstrapped."),
+    (19, "NotVerifier", "`set_verification_status` was called by an address that does not hold the verifier role."),
+    (20, "InvalidVerificationTransition", "The requested `VerificationStatus` transition is not allowed (e.g. same-status no-op, or reverting to `Pending`)."),
+    (21, "AlreadyFrozen", "`freeze_metadata` was called on a resource whose metadata is already frozen."),
+    (22, "MetadataFrozen", "`update_metadata` was called on a resource whose metadata has been frozen."),
+    (23, "DuplicateInRepair", "`repair_index` received a list with duplicate resource ids."),
+    (24, "InvalidTxHash", "`tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes)."),
+    (25, "InvalidPaymentAmount", "`amount` in `record_payment` is `<= 0`."),
+];
+
 /// Canonical list of every event topic this contract emits, paired with a
 /// human-readable description of its payload shape. This is the single
 /// source of truth for event schemas: `contract/README.md`'s Events table
@@ -102,6 +191,10 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
         "payrec",
         "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
     ),
+    ("addmod", "true"),
+    ("rmmod", "false"),
+    ("flagdisp", "moderator: Address"),
+    ("unflgdisp", "moderator: Address"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -212,6 +305,8 @@ pub enum DataKey {
     /// Keyed by (resource id string, payer Address) so escrow/lease
     /// contracts can look up a settlement without scanning event history.
     PaymentReceipt(String, Address),
+    Moderator(Address),
+    DisputeFlag(String),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -303,6 +398,9 @@ pub enum Error {
     InvalidTxHash = 24,
     /// `amount` supplied to `record_payment` is `<= 0`.
     InvalidPaymentAmount = 25,
+    NotModerator = 26,
+    AlreadyFlagged = 27,
+    NotFlagged = 28,
 }
 
 #[contract]
@@ -1051,6 +1149,109 @@ impl VaultRegistry {
         env.storage()
             .instance()
             .get(&DataKey::Verifier(address))
+            .unwrap_or(false)
+    }
+
+    // ─── Moderator role ──────────────────────────────────────────────────────
+
+    /// Grant the moderator role to `moderator`. Only the admin may call this.
+    /// Moderators can flag and unflag dispute notices on resources but cannot
+    /// change ownership, price, metadata, or verification status.
+    /// Errors `AdminNotSet` if no admin has been set yet.
+    pub fn add_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &true);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("addmod"), moderator), true);
+        Ok(())
+    }
+
+    /// Revoke the moderator role from `moderator`. Only the admin may call this.
+    pub fn remove_moderator(env: Env, moderator: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Moderator(moderator.clone()), &false);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("rmmod"), moderator), false);
+        Ok(())
+    }
+
+    /// Whether `address` currently holds the moderator role.
+    pub fn is_moderator(env: Env, address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Moderator(address))
+            .unwrap_or(false)
+    }
+
+    /// Flag a dispute notice on a resource. Only an address currently holding
+    /// the moderator role may call this. Errors `NotFound` if the resource
+    /// does not exist, `AlreadyFlagged` if it is already flagged.
+    pub fn flag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::NotModerator);
+        }
+        Self::validate_resource_id(&id)?;
+        // Confirm resource exists
+        Self::load(&env, &id)?;
+        let flag_key = DataKey::DisputeFlag(id.clone());
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            return Err(Error::AlreadyFlagged);
+        }
+        env.storage().persistent().set(&flag_key, &true);
+        Self::bump_persistent(&env, &flag_key);
+        env.events()
+            .publish((symbol_short!("flagdisp"), id), moderator);
+        Ok(())
+    }
+
+    /// Remove a dispute flag from a resource. Only a moderator may call this.
+    /// Errors `NotFound` if the resource does not exist, `NotFlagged` if it is
+    /// not currently flagged.
+    pub fn unflag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
+        moderator.require_auth();
+        if !Self::is_moderator(env.clone(), moderator.clone()) {
+            return Err(Error::NotModerator);
+        }
+        Self::validate_resource_id(&id)?;
+        // Confirm resource exists
+        Self::load(&env, &id)?;
+        let flag_key = DataKey::DisputeFlag(id.clone());
+        if !env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
+            .unwrap_or(false)
+        {
+            return Err(Error::NotFlagged);
+        }
+        env.storage().persistent().set(&flag_key, &false);
+        Self::bump_persistent(&env, &flag_key);
+        env.events()
+            .publish((symbol_short!("unflgdisp"), id), moderator);
+        Ok(())
+    }
+
+    /// Whether a resource currently has an active dispute flag.
+    /// Returns `false` for unknown resources (no `NotFound` error).
+    pub fn is_flagged(env: Env, id: String) -> bool {
+        let flag_key = DataKey::DisputeFlag(id);
+        env.storage()
+            .persistent()
+            .get::<DataKey, bool>(&flag_key)
             .unwrap_or(false)
     }
 
