@@ -76,7 +76,25 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "mindvault_browse",
     description: "List all available resources in the MindVault catalog.",
-    inputSchema: { type: "object", properties: {}, required: [] },
+    inputSchema: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Max number of resources to return (1–100, default 20).",
+          examples: [20, 50],
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of resources to skip for pagination.",
+          examples: [0, 20],
+        },
+      },
+      required: [],
+    },
   },
   {
     name: "mindvault_search",
@@ -116,6 +134,19 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
           description:
             "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
           examples: ["link", "file"],
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 100,
+          description: "Max number of resources to return (1–100, default 20).",
+          examples: [20, 50],
+        },
+        offset: {
+          type: "integer",
+          minimum: 0,
+          description: "Number of resources to skip for pagination.",
+          examples: [0, 20],
         },
       },
       required: ["query"],
