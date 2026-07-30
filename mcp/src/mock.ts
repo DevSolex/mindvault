@@ -14,6 +14,7 @@
  */
 
 import { Keypair } from "@stellar/stellar-sdk";
+import { explorerTxUrl } from "./stellarExplorer.js";
 
 const TRUTHY = new Set(["1", "true", "yes", "on"]);
 
@@ -286,6 +287,7 @@ export function mockUpdateMetadata(resourceId: string, metadata: string): string
       resourceId,
       metadata,
       txHash: `MOCK_TX_UPDATE_META_${resourceId}`,
+      explorerUrl: explorerTxUrl(`MOCK_TX_UPDATE_META_${resourceId}`),
       source: "on-chain (mock)",
     },
     null,
@@ -300,6 +302,7 @@ export function mockSetPrice(resourceId: string, price: string): string {
       resourceId,
       price,
       txHash: `MOCK_TX_SET_PRICE_${resourceId}`,
+      explorerUrl: explorerTxUrl(`MOCK_TX_SET_PRICE_${resourceId}`),
       source: "on-chain (mock)",
     },
     null,
@@ -314,6 +317,7 @@ export function mockTransferOwnership(resourceId: string, newCreator: string): s
       resourceId,
       newCreator,
       txHash: `MOCK_TX_TRANSFER_${resourceId}`,
+      explorerUrl: explorerTxUrl(`MOCK_TX_TRANSFER_${resourceId}`),
       source: "on-chain (mock)",
     },
     null,
@@ -328,7 +332,14 @@ export function mockSetListed(resourceId: string, listed: boolean): string {
       resourceId,
       listed,
       txHash: `MOCK_TX_SET_LISTED_${resourceId}`,
+      explorerUrl: explorerTxUrl(`MOCK_TX_SET_LISTED_${resourceId}`),
       source: "on-chain (mock)",
+    },
+    null,
+    2,
+  );
+}
+
 const MOCK_REGISTRY_RESOURCES = [
   {
     id: "mock-1",

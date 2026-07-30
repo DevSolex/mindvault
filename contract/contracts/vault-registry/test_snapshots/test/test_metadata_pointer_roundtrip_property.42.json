@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "04h22s38qhd92ka6ryj"
+                  "string": "0"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 900640414051
+                    "lo": 626413289002
                   }
                 },
                 {
-                  "string": "ipfs://7r_Dvx_/__5O_:m9IL_oxXA\\\\S/\\\\K__7h__\\\\0_6Tp1\\\\_/My7M1d2\\\\\\\\\\\\\\\\\\\\_7Bcb\\\\\\\\9\\\\_:mv_0M5cU"
+                  "string": "ipfs://i_li.qB3m___s.lz8_X3\\\\\\\\U_6\\\\_b4P\\\\4\\\\5M1LW\\\\cqfw0j_0I\\\\_80_:LiA2P0PJUn_/_._3\\\\4jy8H9i\\\\Z_KbKbsiW8\\\\1BnnxV\\\\5eT_A:Dv:D1_h6.tRl2\\\\__Ckx7p"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "04h22s38qhd92ka6ryj"
+                  "string": "0"
                 },
                 {
-                  "string": "https://\\\\d4Gg6NT69jQI\\\\qLq/ug-__Y\\\\e_\\\\\\\\Ga7efil1NjvEEly:\\\\.X\\\\vP:\\\\9:u0\\\\/_69k\\\\A4:t__/4m:g6j0TqO7.Y_S_::8hqR/Tgv\\\\M3GI71"
+                  "string": "https://hGX:f2w9_5H___AC_0J2_1_7PvBVZOZ:I1\\\\k\\\\Cq\\\\ej\\\\vVI_GVEoa:_v16iivAl\\\\Qku5LQz0ZV.\\\\__h_MWeq0i1SM\\\\_X/TKyo0k:N\\\\13I/Uh__\\\\Uj6egmc\\\\/__//6k\\\\_-0\\\\oz_\\\\3q\\\\rU_X\\\\G3\\\\B19kWsW\\\\\\\\nAaU/MxH0QB-jfa5:yKvGRoGiIAjgu3ega_biR\\\\AHN\\\\eho/uPejh_WOvZMH__\\\\\\\\H\\\\._/k9K\\\\:\\\\s.nZ\\\\Ya3v7kgF_G\\\\\\\\-6B74_D\\\\:_pL5vl0agM0_\\\\e-ndQP30koU:b\\\\\\\\__6L_1T_._muwTKDI\\\\9_K_ULBxTb//126_:rO"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "04h22s38qhd92ka6ryj"
+                  "string": "0"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 161664576305
+                    "lo": 156097291130
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "04h22s38qhd92ka6ryj"
+                  "string": "0"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "04h22s38qhd92ka6ryj"
+                      "string": "0"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "04h22s38qhd92ka6ryj"
+                  "string": "0"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "04h22s38qhd92ka6ryj"
+                  "string": "0"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "04h22s38qhd92ka6ryj"
+                      "string": "0"
                     }
                   ]
                 },
@@ -264,6 +264,18 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "frozen"
                       },
                       "val": {
@@ -275,7 +287,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "04h22s38qhd92ka6ryj"
+                        "string": "0"
                       }
                     },
                     {
@@ -283,7 +295,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": false
+                        "bool": true
                       }
                     },
                     {
@@ -291,7 +303,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://\\\\d4Gg6NT69jQI\\\\qLq/ug-__Y\\\\e_\\\\\\\\Ga7efil1NjvEEly:\\\\.X\\\\vP:\\\\9:u0\\\\/_69k\\\\A4:t__/4m:g6j0TqO7.Y_S_::8hqR/Tgv\\\\M3GI71"
+                        "string": "https://hGX:f2w9_5H___AC_0J2_1_7PvBVZOZ:I1\\\\k\\\\Cq\\\\ej\\\\vVI_GVEoa:_v16iivAl\\\\Qku5LQz0ZV.\\\\__h_MWeq0i1SM\\\\_X/TKyo0k:N\\\\13I/Uh__\\\\Uj6egmc\\\\/__//6k\\\\_-0\\\\oz_\\\\3q\\\\rU_X\\\\G3\\\\B19kWsW\\\\\\\\nAaU/MxH0QB-jfa5:yKvGRoGiIAjgu3ega_biR\\\\AHN\\\\eho/uPejh_WOvZMH__\\\\\\\\H\\\\._/k9K\\\\:\\\\s.nZ\\\\Ya3v7kgF_G\\\\\\\\-6B74_D\\\\:_pL5vl0agM0_\\\\e-ndQP30koU:b\\\\\\\\__6L_1T_._muwTKDI\\\\9_K_ULBxTb//126_:rO"
                       }
                     },
                     {
@@ -301,7 +313,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 161664576305
+                          "lo": 156097291130
                         }
                       }
                     },

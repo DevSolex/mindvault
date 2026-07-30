@@ -58,7 +58,12 @@ export interface DryRunBuyResult {
 
 export interface DryRunOnchainResult {
   mode: "dry-run";
-  operation: "register-onchain" | "update-metadata" | "set-price" | "transfer-ownership" | "set-listed";
+  operation:
+    | "register-onchain"
+    | "update-metadata"
+    | "set-price"
+    | "transfer-ownership"
+    | "set-listed";
   resourceId: string;
   validation: {
     resourceId: { valid: boolean; error?: string };
@@ -124,7 +129,10 @@ function validateResourceId(id: unknown): { valid: boolean; error?: string } {
     return { valid: false, error: "Resource ID must be a non-empty string" };
   }
   if (!/^[a-zA-Z0-9._-]+$/.test(id)) {
-    return { valid: false, error: "Resource ID must contain only letters, digits, dot, dash, or underscore" };
+    return {
+      valid: false,
+      error: "Resource ID must contain only letters, digits, dot, dash, or underscore",
+    };
   }
   if (id.length > 256) {
     return { valid: false, error: "Resource ID must be at most 256 characters" };

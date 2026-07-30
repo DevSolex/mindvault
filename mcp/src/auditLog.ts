@@ -133,9 +133,7 @@ export function logToolError(
   if (!auditLogEnabled) return;
 
   const message =
-    error instanceof Error
-      ? redactSecrets(error.message)
-      : redactSecrets(String(error));
+    error instanceof Error ? redactSecrets(error.message) : redactSecrets(String(error));
 
   const entry: AuditLogEntry = {
     timestamp: formatTimestamp(),
@@ -248,9 +246,7 @@ export function logPaymentError(
   if (!auditLogEnabled) return;
 
   const message =
-    error instanceof Error
-      ? redactSecrets(error.message)
-      : redactSecrets(String(error));
+    error instanceof Error ? redactSecrets(error.message) : redactSecrets(String(error));
 
   const entry: AuditLogEntry = {
     timestamp: formatTimestamp(),
