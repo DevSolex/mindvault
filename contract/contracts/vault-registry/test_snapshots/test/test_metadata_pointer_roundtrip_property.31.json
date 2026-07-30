@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "10952lv9"
+                  "string": "g5gn5lr5rr5"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 973442824252
+                    "lo": 94161539244
                   }
                 },
                 {
-                  "string": "ipfs://\\\\F_Rtf-8HDt_P0y4.weLkA.:530e/\\\\-ztmUzHJf/y_3uE8\\\\UbWx\\\\\\\\_8.w\\\\\\\\u_\\\\\\\\5Z.\\\\d\\\\AeL\\\\\\\\__w0f1P\\\\\\\\/\\\\kpy\\\\7\\\\a.l8\\\\8m\\\\_RG:6_lR.\\\\\\\\.Z\\\\_zM\\\\_h_:P.m\\\\_Qj_b\\\\:w/eUA.T:/Ju\\\\ljLt_lt_K"
+                  "string": "ipfs://_O:_/IsV"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "10952lv9"
+                  "string": "g5gn5lr5rr5"
                 },
                 {
-                  "string": "https://.-aB9Du_y.\\\\_A\\\\\\\\\\\\\\\\_-tvn_.RmMhAq"
+                  "string": "https://\\\\\\\\S\\\\:fg_S_l\\\\_l_1_r_\\\\gxf_j_.:.39s/9Qw\\\\_.\\\\pNU\\\\_HqMQ_\\\\H_/:__\\\\G\\\\fC_uUn_.KAP\\\\vDI4T\\\\p.G:W\\\\9\\\\_6nr5z:SSBI_HPv_v\\\\UD2rGTZ0:_7:l\\\\_"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "10952lv9"
+                  "string": "g5gn5lr5rr5"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 711810326406
+                    "lo": 236004719890
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "10952lv9"
+                  "string": "g5gn5lr5rr5"
                 },
                 {
-                  "bool": true
+                  "bool": false
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "10952lv9"
+                      "string": "g5gn5lr5rr5"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "10952lv9"
+                  "string": "g5gn5lr5rr5"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "10952lv9"
+                  "string": "g5gn5lr5rr5"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "10952lv9"
+                      "string": "g5gn5lr5rr5"
                     }
                   ]
                 },
@@ -287,7 +287,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "10952lv9"
+                        "string": "g5gn5lr5rr5"
                       }
                     },
                     {
@@ -295,7 +295,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -303,7 +303,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://.-aB9Du_y.\\\\_A\\\\\\\\\\\\\\\\_-tvn_.RmMhAq"
+                        "string": "https://\\\\\\\\S\\\\:fg_S_l\\\\_l_1_r_\\\\gxf_j_.:.39s/9Qw\\\\_.\\\\pNU\\\\_HqMQ_\\\\H_/:__\\\\G\\\\fC_uUn_.KAP\\\\vDI4T\\\\p.G:W\\\\9\\\\_6nr5z:SSBI_HPv_v\\\\UD2rGTZ0:_7:l\\\\_"
                       }
                     },
                     {
@@ -313,7 +313,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 711810326406
+                          "lo": 236004719890
                         }
                       }
                     },
