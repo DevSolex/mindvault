@@ -3015,5 +3015,8 @@ export { server };
 
 if (!process.env.VITEST) {
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await await await server.connect(transport);
+
+  // Setup graceful shutdown
+  setupGracefulShutdown(server, transport, console.log);;
 }
