@@ -447,6 +447,14 @@ stellar contract build --manifest-path Cargo.toml    # build wasm
 
 ### Deploy (testnet)
 
+> [!IMPORTANT]
+> Before deploying a new WASM to any network, complete the full
+> **[Contract Upgrade Checklist](../docs/contract-upgrade-checklist.md)** — it
+> covers build verification, WASM size budget, network identity checks, binding
+> regeneration, admin role bootstrap, and post-deploy smoke tests.
+> Run `make preflight` from `contract/contracts/vault-registry/` to execute
+> all locally-verifiable steps in one command.
+
 ```bash
 # One-time: create & fund an identity
 stellar keys generate deployer --network testnet --fund
@@ -459,12 +467,6 @@ stellar contract deploy \
 
 The command prints the deployed contract ID — wire it into the server config so
 the backend can record resources on registration.
-
-> [!IMPORTANT]
-> Before deploying a new WASM to any network, complete the full
-> **[Contract Upgrade Checklist](../docs/contract-upgrade-checklist.md)** — it
-> covers build verification, WASM size budget, network identity checks, binding
-> regeneration, admin role bootstrap, and post-deploy smoke tests.
 
 ### Testnet Deployment
 
