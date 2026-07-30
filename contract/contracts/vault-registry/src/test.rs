@@ -4397,6 +4397,234 @@ fn contract_version_crate_version_is_valid_semver() {
 #[test]
 fn registry_info_name_is_stable_registry_name() {
     let (env, _creator, client) = setup();
+    // No register — the key does not exist.
+    let missing = String::from_str(&env, "ttlmissing");
+    assert!(!client.exists(&missing));
+    // No panic / storage error; the test passing is sufficient.
+}
+
+// ---------------------------------------------------------------------------
+// exists_many (#369) — batch existence check
+// ---------------------------------------------------------------------------
+
+/// `exists_many` returns an empty Vec for an empty input.
+#[test]
+fn exists_many_empty_input_returns_empty() {
+    let (env, _creator, client) = setup();
+    let result = client.exists_many(&Vec::new(&env));
+    assert_eq!(result.len(), 0);
+}
+
+/// `exists_many` returns false for every id when nothing is registered.
+#[test]
+fn exists_many_all_absent() {
+    let (env, _creator, client) = setup();
+    let mut ids: Vec<String> = Vec::new(&env);
+    ids.push_back(String::from_str(&env, "abc"));
+    ids.push_back(String::from_str(&env, "def"));
+
+    let result = client.exists_many(&ids);
+    assert_eq!(result.len(), 2);
+    assert!(!result.get(0).unwrap());
+    assert!(!result.get(1).unwrap());
+}
+
+/// `exists_many` returns true for registered ids and false for absent ones
+/// in the correct parallel order.
+#[test]
+fn exists_many_mixed_present_and_absent() {
+    let (env, creator, client) = setup();
+
+    let id_a = String::from_str(&env, "ema1");
+    let id_b = String::from_str(&env, "ema2");
+    let id_c = String::from_str(&env, "ema3");
+    let meta = String::from_str(&env, "ipfs://m");
+
+    client.register(&creator, &id_a, &100i128, &meta, &empty_tags(&env));
+    // id_b is NOT registered
+    client.register(&creator, &id_c, &100i128, &meta, &empty_tags(&env));
+
+    let mut ids: Vec<String> = Vec::new(&env);
+    ids.push_back(id_a);
+    ids.push_back(id_b);
+    ids.push_back(id_c);
+
+    let result = client.exists_many(&ids);
+    assert_eq!(result.len(), 3);
+    assert!(result.get(0).unwrap(),  "id_a is registered — should be true");
+    assert!(!result.get(1).unwrap(), "id_b is absent — should be false");
+    assert!(result.get(2).unwrap(),  "id_c is registered — should be true");
+}
+
+/// `exists_many` returns all-true when every id is registered.
+#[test]
+fn exists_many_all_present() {
+    let (env, creator, client) = setup();
+    let ids_str = ["em1", "em2", "em3"];
+    let meta = String::from_str(&env, "ipfs://m");
+    for id_str in &ids_str {
+        client.register(
+            &creator,
+            &String::from_str(&env, id_str),
+            &100i128,
+            &meta,
+            &empty_tags(&env),
+        );
+    }
+
+    let mut ids: Vec<String> = Vec::new(&env);
+    for id_str in &ids_str {
+        ids.push_back(String::from_str(&env, id_str));
+    }
+
+    let result = client.exists_many(&ids);
+    assert_eq!(result.len(), 3);
+    for i in 0..3u32 {
+        assert!(result.get(i).unwrap(), "all ids are registered — should be true");
+    }
+}
+
+/// `exists_many` treats an id that fails format validation as absent (`false`)
+/// rather than propagating an error, consistent with `exists`.
+#[test]
+fn exists_many_invalid_id_format_treated_as_absent() {
+    let (env, _creator, client) = setup();
+    // An id with an uppercase letter fails validate_resource_id.
+    let mut ids: Vec<String> = Vec::new(&env);
+    ids.push_back(String::from_str(&env, "INVALID"));
+    ids.push_back(String::from_str(&env, "validid"));
+
+    let result = client.exists_many(&ids);
+    assert_eq!(result.len(), 2);
+    assert!(!result.get(0).unwrap(), "invalid-format id treated as absent");
+    assert!(!result.get(1).unwrap(), "valid-format but unregistered id is absent");
+}
+
+/// `exists_many` bumps TTL for each id that resolves to a registered resource.
+#[test]
+fn exists_many_bumps_ttl_for_found_ids() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "emttl");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    // Decay TTL by one day.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
+        "TTL must have decayed before the read"
+    );
+
+    let mut ids: Vec<String> = Vec::new(&env);
+    ids.push_back(id.clone());
+    client.exists_many(&ids);
+
+    assert_eq!(
+        resource_storage_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT,
+        "exists_many must bump TTL for each found resource"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// LIST_PAGE_CAP constant (#370)
+// ---------------------------------------------------------------------------
+
+/// `LIST_PAGE_CAP` has the expected value (20). This test pins the constant
+/// so that any accidental change to the cap surfaces as a test failure.
+#[test]
+fn list_page_cap_constant_value() {
+    assert_eq!(LIST_PAGE_CAP, 20u32, "LIST_PAGE_CAP must equal 20");
+}
+
+/// `list`, `list_page`, `list_listed`, and `list_by_creator` all honour
+/// `LIST_PAGE_CAP` — requesting more items than the cap only returns the cap.
+#[test]
+fn all_list_variants_honour_list_page_cap() {
+    let (env, creator, client) = setup();
+    // Register LIST_PAGE_CAP + 5 resources so every list variant has something
+    // to truncate.
+    let n = LIST_PAGE_CAP + 5;
+    let meta = String::from_str(&env, "ipfs://m");
+    for i in 0..n {
+        // Pad to ensure ids are valid (lowercase+digits, ≤ 24 chars).
+        let id_str = format!("cap{:02}", i);
+        client.register(
+            &creator,
+            &String::from_str(&env, &id_str),
+            &100i128,
+            &meta,
+            &empty_tags(&env),
+        );
+    }
+
+    let over_cap = LIST_PAGE_CAP + 5;
+    assert_eq!(
+        client.list(&0u32, &over_cap).len(),
+        LIST_PAGE_CAP,
+        "list must be capped at LIST_PAGE_CAP"
+    );
+    assert_eq!(
+        client.list_page(&0u32, &over_cap).items.len(),
+        LIST_PAGE_CAP,
+        "list_page must be capped at LIST_PAGE_CAP"
+    );
+    assert_eq!(
+        client.list_listed(&0u32, &over_cap).len(),
+        LIST_PAGE_CAP,
+        "list_listed must be capped at LIST_PAGE_CAP"
+    );
+    assert_eq!(
+        client.list_by_creator(&creator, &0u32, &over_cap).len(),
+        LIST_PAGE_CAP,
+        "list_by_creator must be capped at LIST_PAGE_CAP"
+    );
+}
+
+/// `list` (delegates to `list_page`) restores TTL on every resource it returns.
+#[test]
+fn list_bumps_ttl_for_returned_resources() {
+    let (env, creator, client) = setup();
+    let ids = ["ttll0", "ttll1", "ttll2"];
+    for id_str in &ids {
+        client.register(
+            &creator,
+            &String::from_str(&env, id_str),
+            &100i128,
+            &String::from_str(&env, "ipfs://m"),
+            &empty_tags(&env),
+        );
+    }
+
+    // Decay TTL by one day across all entries.
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + TTL_DAY_IN_LEDGERS);
+
+    for id_str in &ids {
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
+            TTL_BUMP_AMOUNT - TTL_DAY_IN_LEDGERS,
+            "TTL must have decayed before the read"
+        );
+    }
+
+    // One call to list covers all three resources.
+    client.list(&0u32, &20u32);
+
+    for id_str in &ids {
+        assert_eq!(
+            resource_storage_ttl(&env, &client.address, &String::from_str(&env, id_str)),
+            TTL_BUMP_AMOUNT,
+            "list must bump TTL for each returned resource"
+        );
+    }
     let info = client.registry_info();
     assert_eq!(
         info.name,

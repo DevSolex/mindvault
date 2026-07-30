@@ -30,6 +30,11 @@ const MAX_TAGS: u32 = 8;
 /// Maximum price in USDC stroops (6 decimals). Represents 1 trillion USDC.
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
 const MAX_TAG_LEN: u32 = 32;
+/// Maximum number of items returned per page by `list`, `list_page`,
+/// `list_listed`, and `list_by_creator`. Centralised here so the cap is
+/// easy to find, document, and change in a single place instead of
+/// scattered `limit.min(20)` literals.
+pub const LIST_PAGE_CAP: u32 = 20;
 
 // ── Fee / royalty configuration ──────────────────────────────────────────────
 /// Fee basis-point ceiling: 50 % (5 000 bp). Neither platform_fee_bps nor
@@ -1010,7 +1015,7 @@ impl VaultRegistry {
     ///   past the end).
     pub fn list_page(env: Env, cursor: u32, limit: u32) -> CatalogPage {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
-        let page_size = limit.min(20);
+        let page_size = limit.min(LIST_PAGE_CAP);
         let mut items: Vec<Resource> = Vec::new(&env);
         let mut i = cursor;
         while i < total && items.len() < page_size {
@@ -1040,7 +1045,7 @@ impl VaultRegistry {
     /// - Returns an empty `Vec` if no listed resources fall in range.
     pub fn list_listed(env: Env, start: u32, limit: u32) -> Vec<Resource> {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
-        let page_size = limit.min(20);
+        let page_size = limit.min(LIST_PAGE_CAP);
         let mut result: Vec<Resource> = Vec::new(&env);
         let mut i = start;
         while i < total && result.len() < page_size {
@@ -1070,7 +1075,7 @@ impl VaultRegistry {
     /// - `limit` is capped at `20`.
     /// - Returns empty `Vec` when `start` is beyond the creator's known items.
     pub fn list_by_creator(env: Env, creator: Address, start: u32, limit: u32) -> Vec<Resource> {
-        let page_size = limit.min(20);
+        let page_size = limit.min(LIST_PAGE_CAP);
         let mut result: Vec<Resource> = Vec::new(&env);
         if page_size == 0 {
             return result;
@@ -1275,6 +1280,38 @@ impl VaultRegistry {
     pub fn exists(env: Env, id: String) -> bool {
         Self::validate_resource_id(&id).is_ok()
             && env.storage().persistent().has(&DataKey::Resource(id))
+    }
+
+    /// Batch existence check. Returns a `Vec<bool>` parallel to `ids`:
+    /// `result[i]` is `true` iff a resource with `ids[i]` is registered.
+    ///
+    /// Semantics match `exists` for each element: IDs that fail format
+    /// validation are treated as absent (`false`) rather than erroring.
+    /// TTL is bumped for every ID that resolves to a registered resource,
+    /// keeping the hot entries alive exactly as a sequence of individual
+    /// `exists` calls would.
+    ///
+    /// This is useful for server-side bulk validation before publishing or
+    /// reconciliation — callers can check many IDs in a single contract
+    /// invocation instead of one round-trip per ID.
+    pub fn exists_many(env: Env, ids: Vec<String>) -> Vec<bool> {
+        let mut result: Vec<bool> = Vec::new(&env);
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            let found = if Self::validate_resource_id(&id).is_err() {
+                false
+            } else {
+                let key = DataKey::Resource(id);
+                if env.storage().persistent().has(&key) {
+                    Self::bump_persistent(&env, &key);
+                    true
+                } else {
+                    false
+                }
+            };
+            result.push_back(found);
+        }
+        result
     }
 
     /// Get the owner address of a resource. Errors with `NotFound` if it does not exist.
