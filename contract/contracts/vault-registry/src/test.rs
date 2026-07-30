@@ -4094,6 +4094,24 @@ fn register_stamps_updated_at() {
     assert_eq!(client.get(&id).updated_at, 42);
 }
 
+/// `register` stamps created_at with the ledger sequence at call time.
+#[test]
+fn register_stamps_created_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(41);
+    let id = String::from_str(&env, "tsc1");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+
+    assert_eq!(client.get(&id).created_at, 41);
+}
+
 /// `set_price` updates updated_at to the ledger sequence at call time.
 #[test]
 fn set_price_updates_updated_at() {
@@ -4136,6 +4154,31 @@ fn update_metadata_updates_updated_at() {
     assert_eq!(client.get(&id).updated_at, 99);
 }
 
+/// `created_at` remains unchanged when metadata is updated.
+#[test]
+fn update_metadata_preserves_created_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(70);
+    let id = String::from_str(&env, "tsc2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://old"),
+        &empty_tags(&env),
+    );
+    let created_at = client.get(&id).created_at;
+    assert_eq!(created_at, 70);
+
+    env.ledger().set_sequence_number(90);
+    client.update_metadata(&id, &String::from_str(&env, "ipfs://new"));
+
+    let resource = client.get(&id);
+    assert_eq!(resource.created_at, created_at);
+    assert_eq!(resource.updated_at, 90);
+}
+
 /// `transfer_ownership` updates updated_at to the ledger sequence at call time.
 #[test]
 fn transfer_ownership_updates_updated_at() {
@@ -4156,6 +4199,32 @@ fn transfer_ownership_updates_updated_at() {
     env.ledger().set_sequence_number(200);
     client.transfer_ownership(&id, &new_owner);
     assert_eq!(client.get(&id).updated_at, 200);
+}
+
+/// `created_at` remains unchanged when ownership is transferred.
+#[test]
+fn transfer_ownership_preserves_created_at() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(300);
+    let id = String::from_str(&env, "tsc3");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    let created_at = client.get(&id).created_at;
+    assert_eq!(created_at, 300);
+
+    let new_owner = Address::generate(&env);
+    env.ledger().set_sequence_number(420);
+    client.transfer_ownership(&id, &new_owner);
+
+    let resource = client.get(&id);
+    assert_eq!(resource.created_at, created_at);
+    assert_eq!(resource.updated_at, 420);
 }
 
 /// updated_at is independent per resource and not shared across resources.

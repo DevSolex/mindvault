@@ -361,6 +361,9 @@ pub struct Resource {
     pub verified: VerificationStatus,
     /// Once true, `update_metadata` permanently rejects further changes.
     pub frozen: bool,
+    /// Ledger sequence number at which this resource was first registered.
+    /// This value is immutable for the lifetime of the resource.
+    pub created_at: u32,
     /// Ledger sequence number at which this resource was last written
     /// (register or any mutation). Clients can use this to detect staleness
     /// or order events without trusting off-chain timestamps.
@@ -600,6 +603,8 @@ impl VaultRegistry {
             return Err(Error::AlreadyRegistered);
         }
 
+        let now = env.ledger().sequence();
+
         let resource = Resource {
             id: id.clone(),
             creator: creator.clone(),
@@ -610,7 +615,8 @@ impl VaultRegistry {
             tags: norm_tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
-            updated_at: env.ledger().sequence(),
+            created_at: now,
+            updated_at: now,
             dispute_flag: DisputeFlag::NoFlag,
             schema_version: RESOURCE_SCHEMA_VERSION,
         };
