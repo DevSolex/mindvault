@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "28ch"
+                  "string": "5tvp8ak"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 109808461191
+                    "lo": 636871318515
                   }
                 },
                 {
-                  "string": "ipfs://_IF_sNMosx8c\\\\WG:__m._K0Y4dI\\\\\\\\G29\\\\2af3\\\\I\\\\g_\\\\-Q/-/:.\\\\9._/_1Y_H\\\\6F_86DKPVe7\\\\3v:L_\\\\._O4eD\\\\aGN42\\\\\\\\qTm5gx.\\\\:KM.1l__\\\\67__C\\\\\\\\:p\\\\/:qa\\\\:.\\\\hLr_c\\\\9aT\\\\0j6"
+                  "string": "ipfs://VJ/2:_n9ksJ\\\\_WN7VNC_j\\\\.j_KupuY8nK\\\\A1_woX_6.SKNXcYRS5:fb32_6SrokC\\\\b\\\\Ok_0E.:ov\\\\_:u\\\\_\\\\_u7wo\\\\/\\\\B\\\\_pHi\\\\\\\\Jy\\\\TvV-/:6_.l\\\\:K:\\\\_:_hfd\\\\HNWh4e_V\\\\_\\\\\\\\XM/Hu.3/_3a_I\\\\Gd/a-_-\\\\7QD4JW6OAk_-dSj\\\\_d.NYuN\\\\88ELtSa_R_d\\\\_xpB_9m_aK_A_:.03OCVY7.7gm6\\\\_/mtT\\\\z1_DgI\\\\y/:d_\\\\_:8w\\\\S9rM:872g\\\\\\\\x\\\\\\\\C/jUB_w_\\\\.e8qNnP__\\\\_.qkf\\\\c0_s-.:QPk.2\\\\_90\\\\\\\\\\\\_w\\\\J/yc\\\\\\\\cN/5_\\\\\\\\\\\\d\\\\mnL8/_wC.d_Xf_S-jLTYLef__/z.W.6dTn\\\\.cV8_veW./M7gqv\\\\0P"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "28ch"
+                  "string": "5tvp8ak"
                 },
                 {
-                  "string": "https://ZHg1ERxP_\\\\-\\\\/_n\\\\S9e\\\\\\\\w___TZ2576Bj\\\\9\\\\7:74GQ\\\\.9x9.0Xyj\\\\\\\\f/-\\\\9"
+                  "string": "https://h_M.Y.-_9_6\\\\n\\\\l_5_Vj-8vMm/o_/qd\\\\4:Lo__v_K_3784o17aoh"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "28ch"
+                  "string": "5tvp8ak"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 181759380608
+                    "lo": 825773646628
                   }
                 }
               ]
@@ -99,7 +99,7 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "28ch"
+                  "string": "5tvp8ak"
                 },
                 {
                   "bool": true
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "28ch"
+                      "string": "5tvp8ak"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "28ch"
+                  "string": "5tvp8ak"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "28ch"
+                  "string": "5tvp8ak"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "28ch"
+                      "string": "5tvp8ak"
                     }
                   ]
                 },
@@ -287,7 +287,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "28ch"
+                        "string": "5tvp8ak"
                       }
                     },
                     {
@@ -303,7 +303,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://ZHg1ERxP_\\\\-\\\\/_n\\\\S9e\\\\\\\\w___TZ2576Bj\\\\9\\\\7:74GQ\\\\.9x9.0Xyj\\\\\\\\f/-\\\\9"
+                        "string": "https://h_M.Y.-_9_6\\\\n\\\\l_5_Vj-8vMm/o_/qd\\\\4:Lo__v_K_3784o17aoh"
                       }
                     },
                     {
@@ -313,7 +313,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 181759380608
+                          "lo": 825773646628
                         }
                       }
                     },

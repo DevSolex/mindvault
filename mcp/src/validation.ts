@@ -28,6 +28,7 @@
  */
 
 import { parseMetadataHash, MetadataHashError, METADATA_HASH_FORMAT_HINT } from "./metadataHash.js";
+import { CATALOG_MAX_LIMIT } from "./catalogFilters.js";
 import { REGISTRY_LIST_MAX_LIMIT } from "./registryPagination.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
@@ -148,9 +149,14 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
   mindvault_wallet_info: {},
   mindvault_use_profile: { name: { ...PROFILE_NAME, required: true } },
   mindvault_list_profiles: {},
-  mindvault_browse: {},
+  mindvault_browse: {
+    limit: { kind: "integer", min: 1, max: CATALOG_MAX_LIMIT },
+    offset: { kind: "integer", min: 0 },
+  },
   mindvault_search: {
     query: { kind: "string", required: true, maxLength: 256 },
+    limit: { kind: "integer", min: 1, max: CATALOG_MAX_LIMIT },
+    offset: { kind: "integer", min: 0 },
     minPrice: USDC_AMOUNT,
     maxPrice: USDC_AMOUNT,
     verificationStatus: {

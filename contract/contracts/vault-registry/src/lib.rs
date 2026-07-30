@@ -19,15 +19,6 @@ use soroban_sdk::{
 
 // ~5s ledgers → 17,280 per day. Persistent entries are bumped ~30 days on each
 // write so an actively-managed resource is never archived out from under us.
-//
-// Read paths (`get`, `get_owner`, `exists`, all `list*` variants, and
-// `get_terms_hash`) also bump TTL for each persistent entry they touch.
-// A resource that is actively being read — browsed or paid for — is "hot"
-// and should not be archived. The bump uses the same threshold/amount as
-// writes so the policy is uniform and easy to reason about. Instance-storage
-// entries (Count, Admin, CreatorCount, Verifier, …) are **not** bumped on
-// reads: `bump_instance` is expensive relative to individual persistent
-// bumps and those entries are refreshed on every write anyway.
 const DAY_IN_LEDGERS: u32 = 17280;
 const BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
 const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
@@ -228,8 +219,8 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("rmverif", "false"),
     ("reindex", "new_count: u32 (topic carries old_count: u32)"),
     (
-        "payrec",
-        "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
+        "payment",
+        "PaymentReceipt { receipt_id, resource_id, payer, amount, state, tx_hash, recorded_at }",
     ),
     (
         "anchor",
@@ -487,35 +478,53 @@ pub struct FeeConfigUpdated {
 
 /// On-chain record of a single x402/Soroban payment settlement for a resource.
 ///
-/// This is the escrow-ready payment state model: recording a settlement receipt
-/// on-chain gives future escrow and lease contracts a canonical, verifiable
-/// reference to a real payment without requiring those contracts to custody
-/// funds or replay the x402 flow themselves.
+/// The allowed transition is `Escrowed → Settled`. A receipt starts in
+/// `Escrowed` when first recorded and moves to `Settled` once
+/// `settle_payment` is called by a settler. Reverting to `Escrowed` or
+/// creating a receipt directly in `Settled` state are not permitted
+/// (`InvalidPaymentTransition`).
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PaymentState {
+    /// Payment has been authorised by the payer and is held pending final
+    /// on-chain settlement. The x402 facilitator records receipts in this
+    /// state; `settle_payment` advances them to `Settled`.
+    Escrowed,
+    /// Payment has been settled on-chain. The USDC transfer has been
+    /// confirmed and the creator's balance has been credited.
+    Settled,
+}
+
+/// A payment receipt anchoring an x402/Soroban settlement to a specific
+/// vault resource and payer. Written by an address holding the settler role.
 ///
-/// `tx_hash` is the Stellar transaction hash of the USDC settlement (up to
-/// [`MAX_TX_HASH_LEN`] bytes). `amount` is the amount paid in USDC stroops
-/// (must be `> 0`). `ledger` is the ledger sequence at which the receipt was
-/// recorded — set by the contract at write time from `env.ledger().sequence()`
-/// so callers cannot forge it.
+/// `receipt_id` is a caller-chosen unique identifier (max 64 bytes) —
+/// typically the x402 facilitator's own receipt or transaction ID.
+/// `tx_hash` is the Stellar transaction hash of the USDC transfer (max 128
+/// bytes), present from creation so indexers can verify settlement on-chain
+/// without a second round-trip.
 ///
-/// Receipts are stored under `DataKey::PaymentReceipt(resource_id, payer)`.
-/// Recording a second payment for the same `(resource_id, payer)` pair
-/// overwrites the previous receipt, so the stored value always reflects the
-/// most recent settlement for that pair. Use the `payrec` event stream to
-/// reconstruct the full history.
+/// Fields are intentionally read-only after recording. To update state,
+/// call `settle_payment` which transitions `Escrowed → Settled` and
+/// re-emits the receipt as a `settle` event.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaymentReceipt {
-    /// The resource id this payment is for.
+    /// Caller-assigned unique receipt identifier (max 64 bytes).
+    pub receipt_id: String,
+    /// The resource this payment is for.
     pub resource_id: String,
-    /// Stellar address of the buyer/payer.
+    /// Stellar address of the party that made the payment.
     pub payer: Address,
-    /// Stellar transaction hash of the USDC settlement (hex or `sha256:`-prefixed hex).
-    pub tx_hash: String,
-    /// Amount paid in USDC stroops (`> 0`).
+    /// Payment amount in USDC stroops (must be `> 0`, matches the resource's
+    /// on-chain price at settlement time).
     pub amount: i128,
-    /// Ledger sequence at which this receipt was recorded (set by the contract).
-    pub ledger: u32,
+    /// Current lifecycle state of this receipt.
+    pub state: PaymentState,
+    /// Stellar transaction hash of the USDC transfer (non-empty, max 128 bytes).
+    pub tx_hash: String,
+    /// Ledger sequence number at which this receipt was first recorded.
+    pub recorded_at: u32,
 }
 
 /// Immutable on-chain anchor for a purchase receipt hash.
@@ -596,6 +605,7 @@ impl VaultRegistry {
         tags: Vec<String>,
     ) -> Result<(), Error> {
         creator.require_auth();
+        Self::require_not_paused(&env)?;
         Self::validate_price(price)?;
         Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
@@ -614,10 +624,9 @@ impl VaultRegistry {
             id: id.clone(),
             creator: creator.clone(),
             price,
-            metadata: metadata.clone(),
+            metadata,
             listed: true,
-            state: ResourceState::Listed,
-            tags: norm_tags.clone(),
+            tags: tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
             created_at: now,
@@ -669,6 +678,7 @@ impl VaultRegistry {
     /// Emits a `setprice` event whose data is a [`PriceUpdated`] value
     /// containing `id`, `old_price`, `new_price`, and `updater`.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         Self::validate_price(new_price)?;
         let mut resource = Self::load(&env, &id)?;
@@ -697,6 +707,7 @@ impl VaultRegistry {
     /// Off-chain indexers can use these fields to build an audit trail without
     /// querying historical ledger state.
     pub fn update_metadata(env: Env, id: String, metadata: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -723,6 +734,7 @@ impl VaultRegistry {
     /// call this. Irreversible — errors `AlreadyFrozen` if called twice.
     /// Price, listing, tags, and ownership remain mutable after freezing.
     pub fn freeze_metadata(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -749,6 +761,7 @@ impl VaultRegistry {
         status: VerificationStatus,
     ) -> Result<(), Error> {
         verifier.require_auth();
+        Self::require_not_paused(&env)?;
         if !Self::is_verifier(env.clone(), verifier) {
             return Err(Error::NotVerifier);
         }
@@ -779,6 +792,7 @@ impl VaultRegistry {
     /// Tags are normalized to lowercase ASCII before storage; the normalized
     /// form is what gets indexed and returned from `list_by_tag`.
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
@@ -798,6 +812,7 @@ impl VaultRegistry {
     }
 
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -824,6 +839,7 @@ impl VaultRegistry {
 
     /// Propose a transfer to a new owner. The new owner must accept it.
     pub fn propose_transfer(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
@@ -842,6 +858,7 @@ impl VaultRegistry {
 
     /// Accept a proposed transfer. Only the pending owner can call this.
     pub fn accept_transfer(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::PendingTransfer(id.clone());
         let pending_owner: Address = env
             .storage()
@@ -868,6 +885,7 @@ impl VaultRegistry {
 
     /// Cancel a proposed transfer. Only the current owner can call this.
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
@@ -886,6 +904,7 @@ impl VaultRegistry {
     /// `Listed <-> Delisted` transitions are accepted; all other lifecycle
     /// states reject this method with `InvalidLifecycleTransition`.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -994,8 +1013,6 @@ impl VaultRegistry {
     /// - `next_cursor` is `Some(next_index)` when more entries may exist after
     ///   this page, or `None` at end-of-list (including empty catalog / cursor
     ///   past the end).
-    /// - Each persistent entry (Index slot and Resource) that is successfully
-    ///   read has its TTL bumped to keep hot catalog entries alive.
     pub fn list_page(env: Env, cursor: u32, limit: u32) -> CatalogPage {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let page_size = limit.min(LIST_PAGE_CAP);
@@ -1009,9 +1026,8 @@ impl VaultRegistry {
                 if let Some(resource) = env
                     .storage()
                     .persistent()
-                    .get::<DataKey, Resource>(&res_key)
+                    .get::<DataKey, Resource>(&DataKey::Resource(id))
                 {
-                    Self::bump_persistent(&env, &res_key);
                     items.push_back(resource);
                 }
             }
@@ -1027,8 +1043,6 @@ impl VaultRegistry {
     /// - `limit` is capped at `20`.
     /// - Delisted resources are skipped; relisted resources will reappear.
     /// - Returns an empty `Vec` if no listed resources fall in range.
-    /// - Each persistent entry (Index slot and Resource) that is successfully
-    ///   read has its TTL bumped to keep hot catalog entries alive.
     pub fn list_listed(env: Env, start: u32, limit: u32) -> Vec<Resource> {
         let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let page_size = limit.min(LIST_PAGE_CAP);
@@ -1042,7 +1056,7 @@ impl VaultRegistry {
                 if let Some(resource) = env
                     .storage()
                     .persistent()
-                    .get::<DataKey, Resource>(&res_key)
+                    .get::<DataKey, Resource>(&DataKey::Resource(id))
                 {
                     Self::bump_persistent(&env, &res_key);
                     if resource.state == ResourceState::Listed {
@@ -1060,8 +1074,6 @@ impl VaultRegistry {
     /// - Results are ordered by global registration sequence for that creator.
     /// - `limit` is capped at `20`.
     /// - Returns empty `Vec` when `start` is beyond the creator's known items.
-    /// - Each persistent Resource entry that is successfully read has its TTL
-    ///   bumped to keep hot resources alive.
     pub fn list_by_creator(env: Env, creator: Address, start: u32, limit: u32) -> Vec<Resource> {
         let page_size = limit.min(LIST_PAGE_CAP);
         let mut result: Vec<Resource> = Vec::new(&env);
@@ -1078,13 +1090,11 @@ impl VaultRegistry {
         let mut idx = start;
         while result.len() < page_size && idx < total {
             let id = list.get(idx).unwrap();
-            let res_key = DataKey::Resource(id.clone());
             if let Some(resource) = env
                 .storage()
                 .persistent()
-                .get::<DataKey, Resource>(&res_key)
+                .get::<DataKey, Resource>(&DataKey::Resource(id.clone()))
             {
-                Self::bump_persistent(&env, &res_key);
                 result.push_back(resource);
             }
             idx += 1;
@@ -1267,18 +1277,9 @@ impl VaultRegistry {
     }
 
     /// Whether a resource with `id` is registered.
-    /// Bumps the entry's TTL when found, keeping hot resources alive.
     pub fn exists(env: Env, id: String) -> bool {
-        if Self::validate_resource_id(&id).is_err() {
-            return false;
-        }
-        let key = DataKey::Resource(id);
-        if env.storage().persistent().has(&key) {
-            Self::bump_persistent(&env, &key);
-            true
-        } else {
-            false
-        }
+        Self::validate_resource_id(&id).is_ok()
+            && env.storage().persistent().has(&DataKey::Resource(id))
     }
 
     /// Batch existence check. Returns a `Vec<bool>` parallel to `ids`:
@@ -1493,6 +1494,7 @@ impl VaultRegistry {
     pub fn repair_index(env: Env, ids: Vec<String>) -> Result<(), Error> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
+        Self::require_not_paused(&env)?;
 
         let len = ids.len();
         for i in 0..len {
@@ -1599,41 +1601,87 @@ impl VaultRegistry {
         Ok(())
     }
 
-    /// Record a payment receipt for a resource after x402/Soroban settlement.
+    /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
+        let key = DataKey::CreatorTerms(creator);
+        env.storage().persistent().get(&key).ok_or(Error::NotFound)
+    }
+
+    // ─── Settler role management ─────────────────────────────────────────────
+
+    /// Grant the settler role to `settler`, authorizing `record_payment` and
+    /// `settle_payment`. Only the admin may call this. Errors `AdminNotSet`
+    /// if no admin has been set yet.
+    pub fn add_settler(env: Env, settler: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Settler(settler.clone()), &true);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("addsettlr"), settler), true);
+        Ok(())
+    }
+
+    /// Revoke the settler role from `settler`. Only the admin may call this.
+    pub fn remove_settler(env: Env, settler: Address) -> Result<(), Error> {
+        let admin = Self::require_admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Settler(settler.clone()), &false);
+        Self::bump_instance(&env);
+        env.events()
+            .publish((symbol_short!("rmsettlr"), settler), false);
+        Ok(())
+    }
+
+    /// Whether `address` currently holds the settler role.
+    pub fn is_settler(env: Env, address: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Settler(address))
+            .unwrap_or(false)
+    }
+
+    // ─── Escrow-ready payment state ───────────────────────────────────────────
+
+    /// Record an x402/Soroban payment receipt in `Escrowed` state. Only an
+    /// address currently holding the settler role may call this.
     ///
-    /// This is the escrow-ready payment hook: after the x402 facilitator
-    /// settles a USDC transfer on-chain, the server (or the payer directly)
-    /// calls this to anchor the settlement reference inside the registry.
-    /// Future escrow and lease contracts can look up `(resource_id, payer)`
-    /// without scanning event history.
+    /// - `receipt_id` must be unique (max 64 bytes, non-empty); duplicate ids
+    ///   error `ReceiptAlreadyExists`.
+    /// - `resource_id` must refer to an existing registered resource
+    ///   (`NotFound` otherwise).
+    /// - `amount` must be `> 0` (`InvalidPrice` otherwise).
+    /// - `tx_hash` must be non-empty and at most 128 bytes (`InvalidTxHash`).
     ///
-    /// Requires the **payer's** authorization so receipts cannot be fabricated
-    /// by a third party.
-    ///
-    /// `tx_hash` must be non-empty and at most [`MAX_TX_HASH_LEN`] bytes.
-    /// `amount` must be `> 0` (USDC stroops).
-    ///
-    /// Recording a receipt for a `(resource_id, payer)` pair that already has
-    /// one **overwrites** the previous entry — the stored value always reflects
-    /// the most recent settlement. The full history is available from the
-    /// `payrec` event stream.
-    ///
-    /// Errors deterministically:
-    /// - [`Error::NotFound`] — `resource_id` is not registered
-    /// - [`Error::InvalidResourceId`] — `resource_id` fails format validation
-    /// - [`Error::InvalidTxHash`] — `tx_hash` is empty or exceeds [`MAX_TX_HASH_LEN`]
-    /// - [`Error::InvalidPaymentAmount`] — `amount <= 0`
+    /// Emits a `payment` event whose data is the full [`PaymentReceipt`] so
+    /// off-chain indexers can index the receipt without reading contract
+    /// storage.
     pub fn record_payment(
         env: Env,
+        settler: Address,
+        receipt_id: String,
         resource_id: String,
         payer: Address,
-        tx_hash: String,
         amount: i128,
+        tx_hash: String,
     ) -> Result<(), Error> {
-        payer.require_auth();
-        Self::validate_resource_id(&resource_id)?;
+        settler.require_auth();
+        if !Self::is_settler(env.clone(), settler.clone()) {
+            return Err(Error::NotSettler);
+        }
 
-        // Resource must exist — receipts must reference real registered resources.
+        Self::validate_receipt_id(&receipt_id)?;
+        payer.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::validate_resource_id(&resource_id)?;
+        Self::validate_price(amount)?;
+        Self::validate_tx_hash(&tx_hash)?;
+
+        // The referenced resource must exist.
         if !env
             .storage()
             .persistent()
@@ -1642,51 +1690,66 @@ impl VaultRegistry {
             return Err(Error::NotFound);
         }
 
-        // Validate tx_hash
-        let hash_len = tx_hash.len();
-        if hash_len == 0 || hash_len > MAX_TX_HASH_LEN {
-            return Err(Error::InvalidTxHash);
-        }
-
-        // Validate amount
-        if amount <= 0 {
-            return Err(Error::InvalidPaymentAmount);
+        let receipt_key = DataKey::PaymentReceipt(receipt_id.clone());
+        if env.storage().persistent().has(&receipt_key) {
+            return Err(Error::ReceiptAlreadyExists);
         }
 
         let receipt = PaymentReceipt {
-            resource_id: resource_id.clone(),
-            payer: payer.clone(),
-            tx_hash,
+            receipt_id: receipt_id.clone(),
+            resource_id,
+            payer,
             amount,
-            ledger: env.ledger().sequence(),
+            state: PaymentState::Escrowed,
+            tx_hash,
+            recorded_at: env.ledger().sequence(),
         };
 
-        let key = DataKey::PaymentReceipt(resource_id.clone(), payer.clone());
-        env.storage().persistent().set(&key, &receipt);
-        Self::bump_persistent(&env, &key);
+        env.storage().persistent().set(&receipt_key, &receipt);
+        Self::bump_persistent(&env, &receipt_key);
 
         env.events()
-            .publish((symbol_short!("payrec"), resource_id), receipt);
+            .publish((symbol_short!("payment"), receipt_id), receipt);
         Ok(())
     }
 
-    /// Fetch the most recent payment receipt for `(resource_id, payer)`.
-    /// Errors with [`Error::NotFound`] if no receipt has been recorded for
-    /// this pair. Bumps the entry's TTL on a successful read.
-    pub fn get_payment_receipt(
-        env: Env,
-        resource_id: String,
-        payer: Address,
-    ) -> Result<PaymentReceipt, Error> {
-        Self::validate_resource_id(&resource_id)?;
-        let key = DataKey::PaymentReceipt(resource_id, payer);
-        let receipt = env
+    /// Advance a payment receipt from `Escrowed` to `Settled`. Only an
+    /// address currently holding the settler role may call this.
+    ///
+    /// Errors:
+    /// - `NotFound` — no receipt exists for `receipt_id`.
+    /// - `InvalidPaymentTransition` — receipt is not in `Escrowed` state
+    ///   (e.g. already `Settled`).
+    ///
+    /// Emits a `settle` event whose data is the updated [`PaymentReceipt`]
+    /// (with `state: Settled`) so off-chain indexers can confirm settlement
+    /// without reading contract storage.
+    pub fn settle_payment(env: Env, settler: Address, receipt_id: String) -> Result<(), Error> {
+        settler.require_auth();
+        if !Self::is_settler(env.clone(), settler) {
+            return Err(Error::NotSettler);
+        }
+
+        Self::validate_receipt_id(&receipt_id)?;
+
+        let receipt_key = DataKey::PaymentReceipt(receipt_id.clone());
+        let mut receipt: PaymentReceipt = env
             .storage()
             .persistent()
-            .get(&key)
+            .get(&receipt_key)
             .ok_or(Error::NotFound)?;
-        Self::bump_persistent(&env, &key);
-        Ok(receipt)
+
+        if receipt.state != PaymentState::Escrowed {
+            return Err(Error::InvalidPaymentTransition);
+        }
+
+        receipt.state = PaymentState::Settled;
+        env.storage().persistent().set(&receipt_key, &receipt);
+        Self::bump_persistent(&env, &receipt_key);
+
+        env.events()
+            .publish((symbol_short!("settle"), receipt_id), receipt);
+        Ok(())
     }
 
     /// Anchor a purchase receipt hash for `(resource_id, buyer)`.
@@ -1759,10 +1822,8 @@ impl VaultRegistry {
         let hash = env
             .storage()
             .persistent()
-            .get(&key)
-            .ok_or(Error::NotFound)?;
-        Self::bump_persistent(&env, &key);
-        Ok(hash)
+            .get(&DataKey::PaymentReceipt(receipt_id))
+            .ok_or(Error::NotFound)
     }
 
     // ─── Moderator role management (#389) ────────────────────────────────────
@@ -1901,6 +1962,25 @@ impl VaultRegistry {
         }
         if price > MAX_PRICE {
             return Err(Error::PriceExceedsMax);
+        }
+        Ok(())
+    }
+
+    /// Receipt ids are non-empty strings up to `MAX_RECEIPT_ID_LEN` bytes.
+    /// No character restrictions beyond length — callers typically use
+    /// x402 facilitator receipt identifiers which may contain hyphens, etc.
+    fn validate_receipt_id(id: &String) -> Result<(), Error> {
+        let len = id.len();
+        if len == 0 || len > MAX_RECEIPT_ID_LEN {
+            return Err(Error::InvalidReceiptId);
+        }
+        Ok(())
+    }
+
+    /// Transaction hashes are non-empty strings up to `MAX_TX_HASH_LEN` bytes.
+    fn validate_tx_hash(tx_hash: &String) -> Result<(), Error> {
+        if tx_hash.is_empty() || tx_hash.len() > MAX_TX_HASH_LEN {
+            return Err(Error::InvalidTxHash);
         }
         Ok(())
     }
@@ -2088,14 +2168,10 @@ impl VaultRegistry {
     }
 
     fn load(env: &Env, id: &String) -> Result<Resource, Error> {
-        let key = DataKey::Resource(id.clone());
-        let resource = env
-            .storage()
+        env.storage()
             .persistent()
-            .get(&key)
-            .ok_or(Error::NotFound)?;
-        Self::bump_persistent(env, &key);
-        Ok(resource)
+            .get(&DataKey::Resource(id.clone()))
+            .ok_or(Error::NotFound)
     }
 
     fn save(env: &Env, resource: &mut Resource) {
@@ -2359,7 +2435,5 @@ impl VaultRegistry {
 
 #[cfg(test)]
 pub(crate) const TTL_BUMP_AMOUNT: u32 = BUMP_AMOUNT;
-#[cfg(test)]
-pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;
 
 mod test;
