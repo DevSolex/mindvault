@@ -591,6 +591,7 @@ impl VaultRegistry {
         tags: Vec<String>,
     ) -> Result<(), Error> {
         creator.require_auth();
+        Self::require_not_paused(&env)?;
         Self::validate_price(price)?;
         Self::validate_resource_id(&id)?;
         Self::validate_metadata_pointer(&metadata)?;
@@ -611,8 +612,7 @@ impl VaultRegistry {
             price,
             metadata: metadata.clone(),
             listed: true,
-            state: ResourceState::Listed,
-            tags: norm_tags.clone(),
+            tags: tags.clone(),
             verified: VerificationStatus::Pending,
             frozen: false,
             created_at: now,
@@ -664,6 +664,7 @@ impl VaultRegistry {
     /// Emits a `setprice` event whose data is a [`PriceUpdated`] value
     /// containing `id`, `old_price`, `new_price`, and `updater`.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         Self::validate_price(new_price)?;
         let mut resource = Self::load(&env, &id)?;
@@ -692,6 +693,7 @@ impl VaultRegistry {
     /// Off-chain indexers can use these fields to build an audit trail without
     /// querying historical ledger state.
     pub fn update_metadata(env: Env, id: String, metadata: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -718,6 +720,7 @@ impl VaultRegistry {
     /// call this. Irreversible — errors `AlreadyFrozen` if called twice.
     /// Price, listing, tags, and ownership remain mutable after freezing.
     pub fn freeze_metadata(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -744,6 +747,7 @@ impl VaultRegistry {
         status: VerificationStatus,
     ) -> Result<(), Error> {
         verifier.require_auth();
+        Self::require_not_paused(&env)?;
         if !Self::is_verifier(env.clone(), verifier) {
             return Err(Error::NotVerifier);
         }
@@ -774,6 +778,7 @@ impl VaultRegistry {
     /// Tags are normalized to lowercase ASCII before storage; the normalized
     /// form is what gets indexed and returned from `list_by_tag`.
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
@@ -793,6 +798,7 @@ impl VaultRegistry {
     }
 
     pub fn transfer_ownership(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -819,6 +825,7 @@ impl VaultRegistry {
 
     /// Propose a transfer to a new owner. The new owner must accept it.
     pub fn propose_transfer(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
@@ -837,6 +844,7 @@ impl VaultRegistry {
 
     /// Accept a proposed transfer. Only the pending owner can call this.
     pub fn accept_transfer(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let key = DataKey::PendingTransfer(id.clone());
         let pending_owner: Address = env
             .storage()
@@ -863,6 +871,7 @@ impl VaultRegistry {
 
     /// Cancel a proposed transfer. Only the current owner can call this.
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
@@ -881,6 +890,7 @@ impl VaultRegistry {
     /// `Listed <-> Delisted` transitions are accepted; all other lifecycle
     /// states reject this method with `InvalidLifecycleTransition`.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
@@ -1456,6 +1466,7 @@ impl VaultRegistry {
     pub fn repair_index(env: Env, ids: Vec<String>) -> Result<(), Error> {
         let admin = Self::require_admin(&env)?;
         admin.require_auth();
+        Self::require_not_paused(&env)?;
 
         let len = ids.len();
         for i in 0..len {
@@ -1594,6 +1605,7 @@ impl VaultRegistry {
         amount: i128,
     ) -> Result<(), Error> {
         payer.require_auth();
+        Self::require_not_paused(&env)?;
         Self::validate_resource_id(&resource_id)?;
 
         // Resource must exist — receipts must reference real registered resources.
