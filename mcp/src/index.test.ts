@@ -1817,8 +1817,28 @@ describe("setPrice", () => {
       expect(parsed.resourceId).toBe("res-001");
       expect(parsed.price).toBe("10.00");
       expect(parsed.txHash).toBeTruthy();
+      // Successful mutations surface a network-correct explorer link (#462).
+      expect(parsed.explorerUrl).toBe(
+        `https://stellar.expert/explorer/testnet/tx/${parsed.txHash}`,
+      );
     } finally {
       delete process.env.MINDVAULT_MOCK;
+    }
+  });
+
+  it("formats the explorer link for the public network on mainnet (#462)", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    process.env.STELLAR_NETWORK = "mainnet";
+    try {
+      const parsed = JSON.parse(await setPrice("res-001", "10.00"));
+      expect(parsed.explorerUrl).toBe(`https://stellar.expert/explorer/public/tx/${parsed.txHash}`);
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+      delete process.env.STELLAR_NETWORK;
     }
   });
 
