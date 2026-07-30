@@ -34,6 +34,7 @@ const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 /// Max length for metadata pointers (IPFS URI, content hash, compact JSON anchor).
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
 pub const MAX_TERMS_HASH_LEN: u32 = 64;
+pub const MAX_CONTENT_HASH_LEN: u32 = 128;
 const MAX_TAGS: u32 = 8;
 /// Maximum price in USDC stroops (6 decimals). Represents 1 trillion USDC.
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
@@ -53,7 +54,7 @@ pub const REGISTRY_NAME: &str = "mindvault-vault-registry";
 /// `Resource` struct's fields would require callers to change how they decode
 /// it (e.g. the tags field added in schema version 2, dispute_flag added in
 /// schema version 4).
-pub const RESOURCE_SCHEMA_VERSION: u32 = 4;
+pub const RESOURCE_SCHEMA_VERSION: u32 = 5;
 
 /// Maximum byte length of a settlement transaction hash stored in a
 /// [`PaymentReceipt`]. Stellar transaction hashes are 64 hex characters
@@ -71,6 +72,7 @@ pub const MAX_TX_HASH_LEN: u32 = 128;
 pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     // ── Resource lifecycle ────────────────────────────────────────────────
     ("register", "creator"),
+    ("register_with_hash", "creator"),
     ("set_price", "creator"),
     ("update_metadata", "creator"),
     ("freeze_metadata", "creator"),
@@ -385,6 +387,7 @@ pub struct RegisterEvent {
     pub metadata: String,
     pub listed: bool,
     pub tags: Vec<String>,
+    pub content_hash: Option<String>,
 }
 
 /// One page of the on-chain catalog plus a cursor for the next page.
@@ -776,10 +779,6 @@ impl VaultRegistry {
 
         resource.tags = norm_tags.clone();
         Self::save(&env, &mut resource);
-
-        // Maintain tag index: remove id from prev tags, add to new tags.
-        Self::tag_index_remove(&env, &prev_tags, &id);
-        Self::tag_index_add(&env, &tags, &id);
 
         // Emit event with both previous and next tags for indexer reconciliation
         env.events()
@@ -2050,6 +2049,7 @@ impl VaultRegistry {
     }
 
     fn save(env: &Env, resource: &mut Resource) {
+        resource.version = resource.version.checked_add(1).unwrap_or(resource.version);
         resource.updated_at = env.ledger().sequence();
         let key = DataKey::Resource(resource.id.clone());
         env.storage().persistent().set(&key, resource as &Resource);
@@ -2224,6 +2224,86 @@ impl VaultRegistry {
                 Self::bump_persistent(env, &idx_key);
             }
         }
+    }
+
+    fn register_internal(
+        env: Env,
+        creator: Address,
+        id: String,
+        price: i128,
+        metadata: String,
+        tags: Vec<String>,
+        content_hash: Option<String>,
+    ) -> Result<(), Error> {
+        creator.require_auth();
+        Self::validate_price(price)?;
+        Self::validate_resource_id(&id)?;
+        Self::validate_metadata_pointer(&metadata)?;
+        let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
+        if Self::is_reserved_id(&id) {
+            return Err(Error::ReservedId);
+        }
+        if let Some(ref hash) = content_hash {
+            let hash_len = hash.len();
+            if hash_len == 0 || hash_len > MAX_CONTENT_HASH_LEN {
+                return Err(Error::ContentHashTooLong);
+            }
+        }
+        let key = DataKey::Resource(id.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::AlreadyRegistered);
+        }
+
+        let resource = Resource {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata: metadata.clone(),
+            listed: true,
+            tags: norm_tags.clone(),
+            verified: VerificationStatus::Pending,
+            frozen: false,
+            updated_at: env.ledger().sequence(),
+            dispute_flag: DisputeFlag::NoFlag,
+            schema_version: RESOURCE_SCHEMA_VERSION,
+            version: 1,
+            content_hash: content_hash.clone(),
+        };
+        env.storage().persistent().set(&key, &resource);
+        Self::bump_persistent(&env, &key);
+
+        let count: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+        let idx_key = DataKey::Index(count);
+        env.storage().persistent().set(&idx_key, &id);
+        Self::bump_persistent(&env, &idx_key);
+        env.storage().instance().set(&DataKey::Count, &count.checked_add(1).ok_or(Error::CountOverflow)?);
+        Self::bump_instance(&env);
+
+        let mut list = Self::creator_list(&env, &creator);
+        list.push_back(id.clone());
+        env.storage()
+            .persistent()
+            .set(&Self::creator_key(&env, &creator), &list);
+        Self::bump_persistent(&env, &Self::creator_key(&env, &creator));
+
+        let cur = Self::creator_count(&env, &creator);
+        Self::set_creator_count(&env, &creator, cur + 1);
+
+        // Maintain tag index: add id to each tag's index entry.
+        Self::tag_index_add(&env, &norm_tags, &id);
+
+        let event = RegisterEvent {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata,
+            listed: true,
+            tags: norm_tags,
+            content_hash,
+        };
+        env.events()
+            .publish((symbol_short!("register"), id), event);
+        Ok(())
     }
 }
 
