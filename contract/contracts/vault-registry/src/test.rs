@@ -2567,19 +2567,13 @@ fn list_by_tag_reflects_complete_tag_replacement() {
     );
 }
 
-// ── Duplicate tags: same tag listed twice in a single set_tags call ──────────
-//
-// `validate_tags` does not reject duplicate string values within a tag list.
-// The index `tag_index_add` guards against duplicate ids per tag entry, so
-// the same resource cannot appear twice in a tag's index regardless of how
-// many times its tag list contains that value.
+// ── Duplicate tags are rejected on write ─────────────────────────────────────
 
 #[test]
-fn list_by_tag_no_duplicate_entries_when_tag_appears_twice_on_register() {
+fn register_rejects_duplicate_normalized_tags_with_case_variants() {
     let (env, creator, client) = setup();
-    // Both "ml" entries should map to the same resource, but the index must
-    // only contain one entry for it.
-    let id = register_tagged(&env, &creator, &client, "tagdup", &["ml", "ml"]);
+    let id = String::from_str(&env, "tagdup");
+    let metadata = String::from_str(&env, "ipfs://m");
 
     let result = client.list_by_tag(&String::from_str(&env, "ml"), &0u32, &20u32);
     assert_eq!(
@@ -2591,13 +2585,17 @@ fn list_by_tag_no_duplicate_entries_when_tag_appears_twice_on_register() {
 }
 
 #[test]
-fn list_by_tag_no_duplicate_entries_when_set_tags_repeats_tag() {
+fn set_tags_rejects_duplicate_normalized_tags_with_case_variants() {
     let (env, creator, client) = setup();
     let id = register_tagged(&env, &creator, &client, "tagdup2", &["finance"]);
 
-    // set_tags with duplicate "finance" — must not create a duplicate index entry.
-    client.set_tags(&id, &tags(&env, &["finance", "finance"]));
+    // "Finance" and "finance" normalize to the same tag and must be rejected.
+    assert_eq!(
+        client.try_set_tags(&id, &tags(&env, &["Finance", "finance"])),
+        Err(Ok(Error::InvalidTag))
+    );
 
+    // Existing tags stay unchanged after failed set_tags.
     let result = client.list_by_tag(&String::from_str(&env, "finance"), &0u32, &20u32);
     assert_eq!(
         result.len(),

@@ -148,7 +148,7 @@ pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
     (2, "NotFound", "No resource (or terms hash or receipt) matches the given key."),
     (3, "InvalidPrice", "Price is `<= 0`."),
     (4, "MetadataTooLong", "Metadata pointer exceeds `MAX_METADATA_POINTER_LEN` (512 bytes)."),
-    (5, "InvalidTag", "Tag format or count validation failed (too many tags, empty tag, or tag exceeds 32 bytes)."),
+    (5, "InvalidTag", "Tag validation failed (too many tags, empty tag, tag exceeds 32 bytes, or duplicate normalized tag)."),
     (6, "Unauthorized", "Caller authentication check failed or unauthorized."),
     (7, "PendingAdminNotSet", "No pending admin is set, or caller does not match the pending admin."),
     (8, "PendingAdminAlreadySet", "A pending admin nomination is already active."),
@@ -1928,9 +1928,11 @@ impl VaultRegistry {
     }
 
     /// Normalize every tag in the input list to lowercase ASCII, validate
-    /// count and length limits, and return the normalized `Vec<String>`.
+    /// count and length limits, enforce uniqueness in normalized form, and
+    /// return the normalized `Vec<String>`.
     /// Errors `InvalidTag` for empty tags, tags exceeding `MAX_TAG_LEN`,
-    /// or more than `MAX_TAGS` entries.
+    /// duplicate normalized tags (including case variants), or more than
+    /// `MAX_TAGS` entries.
     fn normalize_and_validate_tags(env: &Env, tags: &Vec<String>) -> Result<Vec<String>, Error> {
         if tags.len() > MAX_TAGS {
             return Err(Error::InvalidTag);
