@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "5rnns4isr60bke3ipuy"
+                  "string": "88k94"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 262177690884
+                    "lo": 114277353411
                   }
                 },
                 {
-                  "string": "ipfs://_G._x\\\\Q1_.6b_0yO2q\\\\2C\\\\b\\\\U_jxr__s:3_j\\\\HX"
+                  "string": "ipfs://gvW\\\\:WV.\\\\_9tnDQ/34\\\\L_N_\\\\E\\\\A_/_P\\\\n_G\\\\__n04R\\\\j_\\\\gl/p\\\\rCi:.pZ:2R_j843UHmXmx\\\\_.cY__l_:srmpC\\\\UgM_hu5x_Q:d___1A4:vRz1Dr_/1\\\\7EBOo4m.\\\\\\\\\\\\8qy2_6\\\\86:/o\\\\i\\\\u7ON_xiRxxwSZ\\\\:LQ_3_lX57E\\\\_.__q\\\\GZ._eh\\\\k_4M.B_6_oz\\\\vc_sVKRT\\\\EqaVY..\\\\_-e/7CEn/WeG_IRY_lB//T/AGq\\\\J/F.:\\\\Z9jI\\\\_F_Ju_L.BN__.7eJ_7\\\\__j:dnoW9nH_A_z_kFiH36Vl_v\\\\W-\\\\o/_:_"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "5rnns4isr60bke3ipuy"
+                  "string": "88k94"
                 },
                 {
-                  "string": "https://7\\\\bq._\\\\\\\\.VS6Gr3_\\\\_7R.cS_K\\\\reZ\\\\80ib\\\\mu23Yl9spN\\\\oBa50\\\\YF\\\\Ugty4TJrz1\\\\"
+                  "string": "https://NaAe.__Y_:/\\\\._mB_L_\\\\\\\\"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "5rnns4isr60bke3ipuy"
+                  "string": "88k94"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 957771190978
+                    "lo": 564272134799
                   }
                 }
               ]
@@ -99,7 +99,7 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "5rnns4isr60bke3ipuy"
+                  "string": "88k94"
                 },
                 {
                   "bool": true
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "5rnns4isr60bke3ipuy"
+                      "string": "88k94"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "5rnns4isr60bke3ipuy"
+                  "string": "88k94"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "5rnns4isr60bke3ipuy"
+                  "string": "88k94"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "5rnns4isr60bke3ipuy"
+                      "string": "88k94"
                     }
                   ]
                 },
@@ -287,7 +287,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "5rnns4isr60bke3ipuy"
+                        "string": "88k94"
                       }
                     },
                     {
@@ -303,7 +303,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://7\\\\bq._\\\\\\\\.VS6Gr3_\\\\_7R.cS_K\\\\reZ\\\\80ib\\\\mu23Yl9spN\\\\oBa50\\\\YF\\\\Ugty4TJrz1\\\\"
+                        "string": "https://NaAe.__Y_:/\\\\._mB_L_\\\\\\\\"
                       }
                     },
                     {
@@ -313,7 +313,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 957771190978
+                          "lo": 564272134799
                         }
                       }
                     },

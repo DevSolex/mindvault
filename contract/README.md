@@ -405,9 +405,24 @@ explain the growth in your PR description.
 
 ### Emergency pause
 
-See [`docs/contract-registry-pause-decision.md`](../docs/contract-registry-pause-decision.md)
-for the architecture spike on admin pause/unpause. **v1 does not implement pause**
-(creator-scoped writes + off-chain ops are sufficient for the current trust model).
+The contract supports an admin-controlled emergency pause via `set_paused(admin, bool)`.
+
+When paused, every write method (`register`, `set_price`, `update_metadata`,
+`freeze_metadata`, `set_verification_status`, `set_tags`, `transfer_ownership`,
+`propose_transfer`, `accept_transfer`, `cancel_transfer`, `set_listed`, `delist`,
+`repair_index`, `set_terms_hash`, `record_payment`) returns `Error::ContractPaused`
+(code `26`) without modifying any state.
+
+Read-only methods (`get`, `exists`, `list*`, `count`, `get_owner`, `registry_info`,
+`contract_version`, `get_terms_hash`, `get_payment_receipt`, `is_paused`,
+`is_verifier`, `admin`, `pending_admin`) remain available while paused.
+
+`is_paused()` returns the current pause state. `set_paused` emits a `pause` event
+with data `(paused: bool, admin: Address)` on every call, including no-op
+transitions, so off-chain monitors can detect rapid pause/unpause cycles.
+
+Only the current admin can call `set_paused`. Errors `AdminNotSet` if no admin
+has been set, or `Unauthorized` if the caller does not match the stored admin.
 
 ### Generating bindings
 
@@ -432,6 +447,14 @@ stellar contract build --manifest-path Cargo.toml    # build wasm
 
 ### Deploy (testnet)
 
+> [!IMPORTANT]
+> Before deploying a new WASM to any network, complete the full
+> **[Contract Upgrade Checklist](../docs/contract-upgrade-checklist.md)** — it
+> covers build verification, WASM size budget, network identity checks, binding
+> regeneration, admin role bootstrap, and post-deploy smoke tests.
+> Run `make preflight` from `contract/contracts/vault-registry/` to execute
+> all locally-verifiable steps in one command.
+
 ```bash
 # One-time: create & fund an identity
 stellar keys generate deployer --network testnet --fund
@@ -444,12 +467,6 @@ stellar contract deploy \
 
 The command prints the deployed contract ID — wire it into the server config so
 the backend can record resources on registration.
-
-> [!IMPORTANT]
-> Before deploying a new WASM to any network, complete the full
-> **[Contract Upgrade Checklist](../docs/contract-upgrade-checklist.md)** — it
-> covers build verification, WASM size budget, network identity checks, binding
-> regeneration, admin role bootstrap, and post-deploy smoke tests.
 
 ### Testnet Deployment
 
@@ -473,6 +490,19 @@ record/read resources on this contract.
 > This deployment predates `registry_info()`, `creator_resource_count()`,
 > `list_by_creator()`, and the two-step admin model. Redeploy and update this
 > table's Contract ID / Wasm Hash after shipping those changes to testnet.
+
+### Emergency pause
+
+See [contract-registry-pause-decision.md](../docs/contract-registry-pause-decision.md)
+for the original architecture spike. The pause feature is now implemented — see the
+**Emergency pause** section above for the full API.
+
+> **Note:** the deployment above predates `tags`, the two-step admin/transfer
+> flows, `creator_resource_count`, terms hashes, the verifier role, the
+> on-chain verification mirror, metadata freezing, and index repair
+> described in this README. Redeploy from current source and update this
+> table (plus `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
+> `pnpm contract:bindings`) to pick them up.
 
 ### Ideas for contributors
 

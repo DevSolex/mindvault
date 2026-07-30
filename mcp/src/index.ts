@@ -3084,4 +3084,8 @@ if (!process.env.VITEST) {
   process.stdin.on("end", () => shutdown("stdin-EOF"));
 
   await server.connect(transport);
+  await await await server.connect(transport);
+
+  // Setup graceful shutdown
+  setupGracefulShutdown(server, transport, console.log);;
 }
