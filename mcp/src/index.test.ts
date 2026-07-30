@@ -1375,10 +1375,14 @@ describe("setupWallet – sponsored account failure diagnostics", () => {
 
   it("does not leak internal service details in error message", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      mockResponse({
-        internalErrorCode: "SPONSOR_DB_FAILED",
-        debugStackTrace: "at Function.doSomething...",
-      }, false, 500),
+      mockResponse(
+        {
+          internalErrorCode: "SPONSOR_DB_FAILED",
+          debugStackTrace: "at Function.doSomething...",
+        },
+        false,
+        500,
+      ),
     );
 
     try {
@@ -1406,9 +1410,7 @@ describe("setupWallet – sponsored account failure diagnostics", () => {
   });
 
   it("handles network errors deterministically", async () => {
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(
-      new Error("ECONNREFUSED: Connection refused"),
-    );
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED: Connection refused"));
 
     try {
       await dispatchTool("mindvault_setup_wallet", {});
@@ -1815,8 +1817,28 @@ describe("setPrice", () => {
       expect(parsed.resourceId).toBe("res-001");
       expect(parsed.price).toBe("10.00");
       expect(parsed.txHash).toBeTruthy();
+      // Successful mutations surface a network-correct explorer link (#462).
+      expect(parsed.explorerUrl).toBe(
+        `https://stellar.expert/explorer/testnet/tx/${parsed.txHash}`,
+      );
     } finally {
       delete process.env.MINDVAULT_MOCK;
+    }
+  });
+
+  it("formats the explorer link for the public network on mainnet (#462)", async () => {
+    _setAgentWallet({
+      publicKey: "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
+      secretKey: "SD1234567890123456789012345678901234567890123456789012345",
+    });
+    process.env.MINDVAULT_MOCK = "1";
+    process.env.STELLAR_NETWORK = "mainnet";
+    try {
+      const parsed = JSON.parse(await setPrice("res-001", "10.00"));
+      expect(parsed.explorerUrl).toBe(`https://stellar.expert/explorer/public/tx/${parsed.txHash}`);
+    } finally {
+      delete process.env.MINDVAULT_MOCK;
+      delete process.env.STELLAR_NETWORK;
     }
   });
 
@@ -1847,10 +1869,7 @@ describe("transferOwnership", () => {
 
   it("throws when no wallet is set up", async () => {
     await expect(
-      transferOwnership(
-        "res-001",
-        "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
-      ),
+      transferOwnership("res-001", "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH"),
     ).rejects.toThrow("No wallet");
   });
 
@@ -1868,9 +1887,7 @@ describe("transferOwnership", () => {
       const parsed = JSON.parse(res);
       expect(parsed.status).toBe("success");
       expect(parsed.resourceId).toBe("res-001");
-      expect(parsed.newCreator).toBe(
-        "GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH",
-      );
+      expect(parsed.newCreator).toBe("GA6HCMBLTZS5VYYBCATRBRZ3BZJMAFUDKYYF6AH6MVCMGWMRDNSWJPIH");
       expect(parsed.txHash).toBeTruthy();
     } finally {
       delete process.env.MINDVAULT_MOCK;

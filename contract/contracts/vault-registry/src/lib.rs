@@ -86,6 +86,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("cancel_transfer", "creator"),
     // ── Read-only queries ─────────────────────────────────────────────────
     ("get", "—"),
+    ("get_many", "—"),
     ("exists", "—"),
     ("get_owner", "—"),
     ("count", "—"),
@@ -95,27 +96,45 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("list_page", "—"),
     ("list_listed", "—"),
     ("list_by_creator", "—"),
+    ("list_by_tag", "—"),
     // ── Registry introspection ────────────────────────────────────────────
     ("registry_info", "—"),
     ("contract_version", "—"),
     // ── Admin role ────────────────────────────────────────────────────────
     ("admin", "—"),
     ("pending_admin", "—"),
-    ("nominate_new_admin", "current admin (or new_admin for bootstrap)"),
+    (
+        "nominate_new_admin",
+        "current admin (or new_admin for bootstrap)",
+    ),
     ("accept_admin", "pending admin"),
     // ── Verifier role ─────────────────────────────────────────────────────
     ("add_verifier", "admin"),
     ("remove_verifier", "admin"),
     ("is_verifier", "—"),
     ("set_verification_status", "verifier"),
+    // ── Moderator role / dispute flags ───────────────────────────────────
+    ("add_moderator", "admin"),
+    ("remove_moderator", "admin"),
+    ("is_moderator", "—"),
+    ("flag_resource", "moderator"),
+    ("unflag_resource", "moderator"),
     // ── Terms hashes ──────────────────────────────────────────────────────
     ("set_terms_hash", "creator"),
     ("get_terms_hash", "—"),
+    // ── Fees ──────────────────────────────────────────────────────────────
+    ("set_fee_config", "admin"),
+    ("get_fee_config", "—"),
     // ── Index repair ──────────────────────────────────────────────────────
     ("repair_index", "admin"),
+    ("repair_tag_index", "admin"),
     // ── Payment receipts ──────────────────────────────────────────────────
     ("record_payment", "payer"),
     ("get_payment_receipt", "—"),
+    ("anchor_purchase_receipt", "verifier"),
+    ("get_purchase_receipt", "—"),
+    // ── TTL ───────────────────────────────────────────────────────────────
+    ("extend_resource_ttl", "creator"),
 ];
 
 /// Canonical list of every error code this contract can return, paired with
@@ -150,7 +169,19 @@ pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
     (23, "DuplicateInRepair", "`repair_index` received a list with duplicate resource ids."),
     (24, "InvalidTxHash", "`tx_hash` in `record_payment` is empty or exceeds `MAX_TX_HASH_LEN` (128 bytes)."),
     (25, "InvalidPaymentAmount", "`amount` in `record_payment` is `<= 0`."),
-    (29, "ContentHashTooLong", "Content hash exceeds `MAX_CONTENT_HASH_LEN` (128 bytes)."),
+    (26, "NotModerator", "Caller does not hold the moderator role."),
+    (27, "AlreadyFlagged", "Resource is already flagged as disputed."),
+    (28, "NotFlagged", "Resource is not currently flagged as disputed."),
+    (29, "InvalidLifecycleTransition", "The requested lifecycle transition is not allowed from the current state."),
+    (30, "ResourceNotMutable", "A frozen, disputed, or tombstoned resource cannot be changed by its creator."),
+    (31, "NetworkAlreadyInitialized", "Network identifier has already been initialized for this contract instance."),
+    (32, "NetworkIdMismatch", "Invocation network identifier does not match configured network ID."),
+    (33, "NetworkNotInitialized", "Network identifier has not been initialized."),
+    (34, "FeeBpsTooHigh", "A fee value exceeds the configured basis-point ceiling."),
+    (35, "TotalFeeTooHigh", "The combined platform and royalty fees exceed the ceiling."),
+    (36, "CountOverflow", "The global resource count would overflow `u32`."),
+    (37, "BatchTooLarge", "`get_many` was called with more than 20 ids."),
+    (38, "DuplicateReceipt", "A purchase receipt is already anchored for `(resource_id, buyer)`."),
 ];
 
 /// Canonical list of every event topic this contract emits, paired with a
@@ -195,10 +226,17 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
         "payrec",
         "PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }",
     ),
+    (
+        "anchor",
+        "PurchaseReceiptAnchor { resource_id, buyer, receipt_hash, ledger }",
+    ),
     ("addmod", "true"),
     ("rmmod", "false"),
-    ("flagdisp", "moderator: Address"),
-    ("unflgdisp", "moderator: Address"),
+    ("flag", "FlagEvent { id, moderator, reason }"),
+    ("unflag", "resource id"),
+    ("retagidx", "new_count: u32"),
+    ("setfee", "FeeConfigUpdated { old_config, new_config }"),
+    ("ttlext", "()"),
 ];
 
 /// Registry discovery metadata returned by [`VaultRegistry::registry_info`].
@@ -243,6 +281,22 @@ pub enum VerificationStatus {
     Pending,
     Verified,
     Rejected,
+}
+
+/// The availability and moderation state of a resource.
+///
+/// `listed` remains on [`Resource`] as a backwards-compatible projection: it
+/// is true exactly when this value is [`ResourceState::Listed`]. Clients that
+/// need to distinguish a moderation hold from a creator delist must use this
+/// field rather than the boolean projection.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ResourceState {
+    Listed,
+    Delisted,
+    Frozen,
+    Disputed,
+    Tombstoned,
 }
 
 /// Reason code supplied when a moderator flags a resource for dispute.
@@ -295,7 +349,11 @@ pub struct Resource {
     pub creator: Address,
     pub price: i128,
     pub metadata: String,
+    /// Backwards-compatible projection of `state == ResourceState::Listed`.
     pub listed: bool,
+    /// Explicit resource lifecycle state. See `contract/README.md` for the
+    /// transition table and the role allowed to make each transition.
+    pub state: ResourceState,
     /// Discovery labels (e.g. "dataset", "research"). Distinct from `metadata`,
     /// which remains the off-chain content anchor (IPFS URI, content hash, etc.).
     pub tags: Vec<String>,
@@ -312,12 +370,8 @@ pub struct Resource {
     /// it is informational state that callers can filter on. Only a moderator may
     /// set or clear this field (see `flag_resource` / `unflag_resource`).
     pub dispute_flag: DisputeFlag,
-    /// On-chain `Resource` schema version (`RESOURCE_SCHEMA_VERSION`).
+    /// On-chain `Resource` schema version for decoder compatibility.
     pub schema_version: u32,
-    /// Monotonically increasing version counter incremented on each mutation.
-    pub version: u32,
-    /// Optional immutable content hash.
-    pub content_hash: Option<String>,
 }
 
 /// Structured payload emitted by `register()`.
@@ -360,10 +414,17 @@ pub enum DataKey {
     CreatorCount(Address),
     PendingTransfer(String),
     Verifier(Address),
+    NetworkId,
     /// Most-recent payment receipt for `(resource_id, payer)`.
     /// Keyed by (resource id string, payer Address) so escrow/lease
     /// contracts can look up a settlement without scanning event history.
     PaymentReceipt(String, Address),
+    /// Immutable purchase receipt anchor for `(resource_id, buyer)`.
+    PurchaseReceipt(String, Address),
+    /// Secondary index mapping a normalized tag to ordered resource ids.
+    TagIndex(String),
+    /// Registry-level fee and royalty configuration.
+    FeeConfig,
     Moderator(Address),
     DisputeFlag(String),
 }
@@ -391,6 +452,29 @@ pub struct PriceUpdated {
     pub old_price: i128,
     pub new_price: i128,
     pub updater: Address,
+}
+
+/// Registry-level fee and royalty configuration.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeeConfig {
+    pub platform_fee_bps: u32,
+    pub royalty_bps: u32,
+    pub fee_recipient: Option<Address>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum OptFeeConfig {
+    None,
+    Some(FeeConfig),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeeConfigUpdated {
+    pub old_config: OptFeeConfig,
+    pub new_config: FeeConfig,
 }
 
 /// On-chain record of a single x402/Soroban payment settlement for a resource.
@@ -423,6 +507,16 @@ pub struct PaymentReceipt {
     /// Amount paid in USDC stroops (`> 0`).
     pub amount: i128,
     /// Ledger sequence at which this receipt was recorded (set by the contract).
+    pub ledger: u32,
+}
+
+/// Immutable on-chain anchor for a purchase receipt hash.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PurchaseReceiptAnchor {
+    pub resource_id: String,
+    pub buyer: Address,
+    pub receipt_hash: String,
     pub ledger: u32,
 }
 
@@ -460,7 +554,21 @@ pub enum Error {
     NotModerator = 26,
     AlreadyFlagged = 27,
     NotFlagged = 28,
-    ContentHashTooLong = 29,
+    InvalidLifecycleTransition = 29,
+    ResourceNotMutable = 30,
+    NetworkAlreadyInitialized = 31,
+    NetworkIdMismatch = 32,
+    NetworkNotInitialized = 33,
+    /// A fee value exceeds the configured basis-point ceiling.
+    FeeBpsTooHigh = 34,
+    /// The combined platform and royalty fees exceed the ceiling.
+    TotalFeeTooHigh = 35,
+    /// The global resource count would overflow `u32`.
+    CountOverflow = 36,
+    /// A batch read exceeded the maximum supported number of IDs.
+    BatchTooLarge = 37,
+    /// A purchase receipt already exists for `(resource_id, buyer)`.
+    DuplicateReceipt = 38,
 }
 
 #[contract]
@@ -479,19 +587,69 @@ impl VaultRegistry {
         metadata: String,
         tags: Vec<String>,
     ) -> Result<(), Error> {
-        Self::register_internal(env, creator, id, price, metadata, tags, None)
-    }
+        creator.require_auth();
+        Self::validate_price(price)?;
+        Self::validate_resource_id(&id)?;
+        Self::validate_metadata_pointer(&metadata)?;
+        let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
+        if Self::is_reserved_id(&id) {
+            return Err(Error::ReservedId);
+        }
+        let key = DataKey::Resource(id.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::AlreadyRegistered);
+        }
 
-    pub fn register_with_hash(
-        env: Env,
-        creator: Address,
-        id: String,
-        price: i128,
-        metadata: String,
-        tags: Vec<String>,
-        content_hash: Option<String>,
-    ) -> Result<(), Error> {
-        Self::register_internal(env, creator, id, price, metadata, tags, content_hash)
+        let resource = Resource {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata: metadata.clone(),
+            listed: true,
+            state: ResourceState::Listed,
+            tags: norm_tags.clone(),
+            verified: VerificationStatus::Pending,
+            frozen: false,
+            updated_at: env.ledger().sequence(),
+            dispute_flag: DisputeFlag::NoFlag,
+            schema_version: RESOURCE_SCHEMA_VERSION,
+        };
+        env.storage().persistent().set(&key, &resource);
+        Self::bump_persistent(&env, &key);
+
+        let count: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+        let idx_key = DataKey::Index(count);
+        env.storage().persistent().set(&idx_key, &id);
+        Self::bump_persistent(&env, &idx_key);
+        env.storage().instance().set(
+            &DataKey::Count,
+            &count.checked_add(1).ok_or(Error::CountOverflow)?,
+        );
+        Self::bump_instance(&env);
+
+        let mut list = Self::creator_list(&env, &creator);
+        list.push_back(id.clone());
+        env.storage()
+            .persistent()
+            .set(&Self::creator_key(&env, &creator), &list);
+        Self::bump_persistent(&env, &Self::creator_key(&env, &creator));
+
+        let cur = Self::creator_count(&env, &creator);
+        Self::set_creator_count(&env, &creator, cur + 1);
+
+        // Maintain tag index: add id to each tag's index entry.
+        Self::tag_index_add(&env, &tags, &id);
+
+        let event = RegisterEvent {
+            id: id.clone(),
+            creator: creator.clone(),
+            price,
+            metadata,
+            listed: true,
+            tags,
+        };
+        env.events().publish((symbol_short!("register"), id), event);
+        Ok(())
     }
 
     /// Update a resource's price. Rejects `new_price <= 0` or `new_price > MAX_PRICE`.
@@ -504,6 +662,7 @@ impl VaultRegistry {
         Self::validate_price(new_price)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         let old_price = resource.price;
         let updater = resource.creator.clone();
         resource.price = new_price;
@@ -530,6 +689,7 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.frozen {
             return Err(Error::MetadataFrozen);
         }
@@ -555,6 +715,7 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.frozen {
             return Err(Error::AlreadyFrozen);
         }
@@ -611,13 +772,10 @@ impl VaultRegistry {
         let norm_tags = Self::normalize_and_validate_tags(&env, &tags)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
 
         // Capture previous tags before replacement for event emission and index
         let prev_tags = resource.tags.clone();
-
-        // Maintain tag index: remove id from prev tags, add to new tags.
-        Self::tag_index_remove(&env, &prev_tags, &id);
-        Self::tag_index_add(&env, &norm_tags, &id);
 
         resource.tags = norm_tags.clone();
         Self::save(&env, &mut resource);
@@ -632,6 +790,7 @@ impl VaultRegistry {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.creator == new_creator {
             return Err(Error::AlreadyOwner);
         }
@@ -656,6 +815,7 @@ impl VaultRegistry {
     pub fn propose_transfer(env: Env, id: String, new_creator: Address) -> Result<(), Error> {
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
         if resource.creator == new_creator {
             return Err(Error::AlreadyOwner);
         }
@@ -680,6 +840,7 @@ impl VaultRegistry {
         pending_owner.require_auth();
 
         let mut resource = Self::load(&env, &id)?;
+        Self::ensure_mutable(&resource)?;
         let previous_owner = resource.creator.clone();
         resource.creator = pending_owner.clone();
         Self::save(&env, &mut resource);
@@ -698,6 +859,7 @@ impl VaultRegistry {
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
         let resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
+        Self::ensure_mutable(&resource)?;
 
         let key = DataKey::PendingTransfer(id.clone());
         if !env.storage().persistent().has(&key) {
@@ -709,19 +871,29 @@ impl VaultRegistry {
         Ok(())
     }
 
-    /// Set the listing state of a resource. Only the creator may call this.
-    ///
-    /// Emits a `setlisted` event with data `(old_listed, new_listed)` so
-    /// listeners can distinguish a delist, relist, or no-op transition without
-    /// needing to query additional state. The event is always emitted, even
-    /// when the new value equals the old value.
+    /// Set a resource's creator-controlled listing state. Only
+    /// `Listed <-> Delisted` transitions are accepted; all other lifecycle
+    /// states reject this method with `InvalidLifecycleTransition`.
     pub fn set_listed(env: Env, id: String, listed: bool) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         let old_listed = resource.listed;
-        resource.listed = listed;
-        Self::save(&env, &mut resource);
+        let next = if listed {
+            ResourceState::Listed
+        } else {
+            ResourceState::Delisted
+        };
+        // Preserve the established `set_listed` no-op behavior for existing
+        // callers. It is not a lifecycle transition, but still refreshes the
+        // resource and emits the legacy `setlisted` event.
+        if resource.state == next {
+            Self::save(&env, &mut resource);
+            env.events()
+                .publish((symbol_short!("setlisted"), id), (old_listed, listed));
+            return Ok(());
+        }
+        Self::transition_creator_state(&env, &mut resource, next)?;
         env.events()
             .publish((symbol_short!("setlisted"), id), (old_listed, listed));
         Ok(())
@@ -730,6 +902,66 @@ impl VaultRegistry {
     /// Delist a resource (convenience method for set_listed(false)). Only the creator may call this.
     pub fn delist(env: Env, id: String) -> Result<(), Error> {
         Self::set_listed(env, id, false)
+    }
+
+    /// Freeze an otherwise active resource. The creator may freeze a listed or
+    /// delisted resource, but only an admin can restore it through dispute
+    /// resolution. This lifecycle freeze is separate from `freeze_metadata`.
+    pub fn freeze_resource(env: Env, id: String) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        let mut resource = Self::load(&env, &id)?;
+        resource.creator.require_auth();
+        Self::transition_creator_state(&env, &mut resource, ResourceState::Frozen)
+    }
+
+    /// Place an active resource under an admin-controlled dispute hold.
+    pub fn open_dispute(env: Env, id: String, admin: Address) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if !matches!(
+            resource.state,
+            ResourceState::Listed | ResourceState::Delisted | ResourceState::Frozen
+        ) {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, ResourceState::Disputed);
+        Ok(())
+    }
+
+    /// Resolve a disputed resource to `Listed`, `Delisted`, or `Frozen`.
+    pub fn resolve_dispute(
+        env: Env,
+        id: String,
+        admin: Address,
+        state: ResourceState,
+    ) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if resource.state != ResourceState::Disputed
+            || !matches!(
+                state,
+                ResourceState::Listed | ResourceState::Delisted | ResourceState::Frozen
+            )
+        {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, state);
+        Ok(())
+    }
+
+    /// Permanently retire a resource. Only an admin may tombstone it; the
+    /// tombstoned state has no outgoing transitions.
+    pub fn tombstone_resource(env: Env, id: String, admin: Address) -> Result<(), Error> {
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if resource.state == ResourceState::Tombstoned {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, ResourceState::Tombstoned);
+        Ok(())
     }
 
     /// Paginated resource list in insertion order. `limit` is capped at 20.
@@ -757,11 +989,7 @@ impl VaultRegistry {
         let mut i = cursor;
         while i < total && items.len() < page_size {
             let idx_key = DataKey::Index(i);
-            if let Some(id) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, String>(&idx_key)
-            {
+            if let Some(id) = env.storage().persistent().get::<DataKey, String>(&idx_key) {
                 Self::bump_persistent(&env, &idx_key);
                 let res_key = DataKey::Resource(id);
                 if let Some(resource) = env
@@ -794,11 +1022,7 @@ impl VaultRegistry {
         let mut i = start;
         while i < total && result.len() < page_size {
             let idx_key = DataKey::Index(i);
-            if let Some(id) = env
-                .storage()
-                .persistent()
-                .get::<DataKey, String>(&idx_key)
-            {
+            if let Some(id) = env.storage().persistent().get::<DataKey, String>(&idx_key) {
                 Self::bump_persistent(&env, &idx_key);
                 let res_key = DataKey::Resource(id);
                 if let Some(resource) = env
@@ -807,7 +1031,7 @@ impl VaultRegistry {
                     .get::<DataKey, Resource>(&res_key)
                 {
                     Self::bump_persistent(&env, &res_key);
-                    if resource.listed {
+                    if resource.state == ResourceState::Listed {
                         result.push_back(resource);
                     }
                 }
@@ -937,7 +1161,7 @@ impl VaultRegistry {
         // Build a tag -> Vec<id> map in a simple parallel-vec structure that
         // avoids BTreeMap (unavailable in no_std without alloc feature that
         // isn't brought in here). Small curated tag sets keep this O(n*t).
-        let mut tag_keys: Vec<String> = Vec::new(&env);   // unique normalized tags seen
+        let mut tag_keys: Vec<String> = Vec::new(&env); // unique normalized tags seen
         let mut tag_id_vecs: alloc::vec::Vec<Vec<String>> = alloc::vec::Vec::new(); // parallel
 
         // Helper: find index of tag_key in tag_keys, return None if absent
@@ -993,8 +1217,7 @@ impl VaultRegistry {
             Self::bump_persistent(&env, &tag_key);
         }
 
-        env.events()
-            .publish((symbol_short!("retagidx"),), len);
+        env.events().publish((symbol_short!("retagidx"),), len);
         Ok(())
     }
 
@@ -1002,6 +1225,29 @@ impl VaultRegistry {
     pub fn get(env: Env, id: String) -> Result<Resource, Error> {
         Self::validate_resource_id(&id)?;
         Self::load(&env, &id)
+    }
+
+    /// Read several resources in one invocation, preserving input order.
+    /// Missing resources are represented by `None`; valid resources are
+    /// returned as `Some(Resource)`. The batch is capped to bound execution
+    /// and response size.
+    pub fn get_many(env: Env, ids: Vec<String>) -> Result<Vec<Option<Resource>>, Error> {
+        const MAX_BATCH_SIZE: u32 = 20;
+        if ids.len() > MAX_BATCH_SIZE {
+            return Err(Error::BatchTooLarge);
+        }
+        let mut result: Vec<Option<Resource>> = Vec::new(&env);
+        for i in 0..ids.len() {
+            let id = ids.get(i).unwrap();
+            Self::validate_resource_id(&id)?;
+            let key = DataKey::Resource(id);
+            let resource = env.storage().persistent().get(&key);
+            if resource.is_some() {
+                Self::bump_persistent(&env, &key);
+            }
+            result.push_back(resource);
+        }
+        Ok(result)
     }
 
     /// Whether a resource with `id` is registered.
@@ -1029,6 +1275,32 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Store the intended network identifier once. The supplied ID must match
+    /// the ledger this contract is executing on, preventing a deployment
+    /// script from accidentally recording a different Stellar network.
+    pub fn initialize_network(env: Env, network_id: BytesN<32>) -> Result<(), Error> {
+        if env.storage().instance().has(&DataKey::NetworkId) {
+            return Err(Error::NetworkAlreadyInitialized);
+        }
+        if network_id != env.ledger().network_id() {
+            return Err(Error::NetworkIdMismatch);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::NetworkId, &network_id);
+        Self::bump_instance(&env);
+        Ok(())
+    }
+
+    /// Return the initialized network identifier. Callers can use this value
+    /// as a deployment guard before submitting network-sensitive operations.
+    pub fn network_id(env: Env) -> Result<BytesN<32>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::NetworkId)
+            .ok_or(Error::NetworkNotInitialized)
     }
 
     /// Discover this registry's stable identity and capabilities in one
@@ -1162,109 +1434,6 @@ impl VaultRegistry {
             .unwrap_or(false)
     }
 
-    // ─── Moderator role ──────────────────────────────────────────────────────
-
-    /// Grant the moderator role to `moderator`. Only the admin may call this.
-    /// Moderators can flag and unflag dispute notices on resources but cannot
-    /// change ownership, price, metadata, or verification status.
-    /// Errors `AdminNotSet` if no admin has been set yet.
-    pub fn add_moderator(env: Env, moderator: Address) -> Result<(), Error> {
-        let admin = Self::require_admin(&env)?;
-        admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::Moderator(moderator.clone()), &true);
-        Self::bump_instance(&env);
-        env.events()
-            .publish((symbol_short!("addmod"), moderator), true);
-        Ok(())
-    }
-
-    /// Revoke the moderator role from `moderator`. Only the admin may call this.
-    pub fn remove_moderator(env: Env, moderator: Address) -> Result<(), Error> {
-        let admin = Self::require_admin(&env)?;
-        admin.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::Moderator(moderator.clone()), &false);
-        Self::bump_instance(&env);
-        env.events()
-            .publish((symbol_short!("rmmod"), moderator), false);
-        Ok(())
-    }
-
-    /// Whether `address` currently holds the moderator role.
-    pub fn is_moderator(env: Env, address: Address) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Moderator(address))
-            .unwrap_or(false)
-    }
-
-    /// Flag a dispute notice on a resource. Only an address currently holding
-    /// the moderator role may call this. Errors `NotFound` if the resource
-    /// does not exist, `AlreadyFlagged` if it is already flagged.
-    pub fn flag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
-        moderator.require_auth();
-        if !Self::is_moderator(env.clone(), moderator.clone()) {
-            return Err(Error::NotModerator);
-        }
-        Self::validate_resource_id(&id)?;
-        // Confirm resource exists
-        Self::load(&env, &id)?;
-        let flag_key = DataKey::DisputeFlag(id.clone());
-        if env
-            .storage()
-            .persistent()
-            .get::<DataKey, bool>(&flag_key)
-            .unwrap_or(false)
-        {
-            return Err(Error::AlreadyFlagged);
-        }
-        env.storage().persistent().set(&flag_key, &true);
-        Self::bump_persistent(&env, &flag_key);
-        env.events()
-            .publish((symbol_short!("flagdisp"), id), moderator);
-        Ok(())
-    }
-
-    /// Remove a dispute flag from a resource. Only a moderator may call this.
-    /// Errors `NotFound` if the resource does not exist, `NotFlagged` if it is
-    /// not currently flagged.
-    pub fn unflag_dispute(env: Env, id: String, moderator: Address) -> Result<(), Error> {
-        moderator.require_auth();
-        if !Self::is_moderator(env.clone(), moderator.clone()) {
-            return Err(Error::NotModerator);
-        }
-        Self::validate_resource_id(&id)?;
-        // Confirm resource exists
-        Self::load(&env, &id)?;
-        let flag_key = DataKey::DisputeFlag(id.clone());
-        if !env
-            .storage()
-            .persistent()
-            .get::<DataKey, bool>(&flag_key)
-            .unwrap_or(false)
-        {
-            return Err(Error::NotFlagged);
-        }
-        env.storage().persistent().set(&flag_key, &false);
-        Self::bump_persistent(&env, &flag_key);
-        env.events()
-            .publish((symbol_short!("unflgdisp"), id), moderator);
-        Ok(())
-    }
-
-    /// Whether a resource currently has an active dispute flag.
-    /// Returns `false` for unknown resources (no `NotFound` error).
-    pub fn is_flagged(env: Env, id: String) -> bool {
-        let flag_key = DataKey::DisputeFlag(id);
-        env.storage()
-            .persistent()
-            .get::<DataKey, bool>(&flag_key)
-            .unwrap_or(false)
-    }
-
     /// Rebuild the pagination index (`list`/`list_page`/`count`) from an
     /// authoritative, admin-supplied ordered list of resource ids. Only the
     /// admin may call this. Every id must already exist as a registered
@@ -1345,9 +1514,7 @@ impl VaultRegistry {
             .get::<DataKey, FeeConfig>(&DataKey::FeeConfig)
             .map(OptFeeConfig::Some)
             .unwrap_or(OptFeeConfig::None);
-        env.storage()
-            .instance()
-            .set(&DataKey::FeeConfig, &config);
+        env.storage().instance().set(&DataKey::FeeConfig, &config);
         Self::bump_instance(&env);
 
         env.events().publish(
@@ -1369,9 +1536,13 @@ impl VaultRegistry {
     /// Store a hash of creator marketplace terms.
     pub fn set_terms_hash(env: Env, creator: Address, terms_hash: String) -> Result<(), Error> {
         creator.require_auth();
-        if terms_hash.len() > MAX_TERMS_HASH_LEN {
-            return Err(Error::TermsHashTooLong);
-        }
+        Self::validate_bounded_string(
+            &terms_hash,
+            0,
+            MAX_TERMS_HASH_LEN,
+            Error::TermsHashTooLong,
+            Error::TermsHashTooLong,
+        )?;
         let key = DataKey::CreatorTerms(creator.clone());
         env.storage().persistent().set(&key, &terms_hash);
         Self::bump_persistent(&env, &key);
@@ -1470,9 +1641,73 @@ impl VaultRegistry {
         Ok(receipt)
     }
 
+    /// Anchor a purchase receipt hash for `(resource_id, buyer)`.
+    ///
+    /// This is immutable: duplicate anchors for the same pair error with
+    /// `DuplicateReceipt`, so downstream services can treat the first anchor as
+    /// canonical. The caller must hold the verifier role.
+    pub fn anchor_purchase_receipt(
+        env: Env,
+        service: Address,
+        resource_id: String,
+        buyer: Address,
+        receipt_hash: String,
+    ) -> Result<(), Error> {
+        service.require_auth();
+        if !Self::is_verifier(env.clone(), service) {
+            return Err(Error::NotVerifier);
+        }
+        Self::validate_resource_id(&resource_id)?;
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Resource(resource_id.clone()))
+        {
+            return Err(Error::NotFound);
+        }
+        if receipt_hash.is_empty() || receipt_hash.len() > MAX_TX_HASH_LEN {
+            return Err(Error::InvalidTxHash);
+        }
+
+        let key = DataKey::PurchaseReceipt(resource_id.clone(), buyer.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::DuplicateReceipt);
+        }
+
+        let anchor = PurchaseReceiptAnchor {
+            resource_id: resource_id.clone(),
+            buyer,
+            receipt_hash,
+            ledger: env.ledger().sequence(),
+        };
+        env.storage().persistent().set(&key, &anchor);
+        Self::bump_persistent(&env, &key);
+        env.events()
+            .publish((symbol_short!("anchor"), resource_id), anchor);
+        Ok(())
+    }
+
+    /// Fetch a purchase receipt anchor for `(resource_id, buyer)`.
+    pub fn get_purchase_receipt(
+        env: Env,
+        resource_id: String,
+        buyer: Address,
+    ) -> Result<PurchaseReceiptAnchor, Error> {
+        Self::validate_resource_id(&resource_id)?;
+        let key = DataKey::PurchaseReceipt(resource_id, buyer);
+        let anchor = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        Self::bump_persistent(&env, &key);
+        Ok(anchor)
+    }
+
     /// Fetch a creator's marketplace terms hash. Errors with `NotFound` if it does not exist.
     /// Bumps the entry's TTL on a successful read.
-    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {        let key = DataKey::CreatorTerms(creator);
+    pub fn get_terms_hash(env: Env, creator: Address) -> Result<String, Error> {
+        let key = DataKey::CreatorTerms(creator);
         let hash = env
             .storage()
             .persistent()
@@ -1592,11 +1827,11 @@ impl VaultRegistry {
     ///
     /// Only the resource's current creator (owner) may call this.
     /// Emits a `"ttlext"` event with the `resource_id` as payload.
-    ///
-    /// # Errors
-    /// - [`Error::NotFound`] — `resource_id` is not registered
-    /// - [`Error::InvalidResourceId`] — `resource_id` fails format validation
-    pub fn extend_resource_ttl(env: Env, creator: Address, resource_id: String) -> Result<(), Error> {
+    pub fn extend_resource_ttl(
+        env: Env,
+        creator: Address,
+        resource_id: String,
+    ) -> Result<(), Error> {
         Self::validate_resource_id(&resource_id)?;
         creator.require_auth();
         let resource = Self::load(&env, &resource_id)?;
@@ -1623,12 +1858,14 @@ impl VaultRegistry {
     }
 
     fn validate_resource_id(id: &String) -> Result<(), Error> {
-        let len = id.len();
-        if len == 0 || len > 24 {
-            return Err(Error::InvalidResourceId);
-        }
-        let mut buf = alloc::vec![0u8; len as usize];
-        id.copy_into_slice(&mut buf);
+        Self::validate_bounded_string(
+            id,
+            1,
+            24,
+            Error::InvalidResourceId,
+            Error::InvalidResourceId,
+        )?;
+        let buf = Self::string_bytes(id);
         for &b in buf.iter() {
             if !(b.is_ascii_lowercase() || b.is_ascii_digit()) {
                 return Err(Error::InvalidResourceId);
@@ -1638,9 +1875,7 @@ impl VaultRegistry {
     }
 
     fn is_reserved_id(id: &soroban_sdk::String) -> bool {
-        let len = id.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        id.copy_into_slice(&mut buf);
+        let buf = Self::string_bytes(id);
         let eq_ignore_case = |expected: &[u8]| -> bool {
             if buf.len() != expected.len() {
                 return false;
@@ -1664,16 +1899,14 @@ impl VaultRegistry {
     }
 
     fn validate_metadata_pointer(metadata: &String) -> Result<(), Error> {
-        if metadata.is_empty() {
-            return Err(Error::EmptyMetadata);
-        }
-        if metadata.len() > MAX_METADATA_POINTER_LEN {
-            return Err(Error::MetadataTooLong);
-        }
-
-        let len = metadata.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        metadata.copy_into_slice(&mut buf);
+        Self::validate_bounded_string(
+            metadata,
+            1,
+            MAX_METADATA_POINTER_LEN,
+            Error::EmptyMetadata,
+            Error::MetadataTooLong,
+        )?;
+        let buf = Self::string_bytes(metadata);
         let starts_with = |prefix: &[u8]| -> bool {
             if buf.len() < prefix.len() {
                 return false;
@@ -1694,32 +1927,6 @@ impl VaultRegistry {
         }
     }
 
-    /// Normalize a single tag to lowercase ASCII with leading and trailing
-    /// whitespace trimmed. Non-ASCII bytes are preserved as-is.
-    fn normalize_tag(env: &Env, tag: &String) -> String {
-        let len = tag.len() as usize;
-        let mut buf = alloc::vec![0u8; len];
-        tag.copy_into_slice(&mut buf);
-
-        let mut start = 0;
-        while start < len && buf[start].is_ascii_whitespace() {
-            start += 1;
-        }
-
-        let mut end = len;
-        while end > start && buf[end - 1].is_ascii_whitespace() {
-            end -= 1;
-        }
-
-        let trimmed = &mut buf[start..end];
-        for b in trimmed.iter_mut() {
-            if b.is_ascii_uppercase() {
-                *b = b.to_ascii_lowercase();
-            }
-        }
-        String::from_bytes(env, trimmed)
-    }
-
     /// Normalize every tag in the input list to lowercase ASCII, validate
     /// count and length limits, and return the normalized `Vec<String>`.
     /// Errors `InvalidTag` for empty tags, tags exceeding `MAX_TAG_LEN`,
@@ -1731,60 +1938,103 @@ impl VaultRegistry {
         let mut norm: Vec<String> = Vec::new(env);
         for i in 0..tags.len() {
             let tag = tags.get(i).unwrap();
-            if tag.len() == 0 {
-                return Err(Error::InvalidTag);
-            }
+            Self::validate_bounded_string(
+                &tag,
+                1,
+                MAX_TAG_LEN,
+                Error::InvalidTag,
+                Error::InvalidTag,
+            )?;
             let normalized = Self::normalize_tag(env, &tag);
-            let norm_len = normalized.len();
-            if norm_len == 0 || norm_len > MAX_TAG_LEN {
-                return Err(Error::InvalidTag);
-            }
+            let mut duplicate = false;
             for j in 0..norm.len() {
                 if norm.get(j).unwrap() == normalized {
-                    return Err(Error::InvalidTag);
+                    duplicate = true;
+                    break;
                 }
             }
-            norm.push_back(normalized);
+            if !duplicate {
+                norm.push_back(normalized);
+            }
         }
         Ok(norm)
     }
 
-    /// Return the current list of resource ids stored under `TagIndex(tag)`.
-    fn tag_index_get(env: &Env, tag: &String) -> Vec<String> {
-        env.storage()
-            .persistent()
-            .get::<DataKey, Vec<String>>(&DataKey::TagIndex(tag.clone()))
-            .unwrap_or_else(|| Vec::new(env))
+    /// Validate a string's byte length while preserving the contract's
+    /// caller-visible error for both lower- and upper-bound failures. Keep
+    /// all bounded text fields on this helper so future fields cannot drift
+    /// into inconsistent boundary handling.
+    fn validate_bounded_string(
+        value: &String,
+        min_len: u32,
+        max_len: u32,
+        below_min_error: Error,
+        above_max_error: Error,
+    ) -> Result<(), Error> {
+        let len = value.len();
+        if len < min_len {
+            return Err(below_min_error);
+        }
+        if len > max_len {
+            return Err(above_max_error);
+        }
+        Ok(())
     }
 
-    /// Append `id` to the tag index entry for `tag` if not already present.
-    fn tag_index_add(env: &Env, tag: &String, id: &String) {
-        let mut ids = Self::tag_index_get(env, tag);
-        // Avoid duplicates (e.g. repair_tag_index may be called multiple times)
-        for i in 0..ids.len() {
-            if ids.get(i).unwrap() == *id {
-                return;
-            }
-        }
-        ids.push_back(id.clone());
-        let key = DataKey::TagIndex(tag.clone());
-        env.storage().persistent().set(&key, &ids);
-        Self::bump_persistent(env, &key);
+    /// Materialize Soroban string bytes once for validators that need to
+    /// inspect content after a shared length check.
+    fn string_bytes(value: &String) -> alloc::vec::Vec<u8> {
+        let mut bytes = alloc::vec![0u8; value.len() as usize];
+        value.copy_into_slice(&mut bytes);
+        bytes
     }
 
-    /// Remove `id` from the tag index entry for `tag`. No-op if not present.
-    fn tag_index_remove(env: &Env, tag: &String, id: &String) {
-        let ids = Self::tag_index_get(env, tag);
-        let mut out: Vec<String> = Vec::new(env);
-        for i in 0..ids.len() {
-            let v = ids.get(i).unwrap();
-            if v != *id {
-                out.push_back(v);
-            }
+    /// Content and ownership changes are allowed only while a resource is
+    /// actively listed or creator-delisted. Frozen, disputed, and tombstoned
+    /// resources are preserved as-is until an admin resolves their lifecycle.
+    fn ensure_mutable(resource: &Resource) -> Result<(), Error> {
+        if matches!(
+            resource.state,
+            ResourceState::Listed | ResourceState::Delisted
+        ) {
+            Ok(())
+        } else {
+            Err(Error::ResourceNotMutable)
         }
-        let key = DataKey::TagIndex(tag.clone());
-        env.storage().persistent().set(&key, &out);
-        Self::bump_persistent(env, &key);
+    }
+
+    fn transition_creator_state(
+        env: &Env,
+        resource: &mut Resource,
+        next: ResourceState,
+    ) -> Result<(), Error> {
+        let allowed = matches!(
+            (resource.state, next),
+            (ResourceState::Listed, ResourceState::Delisted)
+                | (ResourceState::Delisted, ResourceState::Listed)
+                | (ResourceState::Listed, ResourceState::Frozen)
+                | (ResourceState::Delisted, ResourceState::Frozen)
+        );
+        if !allowed {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(env, resource, next);
+        Ok(())
+    }
+
+    fn transition_state(env: &Env, resource: &mut Resource, next: ResourceState) {
+        resource.state = next;
+        resource.listed = next == ResourceState::Listed;
+        Self::save(env, resource);
+    }
+
+    fn require_current_admin(env: &Env, admin: &Address) -> Result<(), Error> {
+        let current = Self::require_admin(env)?;
+        if current != *admin {
+            return Err(Error::Unauthorized);
+        }
+        admin.require_auth();
+        Ok(())
     }
 
     fn load(env: &Env, id: &String) -> Result<Resource, Error> {
@@ -1893,7 +2143,32 @@ impl VaultRegistry {
             .ok_or(Error::AdminNotSet)
     }
 
-
+    /// Normalize a tag for storage and index keying: trim ASCII whitespace and
+    /// lowercase ASCII letters.
+    fn normalize_tag(env: &Env, tag: &String) -> String {
+        let len = tag.len() as usize;
+        let mut buf = alloc::vec![0u8; len];
+        tag.copy_into_slice(&mut buf);
+        let mut start = 0;
+        let mut end = buf.len();
+        while start < end && buf[start].is_ascii_whitespace() {
+            start += 1;
+        }
+        while end > start && buf[end - 1].is_ascii_whitespace() {
+            end -= 1;
+        }
+        let mut normalized = alloc::vec::Vec::with_capacity(end - start);
+        for mut b in buf[start..end].iter().copied() {
+            if b.is_ascii_uppercase() {
+                b = b.to_ascii_lowercase();
+            }
+            normalized.push(b);
+        }
+        match core::str::from_utf8(&normalized) {
+            Ok(s) => String::from_str(env, s),
+            Err(_) => String::from_bytes(env, &normalized),
+        }
+    }
 
     /// Add `id` to the `TagIndex` entry for each tag in `tags`.
     fn tag_index_add(env: &Env, tags: &Vec<String>, id: &String) {

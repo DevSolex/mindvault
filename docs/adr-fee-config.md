@@ -1,11 +1,11 @@
 # ADR: Registry-Level Fee / Royalty Configuration
 
-| Field      | Value                                                                    |
-| ---------- | ------------------------------------------------------------------------ |
-| **Status** | Accepted                                                                 |
-| **Date**   | 2026-07-28                                                               |
-| **Issue**  | [#386](https://github.com/mind-vault-1/mindvault/issues/386)            |
-| **Authors**| retkatmun                                                                |
+| Field       | Value                                                        |
+| ----------- | ------------------------------------------------------------ |
+| **Status**  | Accepted                                                     |
+| **Date**    | 2026-07-28                                                   |
+| **Issue**   | [#386](https://github.com/mind-vault-1/mindvault/issues/386) |
+| **Authors** | retkatmun                                                    |
 
 ---
 
@@ -13,7 +13,7 @@
 
 MindVault uses the x402 protocol for resource access payments. USDC flows
 directly from buyer to creator; the `vault-registry` contract is the on-chain
-source of truth for *what* exists, *who* owns it, and *what it costs* — but it
+source of truth for _what_ exists, _who_ owns it, and _what it costs_ — but it
 currently has no concept of a platform fee or creator royalty.
 
 As the platform grows, two operational needs arise:
@@ -24,8 +24,8 @@ As the platform grows, two operational needs arise:
    future marketplace integrations) may entitle the original creator to a
    royalty on top of the base price.
 
-Both needs boil down to the same question: *what percentage of each purchase
-price is split away from the creator's base payout, and to whom?*
+Both needs boil down to the same question: _what percentage of each purchase
+price is split away from the creator's base payout, and to whom?_
 
 This ADR decides where that configuration lives, what its schema looks like,
 how it is validated on-chain, and what invariants the contract enforces.
@@ -37,7 +37,7 @@ how it is validated on-chain, and what invariants the contract enforces.
 - **Single source of truth.** Off-chain settlement (x402 facilitator, future
   settlement contracts) should be able to read the current split from the
   registry without trusting a separate config API.
-- **No custody.** The registry does not hold USDC. It only *describes* the
+- **No custody.** The registry does not hold USDC. It only _describes_ the
   agreed split; the actual movement of funds remains off-chain.
 - **Hard bounds enforced on-chain.** The contract must prevent misconfiguration
   that would route more than 50 % of a purchase price away from the creator.
@@ -55,12 +55,12 @@ how it is validated on-chain, and what invariants the contract enforces.
 Store fee percentages in server environment variables. Off-chain settlement
 reads them from config, not from the chain.
 
-| Dimension         | Assessment                                                    |
-| ----------------- | ------------------------------------------------------------- |
-| Simplicity        | ✅ Zero contract changes                                       |
-| Trust             | ❌ No on-chain verifiability — buyers must trust the server    |
-| Auditability      | ❌ No on-chain event trail                                     |
-| Agent automation  | ❌ Agents cannot verify fees without trusting the API         |
+| Dimension        | Assessment                                                  |
+| ---------------- | ----------------------------------------------------------- |
+| Simplicity       | ✅ Zero contract changes                                    |
+| Trust            | ❌ No on-chain verifiability — buyers must trust the server |
+| Auditability     | ❌ No on-chain event trail                                  |
+| Agent automation | ❌ Agents cannot verify fees without trusting the API       |
 
 **Rejected.** Breaks the "on-chain source of truth" property. Buyers and AI
 agents cannot independently verify the fee split.
@@ -72,13 +72,13 @@ agents cannot independently verify the fee split.
 Add `platform_fee_bps` and `royalty_bps` fields to the `Resource` struct so
 each creator can set their own fee rate independently.
 
-| Dimension         | Assessment                                                    |
-| ----------------- | ------------------------------------------------------------- |
-| Flexibility       | ✅ Per-resource granularity                                    |
-| Schema impact     | ❌ Adds two fields to every `Resource` (storage cost scales with count) |
-| Complexity        | ❌ Fee bounds must be validated on every `register`/`set_price` call |
-| UX                | ❌ Creator must understand and set fee fields — unexpected default behaviour |
-| Current need      | ❌ No current use case requires per-resource fee overrides     |
+| Dimension     | Assessment                                                                   |
+| ------------- | ---------------------------------------------------------------------------- |
+| Flexibility   | ✅ Per-resource granularity                                                  |
+| Schema impact | ❌ Adds two fields to every `Resource` (storage cost scales with count)      |
+| Complexity    | ❌ Fee bounds must be validated on every `register`/`set_price` call         |
+| UX            | ❌ Creator must understand and set fee fields — unexpected default behaviour |
+| Current need  | ❌ No current use case requires per-resource fee overrides                   |
 
 **Rejected for v1.** The feature request is for registry-level policy, not
 per-resource overrides. This option can be revisited as a future extension
@@ -92,14 +92,14 @@ Store a single `FeeConfig` struct in contract instance storage under a new
 `DataKey::FeeConfig` key. Only the admin can set it. All off-chain settlement
 reads this one entry.
 
-| Dimension         | Assessment                                                    |
-| ----------------- | ------------------------------------------------------------- |
-| On-chain truth    | ✅ Verifiable by anyone who can read the contract              |
-| Auditability      | ✅ `setfee` event carries old and new config                   |
-| Storage cost      | ✅ One instance entry — O(1) regardless of resource count      |
-| Bounds enforcement| ✅ Hard 50 % ceiling on individual fields and their sum        |
-| Flexibility       | ✅ Per-resource overrides can be added later without breaking this |
-| Breaking change   | ✅ None — `Resource` schema unchanged, no existing callers affected |
+| Dimension          | Assessment                                                          |
+| ------------------ | ------------------------------------------------------------------- |
+| On-chain truth     | ✅ Verifiable by anyone who can read the contract                   |
+| Auditability       | ✅ `setfee` event carries old and new config                        |
+| Storage cost       | ✅ One instance entry — O(1) regardless of resource count           |
+| Bounds enforcement | ✅ Hard 50 % ceiling on individual fields and their sum             |
+| Flexibility        | ✅ Per-resource overrides can be added later without breaking this  |
+| Breaking change    | ✅ None — `Resource` schema unchanged, no existing callers affected |
 
 **Accepted.**
 
@@ -129,10 +129,10 @@ with the same TTL characteristics as `DataKey::Admin`.
 
 ### Validation rules (enforced by `set_fee_config`)
 
-| Rule                                        | Error returned    |
-| ------------------------------------------- | ----------------- |
-| `platform_fee_bps > MAX_FEE_BPS`            | `FeeBpsTooHigh`   |
-| `royalty_bps > MAX_FEE_BPS`                 | `FeeBpsTooHigh`   |
+| Rule                                           | Error returned    |
+| ---------------------------------------------- | ----------------- |
+| `platform_fee_bps > MAX_FEE_BPS`               | `FeeBpsTooHigh`   |
+| `royalty_bps > MAX_FEE_BPS`                    | `FeeBpsTooHigh`   |
 | `platform_fee_bps + royalty_bps > MAX_FEE_BPS` | `TotalFeeTooHigh` |
 
 Individual bounds are checked before the sum so callers receive the more
@@ -154,10 +154,10 @@ than hardcoding `10_000`.
 
 ### Public API
 
-| Function              | Auth    | Description                                              |
-| --------------------- | ------- | -------------------------------------------------------- |
+| Function                 | Auth  | Description                                           |
+| ------------------------ | ----- | ----------------------------------------------------- |
 | `set_fee_config(config)` | admin | Validate bounds, store config, emit `setfee` event.   |
-| `get_fee_config()`    | —       | Return `Option<FeeConfig>` — `None` before first set.  |
+| `get_fee_config()`       | —     | Return `Option<FeeConfig>` — `None` before first set. |
 
 ### Event: `setfee`
 
@@ -191,7 +191,7 @@ can reconstruct the full audit trail from events alone.
 
 ### Negative / Limitations
 
-- This is a *metadata* contract — it records the agreed split but does not
+- This is a _metadata_ contract — it records the agreed split but does not
   enforce it at settlement time. Off-chain settlement code (x402 facilitator
   or a future settlement contract) is still responsible for reading and applying
   the config when distributing USDC.

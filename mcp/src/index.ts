@@ -1270,13 +1270,7 @@ async function publish(args: {
 }): Promise<string> {
   if (args.dryRun) {
     return JSON.stringify(
-      dryRunPublish(
-        args,
-        NETWORK,
-        BASE_URL,
-        !!activeProfile().wallet,
-        !!currentApiKey(),
-      ),
+      dryRunPublish(args, NETWORK, BASE_URL, !!activeProfile().wallet, !!currentApiKey()),
       null,
       2,
     );
