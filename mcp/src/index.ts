@@ -17,7 +17,14 @@ import {
 } from "@mindvault/registry-client";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+} from "@modelcontextprotocol/sdk/types.js";
+import { PROMPT_DEFINITIONS, getPrompt } from "./prompts.js";
+import { truncateResponse } from "./truncation.js";
 import { createEd25519Signer } from "@x402/stellar";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
 import { wrapFetchWithPayment, x402Client } from "@x402/fetch";
@@ -1077,7 +1084,8 @@ export async function browse(filters: CatalogFilters = {}): Promise<string> {
   // Warn when the catalog may be stale relative to the on-chain registry, based
   // on the server's cache headers. Silent when there is no cache metadata.
   const notice = cacheStalenessNotice(res.headers);
-  return notice ? `${body}\n\n${notice}` : body;
+  const full = notice ? `${body}\n\n${notice}` : body;
+  return truncateResponse(full);
 }
 
 export async function search(filtersOrQuery: string | CatalogFilters): Promise<string> {
@@ -1110,7 +1118,7 @@ export async function search(filtersOrQuery: string | CatalogFilters): Promise<s
   items = applyClientCatalogFilters(items, filters);
 
   if (items.length === 0) return `No resources match ${describeCatalogFilters(filters)}.`;
-  return items.map(formatResource).join("\n\n");
+  return truncateResponse(items.map(formatResource).join("\n\n"));
 }
 
 export async function preview(resourceId: string): Promise<string> {
@@ -2498,7 +2506,10 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
 
 // ── MCP Server ────────────────────────────────────────────────────────────────
 
-const server = new Server({ name: "mindvault", version: "1.0.0" }, { capabilities: { tools: {} } });
+const server = new Server(
+  { name: "mindvault", version: "1.0.0" },
+  { capabilities: { tools: {}, prompts: {} } },
+);
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
@@ -2989,6 +3000,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// ── MCP Prompts ────────────────────────────────────────────────────────────
+
+server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+  prompts: PROMPT_DEFINITIONS.map((p) => ({
+    name: p.name,
+    description: p.description,
+    arguments: p.arguments.map((a) => ({
+      name: a.name,
+      description: a.description,
+      required: a.required,
+    })),
+  })),
+}));
+
+server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+  const { name, arguments: args = {} } = request.params;
+  const result = getPrompt(name, args as Record<string, string | undefined>);
+  return {
+    description: result.description,
+    messages: result.messages,
+  };
+});
+
 // Best-effort startup check: warn on stderr (never fatal, never blocks) when the
 // installed bindings drift from the deployed contract. Skipped under tests and
 // mock mode so it never makes a real network call. Errors (e.g. offline) are
@@ -3013,8 +3047,43 @@ if (!process.env.VITEST && !MOCK) {
 // instead — connecting stdio here would hang the test runner on stdin.
 export { server };
 
+// ── Graceful shutdown (#549) ───────────────────────────────────────────────
+// SIGINT, SIGTERM, and transport close/error close the server cleanly and
+// flush in-flight state writes before exiting with a deterministic code.
+
+let shuttingDown = false;
+
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+
+  try {
+    // Flush any pending state writes before closing
+    saveState();
+    await server.close();
+  } catch {
+    // Best-effort — already shutting down
+  }
+
+  const exitCode = signal === "SIGINT" ? 130 : 0;
+  process.exit(exitCode);
+}
+
 if (!process.env.VITEST) {
   const transport = new StdioServerTransport();
+
+  // Handle transport errors/close
+  transport.onclose = () => shutdown("transport-close");
+  transport.onerror = () => shutdown("transport-error");
+
+  // Handle OS signals
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  // Handle stdin EOF (pipe closed)
+  process.stdin.on("end", () => shutdown("stdin-EOF"));
+
+  await server.connect(transport);
   await await await server.connect(transport);
 
   // Setup graceful shutdown
