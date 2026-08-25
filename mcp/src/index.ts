@@ -119,6 +119,7 @@ import {
 } from "./errorMapping.js";
 import { parseMetadataHash } from "./metadataHash.js";
 import {
+  applyCatalogSort,
   applyClientCatalogFilters,
   buildCatalogQueryString,
   catalogFilterInputProperties,
@@ -1104,7 +1105,7 @@ export async function browse(filters: CatalogFilters = {}): Promise<string> {
   const res = await jsonFetch(url);
   if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
   let items: any[] = Array.isArray(res.data) ? res.data : [];
-  items = applyClientCatalogFilters(items, filters);
+  items = applyCatalogSort(applyClientCatalogFilters(items, filters), filters.sort);
   const body =
     items.length === 0
       ? filters.query ||
@@ -1152,7 +1153,7 @@ export async function search(filtersOrQuery: string | CatalogFilters): Promise<s
 
   // Client-side keyword / tags / listed / skipped for unit-test compatibility
   // and parity with fields the public catalog schema does not accept.
-  items = applyClientCatalogFilters(items, filters);
+  items = applyCatalogSort(applyClientCatalogFilters(items, filters), filters.sort);
 
   if (items.length === 0) return `No resources match ${describeCatalogFilters(filters)}.`;
   return truncateResponse(items.map(formatResource).join("\n\n"));

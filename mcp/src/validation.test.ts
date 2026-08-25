@@ -379,3 +379,49 @@ describe("normalized output", () => {
     expect(optionalString(args, "description")).toBeUndefined();
   });
 });
+
+// ── Catalog filters: the browse/search argument surface ─────────────────────
+
+describe("catalog filter arguments", () => {
+  it("accepts every sort value on browse and on search", () => {
+    for (const sort of ["newest", "price_asc", "price_desc", "title"]) {
+      expect(() => validateToolArgs("mindvault_browse", { sort })).not.toThrow();
+      expect(() => validateToolArgs("mindvault_search", { query: "x", sort })).not.toThrow();
+    }
+  });
+
+  it("rejects an unknown sort value", () => {
+    const err = expectInvalid("mindvault_browse", { sort: "cheapest" });
+    expect(err.issues[0].code).toBe("not_in_enum");
+  });
+
+  it("accepts the whole advertised filter set on browse", () => {
+    expect(() =>
+      validateToolArgs("mindvault_browse", {
+        query: "stellar",
+        minPrice: "0.10",
+        maxPrice: "5.00",
+        verificationStatus: "verified",
+        resourceType: "link",
+        owner: "Alice",
+        sort: "price_asc",
+        limit: 20,
+        offset: 0,
+        tags: "dataset,research",
+        listed: true,
+      }),
+    ).not.toThrow();
+  });
+
+  it("still reports a typo rather than silently ignoring it", () => {
+    const err = expectInvalid("mindvault_browse", { sortBy: "price" });
+    expect(err.issues[0].code).toBe("unknown_argument");
+    expect(err.issues[0].message).toContain("sort");
+  });
+
+  it("browse and search validate against the same argument names", () => {
+    expect(Object.keys(TOOL_ARGUMENT_SPECS.mindvault_browse).sort()).toEqual(
+      Object.keys(TOOL_ARGUMENT_SPECS.mindvault_search).sort(),
+    );
+  });
+});

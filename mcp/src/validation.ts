@@ -28,8 +28,9 @@
  */
 
 import { parseMetadataHash, MetadataHashError, METADATA_HASH_FORMAT_HINT } from "./metadataHash.js";
-import { CATALOG_MAX_LIMIT } from "./catalogFilters.js";
+import { CATALOG_MAX_LIMIT, CATALOG_SORT_VALUES } from "./catalogFilters.js";
 import { REGISTRY_LIST_MAX_LIMIT } from "./registryPagination.js";
+import { RECEIPT_EXPORT_MAX_LIMIT } from "./receipts.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
 // ── Spec model ────────────────────────────────────────────────────────────────
@@ -138,6 +139,35 @@ const METADATA_POINTER: ArgumentSpec = {
 /** Backup passphrases must survive a round-trip through stateBackup.ts. */
 const PASSPHRASE: ArgumentSpec = { kind: "string", required: true, minLength: 8, maxLength: 512 };
 
+/**
+ * Catalog filters shared by mindvault_browse and mindvault_search.
+ *
+ * The two tools advertise one schema (`catalogFilterInputProperties`) and hand
+ * their arguments to the same parser, so they validate against one spec as
+ * well — otherwise an argument the schema advertises (`sort` was the first) is
+ * rejected here as unknown before the parser ever sees it.
+ *
+ * Values are re-checked by `parseCatalogFilters`, which produces the friendlier
+ * message; this layer's job is to accept the right argument *names* and reject
+ * the obviously wrong shapes.
+ */
+const CATALOG_FILTER_ARGS: ToolArgumentSpec = {
+  query: { kind: "string", maxLength: 256 },
+  minPrice: USDC_AMOUNT,
+  maxPrice: USDC_AMOUNT,
+  verificationStatus: {
+    kind: "enum",
+    values: ["pending", "verified", "rejected", "skipped"],
+  },
+  resourceType: { kind: "enum", values: ["file", "link"] },
+  owner: { kind: "string", maxLength: 128 },
+  sort: { kind: "enum", values: CATALOG_SORT_VALUES },
+  limit: { kind: "integer", min: 1, max: CATALOG_MAX_LIMIT },
+  offset: { kind: "integer", min: 0 },
+  tags: { kind: "string", maxLength: 256 },
+  listed: { kind: "flag" },
+};
+
 // ── Per-tool specs ────────────────────────────────────────────────────────────
 
 /**
@@ -149,22 +179,8 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
   mindvault_wallet_info: {},
   mindvault_use_profile: { name: { ...PROFILE_NAME, required: true } },
   mindvault_list_profiles: {},
-  mindvault_browse: {
-    limit: { kind: "integer", min: 1, max: CATALOG_MAX_LIMIT },
-    offset: { kind: "integer", min: 0 },
-  },
-  mindvault_search: {
-    query: { kind: "string", required: true, maxLength: 256 },
-    limit: { kind: "integer", min: 1, max: CATALOG_MAX_LIMIT },
-    offset: { kind: "integer", min: 0 },
-    minPrice: USDC_AMOUNT,
-    maxPrice: USDC_AMOUNT,
-    verificationStatus: {
-      kind: "enum",
-      values: ["pending", "verified", "rejected", "skipped"],
-    },
-    resourceType: { kind: "enum", values: ["file", "link"] },
-  },
+  mindvault_browse: { ...CATALOG_FILTER_ARGS },
+  mindvault_search: { ...CATALOG_FILTER_ARGS },
   mindvault_preview: { resourceId: RESOURCE_ID },
   mindvault_register: {
     name: { kind: "string", required: true, maxLength: 128 },

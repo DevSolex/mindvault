@@ -63,7 +63,7 @@ Available tools:
 | ------------------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | `mindvault_setup_wallet`       | Create a Stellar wallet using the sponsored account protocol               | `"Create a wallet for me"`                                      |
 | `mindvault_wallet_info`        | Check wallet address and USDC balance                                      | `"What's my wallet balance?"`                                   |
-| `mindvault_browse`             | List catalog resources (same filters as search)                            | `"Show verified links under 1 USDC"`                            |
+| `mindvault_browse`             | List catalog resources (same filters and sort options as search)           | `"List the cheapest resources first"`                           |
 | `mindvault_search`             | Search catalog by keyword, price, type, status, owner, tags, listed        | `"Find verified links under 1 USDC"`                            |
 | `mindvault_preview`            | Get details and price for a resource                                       | `"Preview resource swcn98besxpp6t1u8e77fqz3"`                   |
 | `mindvault_register`           | Register as a publisher using the agent's wallet                           | `"Register me as Alice, alice@example.com"`                     |

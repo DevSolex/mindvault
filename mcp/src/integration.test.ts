@@ -113,6 +113,23 @@ describe("MCP integration harness", () => {
     expect(harnessResultText(empty)).toMatch(/No on-chain resources in range/);
   });
 
+  it("browses the catalog sorted by price through callTool", async () => {
+    const sorted = await harness.callTool("mindvault_browse", { sort: "price_asc", limit: 10 });
+    expect(harnessIsToolError(sorted)).toBe(false);
+    const text = harnessResultText(sorted);
+    // mock-2 is $0.5 and mock-1 is $1.5, so ascending price puts mock-2 first.
+    expect(text.indexOf("mock-2")).toBeLessThan(text.indexOf("mock-1"));
+
+    const descending = await harness.callTool("mindvault_browse", { sort: "price_desc" });
+    const descendingText = harnessResultText(descending);
+    expect(descendingText.indexOf("mock-1")).toBeLessThan(descendingText.indexOf("mock-2"));
+  });
+
+  it("rejects a sort value the catalog does not support", async () => {
+    const result = await harness.callTool("mindvault_browse", { sort: "cheapest" });
+    expect(harnessResultText(result)).toContain("newest, price_asc, price_desc, title");
+  });
+
   it("returns deterministic Error: results for unknown tools and missing wallet", async () => {
     const unknown = await harness.callTool("mindvault_not_a_real_tool");
     expect(unknown.isError).toBe(true);

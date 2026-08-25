@@ -8,6 +8,9 @@
  * TOOL_ARGUMENT_SPECS (see validation.ts) — enforced by validation.test.ts.
  */
 
+import { catalogFilterInputProperties } from "./catalogFilters.js";
+import { RECEIPT_EXPORT_MAX_LIMIT, RECEIPT_EXPORT_OUTPUT_SCHEMA } from "./receipts.js";
+
 /** JSON Schema (draft subset) advertised for a tool's arguments. */
 export interface ToolInputSchema {
   type: "object";
@@ -75,81 +78,22 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: "mindvault_browse",
-    description: "List all available resources in the MindVault catalog.",
+    description:
+      "List resources in the MindVault catalog with the same optional filters as mindvault_search and GET /resources: keyword, price range, verification status, resource type, owner, sort, pagination, tags, and listed state. Sort accepts newest, price_asc, price_desc, or title; results are ordered client-side too, so the order holds even when the backend ignores the parameter.",
     inputSchema: {
       type: "object",
-      properties: {
-        limit: {
-          type: "integer",
-          minimum: 1,
-          maximum: 100,
-          description: "Max number of resources to return (1–100, default 20).",
-          examples: [20, 50],
-        },
-        offset: {
-          type: "integer",
-          minimum: 0,
-          description: "Number of resources to skip for pagination.",
-          examples: [0, 20],
-        },
-      },
+      properties: { ...catalogFilterInputProperties },
       required: [],
     },
   },
   {
     name: "mindvault_search",
     description:
-      "Search the MindVault catalog by keyword and optional filters for price, resource type, and verification status. Uses server-side filtering and returns compact resource summaries.",
+      "Search the MindVault catalog by keyword and optional filters for price, resource type, verification status, owner, sort, pagination, tags, and listed state. Uses server-side filtering where supported and returns compact resource summaries.",
     inputSchema: {
       type: "object",
-      properties: {
-        query: {
-          type: "string",
-          description:
-            "Keyword(s) to match against resource title or description. Examples: 'Stellar tutorial', 'Soroban smart contracts', 'DeFi guide'",
-          examples: ["Stellar tutorial", "Soroban smart contracts", "DeFi guide"],
-        },
-        minPrice: {
-          type: "string",
-          description:
-            "Minimum USDC price to include (decimal string). Example: '5.00' includes resources priced 5 USDC and above.",
-          examples: ["5.00", "10.50", "0.50"],
-        },
-        maxPrice: {
-          type: "string",
-          description:
-            "Maximum USDC price to include (decimal string). Example: '20.00' excludes resources priced above 20 USDC.",
-          examples: ["20.00", "15.99", "100.00"],
-        },
-        verificationStatus: {
-          type: "string",
-          enum: ["pending", "verified", "rejected", "skipped"],
-          description:
-            "Filter by verification status. 'verified' = passed AI originality check, 'pending' = awaiting verification, 'rejected' = failed check, 'skipped' = verification skipped.",
-          examples: ["verified"],
-        },
-        resourceType: {
-          type: "string",
-          enum: ["file", "link"],
-          description:
-            "Filter by resource type. 'file' = downloadable file (PDF, ebook, etc.), 'link' = external URL to web content.",
-          examples: ["link", "file"],
-        },
-        limit: {
-          type: "integer",
-          minimum: 1,
-          maximum: 100,
-          description: "Max number of resources to return (1–100, default 20).",
-          examples: [20, 50],
-        },
-        offset: {
-          type: "integer",
-          minimum: 0,
-          description: "Number of resources to skip for pagination.",
-          examples: [0, 20],
-        },
-      },
-      required: ["query"],
+      properties: { ...catalogFilterInputProperties },
+      required: [],
     },
   },
   {
