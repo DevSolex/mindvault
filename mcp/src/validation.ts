@@ -30,7 +30,6 @@
 import { parseMetadataHash, MetadataHashError, METADATA_HASH_FORMAT_HINT } from "./metadataHash.js";
 import { CATALOG_MAX_LIMIT, CATALOG_SORT_VALUES } from "./catalogFilters.js";
 import { REGISTRY_LIST_MAX_LIMIT } from "./registryPagination.js";
-import { RECEIPT_EXPORT_MAX_LIMIT } from "./receipts.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
 // ── Spec model ────────────────────────────────────────────────────────────────
@@ -116,6 +115,9 @@ const USDC_AMOUNT: ArgumentSpec = {
 
 /** Confirmation flag for mainnet mutations (see mainnetGuardrails.ts). */
 const CONFIRM_MAINNET: ArgumentSpec = { kind: "flag" };
+
+/** Preview flag: publish/buy report what they would do without paying. */
+const DRY_RUN: ArgumentSpec = { kind: "flag" };
 
 /** Stellar public key (G... 56 chars). */
 const STELLAR_ADDRESS: ArgumentSpec = {
@@ -210,9 +212,10 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
       pattern: /^https?:\/\/[^\s]+$/,
       patternHint: "an http(s) URL, e.g. https://example.com/data.json",
     },
+    dryRun: DRY_RUN,
     confirmMainnet: CONFIRM_MAINNET,
   },
-  mindvault_buy: { resourceId: RESOURCE_ID, confirmMainnet: CONFIRM_MAINNET },
+  mindvault_buy: { resourceId: RESOURCE_ID, dryRun: DRY_RUN, confirmMainnet: CONFIRM_MAINNET },
   mindvault_register_onchain: { resourceId: RESOURCE_ID, confirmMainnet: CONFIRM_MAINNET },
   mindvault_agent_status: {},
   mindvault_registry_info: {},
@@ -238,6 +241,7 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
   mindvault_set_tags: {
     resourceId: RESOURCE_ID,
     tags: { kind: "tag_array", required: true },
+    confirmMainnet: CONFIRM_MAINNET,
   },
   mindvault_update_metadata: {
     resourceId: RESOURCE_ID,

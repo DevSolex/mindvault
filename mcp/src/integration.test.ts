@@ -133,7 +133,9 @@ describe("MCP integration harness", () => {
   it("returns deterministic Error: results for unknown tools and missing wallet", async () => {
     const unknown = await harness.callTool("mindvault_not_a_real_tool");
     expect(unknown.isError).toBe(true);
-    expect(harnessResultText(unknown)).toMatch(/^Error: Unknown tool: mindvault_not_a_real_tool$/);
+    // The message continues with the list of available tools, so anchor on the
+    // name rather than the end of the line.
+    expect(harnessResultText(unknown)).toMatch(/^Error: Unknown tool: mindvault_not_a_real_tool\b/);
 
     const walletInfo = await harness.callTool("mindvault_wallet_info");
     expect(walletInfo.isError).toBe(true);
