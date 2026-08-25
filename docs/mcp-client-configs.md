@@ -311,14 +311,15 @@ server will read from. Run both after changing a config.
 
 ## Troubleshooting
 
-| Symptom                                             | Cause / fix                                                                                      |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Client shows the server as failed                   | Path is wrong or `dist/` is not built. Run `pnpm build` in `mcp/`, use an absolute path.         |
-| `Cannot find module …/dist/index.js`                | Same — the config points at `src/` or a stale path.                                              |
-| Server exits at startup with a config error list    | A genuine env mismatch. The report names each variable and the expected value.                   |
-| Tools appear but every call errors with `No wallet` | Run `mindvault_setup_wallet` first; state lives per OS user.                                     |
-| Mainnet calls rejected with a guardrail message     | Expected — pass `confirmMainnet: true`, or set `MINDVAULT_ALLOW_MAINNET=1`.                      |
-| Node not found                                      | The client may not inherit your shell `PATH`. Use an absolute node path (`/usr/local/bin/node`). |
+| Symptom                                             | Cause / fix                                                                                                   |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| Client shows the server as failed                   | Path is wrong or `dist/` is not built. Run `pnpm build` in `mcp/`, use an absolute path.                      |
+| `Cannot find module …/dist/index.js`                | Same — the config points at `src/` or a stale path.                                                           |
+| Server exits at startup with a config error list    | A genuine env mismatch. The report names each variable and the expected value.                                |
+| Tools appear but every call errors with `No wallet` | Run `mindvault_setup_wallet` first; state lives per OS user.                                                  |
+| Mainnet calls rejected with a guardrail message     | Expected — pass `confirmMainnet: true`, or set `MINDVAULT_ALLOW_MAINNET=1`.                                   |
+| Node not found                                      | The client may not inherit your shell `PATH`. Use an absolute node path (`/usr/local/bin/node`).              |
+| Not sure if the install is correct                  | Call `mindvault_verify_install` — it checks Node.js version, env vars, and config locally (no network calls). |
 
 ---
 
@@ -329,3 +330,4 @@ server will read from. Run both after changing a config.
 - [Wallet profiles](mcp-wallet-profiles.md)
 - [Metrics](mcp-metrics.md)
 - [Smoke test](mcp-smoke-test.md)
+- [Install verification](mcp-verify-install.md)

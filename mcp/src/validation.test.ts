@@ -62,6 +62,7 @@ const VALID_CALLS: Record<string, Record<string, unknown>> = {
   mindvault_registry_health: {},
   mindvault_import_wallet: {},
   mindvault_rotate_publisher_key: {},
+  mindvault_verify_install: {},
 };
 
 function expectInvalid(tool: string, args: unknown): ToolValidationError {
