@@ -120,6 +120,8 @@ For a copy-pasteable, end-to-end agent session — wallet setup → register →
 
 To verify the whole flow automatically, run the smoke test (`pnpm --filter @mindvault/mcp smoke`) — it boots the MCP server and drives setup → register → publish → preview → buy against a mock backend (or testnet), exiting non-zero on any failed tool call. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md)**.
 
+CI additionally runs a fixture-backed **install smoke test** (`pnpm --filter @mindvault/mcp smoke:install`) that starts the built server the way an agent client does — `node mcp/dist/index.js` over stdio — and drives read-only tool calls against in-process fixtures, so an install that cannot boot or serve its tools fails the build. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md#install-smoke-smokeinstall)**.
+
 For fast Vitest coverage of the MCP request surface itself (`listTools` / `callTool` over an in-memory SDK transport with mocked fetch/registry), see **[docs/mcp-integration-harness.md](docs/mcp-integration-harness.md)**.
 
 Tool failures from the API, x402, Horizon, and the vault-registry are normalized into a single structured form — a summary, a machine-readable `Source · Category · HTTP` line, and one actionable next step. See **[docs/mcp-error-reference.md](docs/mcp-error-reference.md)**.
