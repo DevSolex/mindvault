@@ -2057,6 +2057,20 @@ impl VaultRegistry {
             || starts_with(b"sha-256:")
             || starts_with(b"0x")
         {
+            // Enforce that sha256-prefixed pointers carry a 64-hex-char digest.
+            let sha256_prefix_len = if starts_with(b"sha-256:") { 8 } else { 7 };
+            if starts_with(b"sha256:") || starts_with(b"sha-256:") {
+                let hex_part = &buf[sha256_prefix_len..];
+                if hex_part.len() != 64 {
+                    return Err(Error::InvalidMetadataPointer);
+                }
+                // All characters in the hex part must be valid hex digits.
+                for &b in hex_part {
+                    if !matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F') {
+                        return Err(Error::InvalidMetadataPointer);
+                    }
+                }
+            }
             Ok(())
         } else {
             Err(Error::InvalidMetadataPointer)
