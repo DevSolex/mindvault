@@ -54,6 +54,8 @@ import {
   mockSetListed,
 } from "./mock.js";
 import { purchaseHistoryTool, recordPurchase } from "./purchaseHistory.js";
+import { exportReceiptsTool } from "./receipts.js";
+import { TOOL_DEFINITIONS, type ToolDefinition } from "./tools.js";
 import { dryRunPublish, dryRunBuy, dryRunOnchain } from "./dryRun.js";
 import { initAuditLogging, logToolStart, logToolSuccess, logToolError } from "./auditLog.js";
 import { REGISTRY_LIST_DEFAULT_LIMIT, REGISTRY_LIST_DEFAULT_START } from "./registryPagination.js";
@@ -2499,6 +2501,8 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
       return buy(requiredString(args, "resourceId"), flag(args, "dryRun"));
     case "mindvault_purchase_history":
       return purchaseHistoryTool(rawRecord);
+    case "mindvault_export_receipts":
+      return exportReceiptsTool(rawRecord);
     case "mindvault_register_onchain":
       return registerOnchain(requiredString(args, "resourceId"));
     case "mindvault_agent_status":
@@ -2547,6 +2551,45 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
       return formatVerifyInstall(verifyInstall(process.env));
     default:
       throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+/**
+ * Look up an advertised tool definition by name.
+ *
+ * Tool metadata lives in two places today: the literal list below and
+ * `TOOL_DEFINITIONS` in tools.ts, which the validation layer and its coverage
+ * tests read. Anything defined once — a tool with an `outputSchema`, whose
+ * schema the structured result must match — is declared in tools.ts and pulled
+ * in here, so the advertised schema, the validation spec, and the result shape
+ * cannot drift apart.
+ */
+function toolDefinition(name: string): ToolDefinition {
+  const definition = TOOL_DEFINITIONS.find((tool) => tool.name === name);
+  if (!definition) throw new Error(`No tool definition for ${name} in TOOL_DEFINITIONS.`);
+  return definition;
+}
+
+/** Tools that declare an outputSchema, by name, for structured results. */
+const TOOLS_WITH_OUTPUT_SCHEMA = new Set(
+  TOOL_DEFINITIONS.filter((tool) => tool.outputSchema).map((tool) => tool.name),
+);
+
+/**
+ * The structured form of a tool result, when the tool advertises one.
+ *
+ * A tool with an `outputSchema` must return structured content conforming to it
+ * (MCP 2025-06-18). Those tools already produce their result as JSON text, so
+ * the object is recovered by parsing it — the text block stays exactly as it
+ * was, which keeps every existing client and test working.
+ */
+function structuredResult(name: string, text: string): Record<string, unknown> | undefined {
+  if (!TOOLS_WITH_OUTPUT_SCHEMA.has(name)) return undefined;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -2759,6 +2802,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    // Declared in tools.ts: it carries an outputSchema, and the advertised
+    // schema, the validation spec, and the structured result must agree.
+    toolDefinition("mindvault_export_receipts"),
     {
       name: "mindvault_register_onchain",
       description:
@@ -3046,7 +3092,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // MCP error result: `isError: true` and text prefixed with `Error:`, with secrets
     // stripped via safeErrorMessage. Clients should treat that shape as failure.
     const result = await measureTool(metrics, name, () => dispatchTool(name, args));
-    return { content: [{ type: "text", text: result }] };
+    const structured = structuredResult(name, result);
+    return {
+      content: [{ type: "text", text: result }],
+      ...(structured ? { structuredContent: structured } : {}),
+    };
   } catch (err: any) {
     return { content: [{ type: "text", text: `Error: ${safeErrorMessage(err)}` }], isError: true };
   }
@@ -3135,8 +3185,8 @@ if (!process.env.VITEST) {
   // Handle stdin EOF (pipe closed)
   process.stdin.on("end", () => shutdown("stdin-EOF"));
 
+  // Exactly one connect: the stdio transport can only be started once, so a
+  // second call throws "already started" and the process dies before it can
+  // serve a single request.
   await server.connect(transport);
 }
-// Exactly one connect: the stdio transport can only be started once, so a
-// second call throws "already started" and the process dies before it can
-// serve a single request.

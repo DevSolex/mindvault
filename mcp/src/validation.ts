@@ -30,6 +30,7 @@
 import { parseMetadataHash, MetadataHashError, METADATA_HASH_FORMAT_HINT } from "./metadataHash.js";
 import { CATALOG_MAX_LIMIT, CATALOG_SORT_VALUES } from "./catalogFilters.js";
 import { REGISTRY_LIST_MAX_LIMIT } from "./registryPagination.js";
+import { RECEIPT_EXPORT_MAX_LIMIT } from "./receipts.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
 // ── Spec model ────────────────────────────────────────────────────────────────
@@ -216,6 +217,14 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
     confirmMainnet: CONFIRM_MAINNET,
   },
   mindvault_buy: { resourceId: RESOURCE_ID, dryRun: DRY_RUN, confirmMainnet: CONFIRM_MAINNET },
+  mindvault_export_receipts: {
+    format: { kind: "enum", values: ["json", "csv"] },
+    resourceId: { ...RESOURCE_ID, required: false },
+    network: { kind: "string", maxLength: 64 },
+    since: { kind: "string", maxLength: 64 },
+    until: { kind: "string", maxLength: 64 },
+    limit: { kind: "integer", min: 1, max: RECEIPT_EXPORT_MAX_LIMIT },
+  },
   mindvault_register_onchain: { resourceId: RESOURCE_ID, confirmMainnet: CONFIRM_MAINNET },
   mindvault_agent_status: {},
   mindvault_registry_info: {},

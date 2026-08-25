@@ -22,6 +22,12 @@ export interface ToolDefinition {
   name: string;
   description: string;
   inputSchema: ToolInputSchema;
+  /**
+   * Optional JSON Schema for the tool's structured result. Tools that declare
+   * one return their result as `structuredContent` as well as text, and MUST
+   * conform to it (MCP 2025-06-18, "Structured Content").
+   */
+  outputSchema?: Record<string, unknown>;
 }
 
 export const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -218,6 +224,54 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
       },
       required: ["resourceId"],
     },
+  },
+  {
+    name: "mindvault_export_receipts",
+    description:
+      "Export receipts for resources this agent has purchased as a schema-versioned document (JSON, or RFC 4180 CSV in the envelope's csv field). Filter by resource, network, and date range. Reports a row count and the summed USDC total, so an agent can reconcile spend without re-reading each purchase.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        format: {
+          type: "string",
+          enum: ["json", "csv"],
+          description:
+            'Output format. "json" (default) returns the receipts array; "csv" additionally renders the same rows as an RFC 4180 document in the envelope\'s csv field.',
+          examples: ["json", "csv"],
+        },
+        resourceId: {
+          type: "string",
+          description: "Export only receipts for this resource id.",
+          examples: ["cm7x8y9z", "swcn98besxpp6t1u8e77fqz3"],
+        },
+        network: {
+          type: "string",
+          description:
+            "Export only receipts settled on this x402 network id. Example: 'stellar:testnet'.",
+          examples: ["stellar:testnet", "stellar:pubnet"],
+        },
+        since: {
+          type: "string",
+          description:
+            "Inclusive lower bound on the purchase time (ISO-8601 date or timestamp; a bare date is read as midnight UTC).",
+          examples: ["2026-08-01", "2026-08-01T12:00:00Z"],
+        },
+        until: {
+          type: "string",
+          description: "Inclusive upper bound on the purchase time (ISO-8601 date or timestamp).",
+          examples: ["2026-08-31", "2026-08-31T23:59:59Z"],
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: RECEIPT_EXPORT_MAX_LIMIT,
+          description: `Max receipts to export, newest first (1–${RECEIPT_EXPORT_MAX_LIMIT}).`,
+          examples: [50, 100],
+        },
+      },
+      required: [],
+    },
+    outputSchema: RECEIPT_EXPORT_OUTPUT_SCHEMA as unknown as Record<string, unknown>,
   },
   {
     name: "mindvault_register_onchain",

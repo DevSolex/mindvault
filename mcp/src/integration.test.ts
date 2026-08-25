@@ -130,6 +130,21 @@ describe("MCP integration harness", () => {
     expect(harnessResultText(result)).toContain("newest, price_asc, price_desc, title");
   });
 
+  it("exports receipts as a structured document with an advertised schema", async () => {
+    const { tools } = await harness.listTools();
+    const exportTool = tools.find((t) => t.name === "mindvault_export_receipts");
+    expect(exportTool).toBeDefined();
+    expect((exportTool as { outputSchema?: unknown }).outputSchema).toBeDefined();
+
+    const result = await harness.callTool("mindvault_export_receipts", { format: "csv" });
+    expect(harnessIsToolError(result)).toBe(false);
+    const parsed = JSON.parse(harnessResultText(result));
+    expect(parsed.schema).toBe("mindvault.receipt-export/v1");
+    expect(parsed.currency).toBe("USDC");
+    expect(typeof parsed.csv).toBe("string");
+    expect(parsed.csv.split("\r\n")[0]).toContain("resourceId,title,amount");
+  });
+
   it("returns deterministic Error: results for unknown tools and missing wallet", async () => {
     const unknown = await harness.callTool("mindvault_not_a_real_tool");
     expect(unknown.isError).toBe(true);

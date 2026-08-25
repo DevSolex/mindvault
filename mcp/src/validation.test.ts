@@ -38,6 +38,7 @@ const VALID_CALLS: Record<string, Record<string, unknown>> = {
     externalUrl: "https://example.com/data.json",
   },
   mindvault_buy: { resourceId: "res-001" },
+  mindvault_export_receipts: {},
   mindvault_register_onchain: { resourceId: "res-001" },
   mindvault_agent_status: {},
   mindvault_registry_info: {},
@@ -424,5 +425,29 @@ describe("catalog filter arguments", () => {
     expect(Object.keys(TOOL_ARGUMENT_SPECS.mindvault_browse).sort()).toEqual(
       Object.keys(TOOL_ARGUMENT_SPECS.mindvault_search).sort(),
     );
+  });
+});
+
+describe("mindvault_export_receipts arguments", () => {
+  it("accepts the documented filters", () => {
+    expect(() =>
+      validateToolArgs("mindvault_export_receipts", {
+        format: "csv",
+        resourceId: "res-001",
+        network: "stellar:testnet",
+        since: "2026-08-01",
+        until: "2026-08-31",
+        limit: 50,
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects a format it cannot produce", () => {
+    const err = expectInvalid("mindvault_export_receipts", { format: "xml" });
+    expect(err.issues[0].code).toBe("not_in_enum");
+  });
+
+  it("rejects a limit outside the supported range", () => {
+    expect(expectInvalid("mindvault_export_receipts", { limit: 0 }).issues).toHaveLength(1);
   });
 });
