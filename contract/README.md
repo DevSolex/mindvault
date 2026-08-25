@@ -122,6 +122,152 @@ Two roles sit alongside the per-resource `creator` and the pre-existing admin:
 - **admin** — set via `nominate_new_admin` (see above). Can grant/revoke the verifier role (`add_verifier`/`remove_verifier`) and repair the pagination index (`repair_index`). Cannot mutate any resource's price, metadata, listing, tags, or ownership.
 - **verifier** — zero or more addresses granted by the admin. Can only call `set_verification_status`. Cannot touch price, metadata, listing, tags, ownership, or the admin/verifier role list itself.
 
+### Role management flows
+
+This section documents the end-to-end lifecycle for each role, including edge
+cases and error paths. All flows are covered by tests in `src/test.rs`.
+
+#### Admin bootstrap
+
+The very first call to `nominate_new_admin` bootstraps the admin directly:
+
+```
+Caller (new_admin) ──nominate_new_admin(A)──► Admin = A
+```
+
+- **Auth**: `new_admin` must authorize the call (`require_auth`).
+- **Event**: `setadmin` with `new_admin`.
+- **No accept step** — the caller becomes admin immediately.
+
+#### Admin transfer (two-step rotation)
+
+Once an admin exists, all subsequent nominations follow a two-step protocol:
+
+```
+Admin ──nominate_new_admin(B)──► PendingAdmin = B
+B      ──accept_admin(B)──────► Admin = B, PendingAdmin cleared
+```
+
+- **Step 1 (nominate)**: Only the current admin may call. Emits `nomadmin`. Errors
+  `SameAdmin` if `B` is already the current admin. Errors `PendingAdminAlreadySet`
+  if a previous nomination is still pending (no overlapping nominations).
+- **Step 2 (accept)**: Only the pending admin may call. Emits `accadmin`. Errors
+  `PendingAdminNotSet` if the caller does not match the pending nomination.
+
+#### Verifier grant and revoke
+
+Admins control the verifier list:
+
+```
+Admin ──add_verifier(V)────► Verifier(V) = true
+Admin ──remove_verifier(V)─► Verifier(V) = false
+```
+
+- **Auth**: Only the admin may call. Errors `AdminNotSet` if no admin exists.
+- **Events**: `addverif` / `rmverif`.
+- Multiple verifiers may be active simultaneously.
+- `is_verifier(address)` is a public read-only query; no auth required.
+
+#### Verification status update
+
+A verifier transitions a resource's on-chain verification status:
+
+```
+Verifier ──set_verification_status(id, V, status)──► Resource.verified = status
+```
+
+- **Auth**: The verifier address must authorize.
+- **Allowed transitions**: `Pending→Verified`, `Pending→Rejected`,
+  `Verified→Rejected`, `Rejected→Verified`.
+- **Disallowed**: self-transitions, reverting to `Pending`.
+- **Errors**: `NotVerifier` (caller has no verifier role or role was revoked),
+  `InvalidVerificationTransition`.
+- **Event**: `verify` with `(old_status, new_status)`.
+
+#### Complete flow example
+
+```
+1. nominate_new_admin(A)          → Admin = A          (bootstrap)
+2. add_verifier(V1)               → V1 is verifier
+3. add_verifier(V2)               → V2 is verifier
+4. register(creator, "abc", ...)  → Resource "abc", status = Pending
+5. V1 set_verification_status("abc", V1, Verified)
+                                  → Resource "abc", status = Verified
+6. remove_verifier(V1)            → V1 is no longer verifier
+7. V1 set_verification_status("abc", V1, Rejected)  → Err(NotVerifier)
+8. nominate_new_admin(B)          → PendingAdmin = B
+9. B accept_admin(B)              → Admin = B
+10. B remove_verifier(V2)         → V2 is no longer verifier
+```
+
+### Verifier status query pagination design
+
+The on-chain registry currently exposes `list`, `list_page`, `list_listed`,
+and `list_by_creator` for paginated resource queries. A verifier status filter
+is a natural addition to let agents and indexers efficiently find resources in
+a specific verification state (e.g. all `Pending` resources awaiting review).
+
+#### Proposed interface
+
+```rust
+/// Paginated list of resources whose `verified` field matches `status`.
+pub fn list_by_verification_status(
+    env: Env,
+    status: VerificationStatus,
+    cursor: u32,
+    limit: u32,
+) -> CatalogPage
+```
+
+- **status**: `Pending`, `Verified`, or `Rejected`.
+- **cursor**: 0-based catalog index (same semantics as `list_page`).
+- **limit**: page size, capped at 20.
+- **Returns**: `CatalogPage { items, next_cursor }`.
+
+#### Design rationale
+
+1. **Mirrors existing pagination pattern** — uses the same cursor/limit
+   contract as `list_page` and `list_by_creator`, so clients already know how
+   to paginate.
+2. **No new storage** — the filter is applied at read time by scanning the
+   index. The index already stores all registered resource ids in insertion
+   order; verification status is read from each `Resource` entry. For the
+   current registry size (<10k resources), a linear scan is acceptable.
+3. **If scale demands it** — a secondary index keyed by `(VerificationStatus, u32)`
+   can be introduced later without changing the public API, only the
+   internal implementation. The `CatalogPage` return type stays the same.
+4. **Three-valued filter** — exposing `Pending` is important for verifiers
+   who want a review queue. `Verified` and `Rejected` help auditors and
+   consumers verify the provenance of listed resources.
+
+#### Implementation notes
+
+- The method iterates the insertion-order index (from `cursor`) and collects
+  up to `limit` resources whose `verified` field matches `status`.
+- Resources are filtered out of the count — `next_cursor` always reflects the
+  absolute catalog position, so successive pages resume correctly.
+- No new events are emitted; this is a read-only query.
+
+#### Client usage
+
+```typescript
+// Fetch the first page of Pending resources for a review queue.
+const page = await client.list_by_verification_status(
+  VerificationStatus.Pending,
+  0, // cursor
+  20, // limit
+);
+
+// Fetch next page.
+if (page.next_cursor !== null) {
+  const next = await client.list_by_verification_status(
+    VerificationStatus.Pending,
+    page.next_cursor,
+    20,
+  );
+}
+```
+
 ### Error codes
 
 | Code | Error                    | Description                                                           |
