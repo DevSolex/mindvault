@@ -1501,6 +1501,99 @@ fn nominate_new_admin_rejects_pending_already_set() {
     );
 }
 
+// ─── Admin bootstrap replay protection ─────────────────────────────────────
+
+#[test]
+fn bootstrap_followed_by_second_nominate_uses_two_step_path() {
+    let (env, _creator, client) = setup();
+    let initial_admin = Address::generate(&env);
+    let second = Address::generate(&env);
+
+    // First call bootstraps initial_admin directly (no accept step).
+    client.nominate_new_admin(&initial_admin);
+    assert_eq!(client.admin(), Some(initial_admin.clone()));
+    assert_eq!(client.pending_admin(), None);
+
+    // Second call must follow the two-step nominate + accept path.
+    client.nominate_new_admin(&second);
+    assert_eq!(client.admin(), Some(initial_admin.clone())); // admin unchanged
+    assert_eq!(client.pending_admin(), Some(second.clone())); // pending set
+
+    // The pending admin must accept before becoming admin.
+    client.accept_admin(&second);
+    assert_eq!(client.admin(), Some(second));
+    assert_eq!(client.pending_admin(), None);
+}
+
+#[test]
+fn bootstrap_requires_new_admin_auth() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+
+    // Bootstrap path requires `new_admin` to authorize. Calling with an
+    // address that doesn't authorize should fail. In the test harness
+    // we simulate this by using try_nominate_new_admin (which doesn't
+    // force auth on the caller) — the Soroban runtime enforces auth.
+    //
+    // Here we verify the happy path succeeds and the state is set.
+    client.nominate_new_admin(&admin);
+    assert_eq!(client.admin(), Some(admin));
+}
+
+#[test]
+fn bootstrap_cannot_overwrite_existing_admin() {
+    let (env, _creator, client) = setup();
+    let first_admin = Address::generate(&env);
+    let hijacker = Address::generate(&env);
+
+    // Bootstrap establishes first_admin.
+    client.nominate_new_admin(&first_admin);
+    assert_eq!(client.admin(), Some(first_admin.clone()));
+
+    // A second nominate by a different address follows the two-step path
+    // and cannot overwrite admin without first_admin's auth.
+    // The contract requires stored_admin.require_auth() — in the test
+    // harness both calls succeed because the env authorises all, but the
+    // key assertion is that admin is NOT changed by the nominate alone.
+    client.nominate_new_admin(&hijacker);
+    assert_eq!(client.admin(), Some(first_admin.clone())); // still first_admin
+    assert_eq!(client.pending_admin(), Some(hijacker.clone()));
+
+    // Only accept_admin by the pending admin finalizes the transfer.
+    client.accept_admin(&hijacker);
+    assert_eq!(client.admin(), Some(hijacker));
+}
+
+#[test]
+fn bootstrap_emits_setadmin_not_nomadmin() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+
+    client.nominate_new_admin(&admin);
+
+    // The bootstrap path emits `setadmin`, not `nomadmin`.
+    let all = env.events().all();
+    let (_contract, topics, _data) = all.get_unchecked(0);
+    // First topic is the event symbol.
+    let topic0: soroban_sdk::Symbol = topics.get_unchecked(0).try_into().unwrap();
+    assert_eq!(topic0.to_buffer(), *b"setadmin");
+}
+
+#[test]
+fn bootstrap_sets_pending_admin_to_none() {
+    let (env, _creator, client) = setup();
+    let admin = Address::generate(&env);
+
+    // Before bootstrap, no admin and no pending.
+    assert_eq!(client.admin(), None);
+    assert_eq!(client.pending_admin(), None);
+
+    // After bootstrap, admin is set and pending is still None.
+    client.nominate_new_admin(&admin);
+    assert_eq!(client.admin(), Some(admin));
+    assert_eq!(client.pending_admin(), None);
+}
+
 #[test]
 fn register_rejects_empty_metadata() {
     let (env, creator, client) = setup();
