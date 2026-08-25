@@ -93,6 +93,7 @@ import {
   describeTimeouts,
   fetchWithTimeout,
   resolveTimeouts,
+  resolveUserAgent,
   withTimeout,
   type TimeoutService,
 } from "./httpTimeout.js";
@@ -168,6 +169,15 @@ initAuditLogging(process.env);
 // outbound requests go through `httpFetch`, which is the mock shim in this mode
 // and the global fetch otherwise.
 const MOCK = mockEnabledFromEnv(process.env);
+/** Live mock-mode check — reads process.env at call time so tests can toggle it. */
+function _isMock(): boolean {
+  return mockEnabledFromEnv(process.env);
+}
+/** Test helper: override mock mode without restarting the process. */
+export function _setMockMode(on: boolean): void {
+  if (on) process.env.MINDVAULT_MOCK = "1";
+  else delete process.env.MINDVAULT_MOCK;
+}
 // In real mode, defer to the global `fetch` at call time (not a captured
 // reference) so a test-stubbed global is still honoured.
 const httpFetch: typeof fetch = MOCK
@@ -180,6 +190,10 @@ const TIMEOUTS = resolveTimeouts(process.env);
 
 // Bounded, jittered retry for idempotent calls only. Payments never use it.
 const RETRY_POLICY = retryPolicyFromEnv(process.env);
+
+// User-Agent sent on every outbound HTTP request. Configurable via
+// MINDVAULT_USER_AGENT; defaults to "mindvault-mcp/1.0.0".
+const USER_AGENT = resolveUserAgent(process.env);
 
 /**
  * Retry chatter goes to stderr so operators can see transient failures being
@@ -208,8 +222,12 @@ function httpRetryOptions(label: string) {
  * is retried; the JSON-RPC method name is part of the log label.
  */
 function sorobanRpcFetch(init: RequestInit, label: string): Promise<Response> {
+  const initWithUA: RequestInit = {
+    ...init,
+    headers: { "User-Agent": USER_AGENT, ...(init.headers as Record<string, string> | undefined) },
+  };
   return withRetry(
-    () => fetchWithTimeout(httpFetch, SOROBAN_RPC_URL, init, "soroban", TIMEOUTS.soroban),
+    () => fetchWithTimeout(httpFetch, SOROBAN_RPC_URL, initWithUA, "soroban", TIMEOUTS.soroban),
     httpRetryOptions(label),
   );
 }
@@ -389,9 +407,13 @@ async function checkDependency(
   url: string,
   init?: RequestInit,
 ): Promise<DependencyStatus> {
+  const initWithUA: RequestInit = {
+    ...init,
+    headers: { "User-Agent": USER_AGENT, ...(init?.headers as Record<string, string> | undefined) },
+  };
   try {
     const res = await withRetry(
-      () => fetchWithTimeout(httpFetch, url, init, "http", TIMEOUTS.http),
+      () => fetchWithTimeout(httpFetch, url, initWithUA, "http", TIMEOUTS.http),
       httpRetryOptions(`health:${name}`),
     );
     if (res.ok) {
@@ -622,6 +644,7 @@ async function jsonFetch(
     typeof init?.body === "string" ? init.body : init?.body ? JSON.stringify(init.body) : undefined;
   const baseHeaders: Record<string, string> = {
     "Content-Type": "application/json",
+    "User-Agent": USER_AGENT,
     ...(init?.headers as Record<string, string> | undefined),
   };
   const headers = signMutatingHeaders(url, method, baseHeaders, body);
@@ -723,7 +746,7 @@ async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
         fetchWithTimeout(
           httpFetch,
           `${HORIZON_URL}/accounts/${publicKey}`,
-          undefined,
+          { headers: { "User-Agent": USER_AGENT } },
           "horizon",
           TIMEOUTS.horizon,
         ),
@@ -838,7 +861,7 @@ async function getAccountBalances(
       fetchWithTimeout(
         httpFetch,
         `${HORIZON_URL}/accounts/${publicKey}`,
-        undefined,
+        { headers: { "User-Agent": USER_AGENT } },
         "horizon",
         TIMEOUTS.horizon,
       ),
@@ -1648,7 +1671,7 @@ export function usdcToStroops(usdc: string): bigint {
 
 export async function updateMetadata(resourceId: string, metadata: string): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockUpdateMetadata(resourceId, metadata);
+  if (_isMock()) return mockUpdateMetadata(resourceId, metadata);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -1727,7 +1750,7 @@ export async function updateMetadata(resourceId: string, metadata: string): Prom
 
 export async function setPrice(resourceId: string, price: string): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockSetPrice(resourceId, price);
+  if (_isMock()) return mockSetPrice(resourceId, price);
 
   const stroops = usdcToStroops(price);
 
@@ -1808,7 +1831,7 @@ export async function setPrice(resourceId: string, price: string): Promise<strin
 
 export async function transferOwnership(resourceId: string, newCreator: string): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockTransferOwnership(resourceId, newCreator);
+  if (_isMock()) return mockTransferOwnership(resourceId, newCreator);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -1887,7 +1910,7 @@ export async function transferOwnership(resourceId: string, newCreator: string):
 
 export async function setListed(resourceId: string, listed: boolean): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockSetListed(resourceId, listed);
+  if (_isMock()) return mockSetListed(resourceId, listed);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -1965,7 +1988,7 @@ export async function setListed(resourceId: string, listed: boolean): Promise<st
 }
 
 export async function registryLookup(resourceId: string): Promise<string> {
-  if (MOCK) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
+  if (_isMock()) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -2047,7 +2070,7 @@ export async function registryLookup(resourceId: string): Promise<string> {
  * Data comes from Soroban, not the MindVault API catalog.
  */
 export async function registryList(start: number, limit: number): Promise<string> {
-  if (MOCK) return mockRegistryList(start, limit, REGISTRY_CONTRACT_ID);
+  if (_isMock()) return mockRegistryList(start, limit, REGISTRY_CONTRACT_ID);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -2350,7 +2373,7 @@ export function networkProfile(): string {
  * note when the contract/RPC is unreachable).
  */
 async function checkBindings(): Promise<string> {
-  if (MOCK) return "Mock mode: contract binding check skipped (no live RPC).";
+  if (_isMock()) return "Mock mode: contract binding check skipped (no live RPC).";
   const result = await checkContractBindings({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -2402,20 +2425,21 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
     throw new UnknownToolError(name);
   }
 
-  const args: ValidatedArgs = name in TOOL_ARGUMENT_SPECS ? validateToolArgs(name, rawArgs) : {};
-
-  assertMainnetMutationAllowed(
-    NETWORK,
-    name,
-    typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
-      ? (rawArgs as Record<string, unknown>)
-      : undefined,
-  );
-
   const rawRecord =
     typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
       ? (rawArgs as Record<string, unknown>)
       : {};
+
+  // For dry-run calls on publish and buy the user intentionally passes invalid
+  // inputs to inspect structured validation feedback.  Skip the gateway check
+  // and let dryRunPublish / dryRunBuy produce the per-field result instead.
+  const isDryRunCall =
+    (name === "mindvault_publish" || name === "mindvault_buy") && rawRecord.dryRun === true;
+
+  const args: ValidatedArgs =
+    name in TOOL_ARGUMENT_SPECS && !isDryRunCall ? validateToolArgs(name, rawArgs) : {};
+
+  assertMainnetMutationAllowed(NETWORK, name, rawRecord);
 
   switch (name) {
     case "mindvault_setup_wallet":
