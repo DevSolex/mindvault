@@ -3117,8 +3117,7 @@ if (!process.env.VITEST) {
   process.stdin.on("end", () => shutdown("stdin-EOF"));
 
   await server.connect(transport);
-  await await await server.connect(transport);
-
-  // Setup graceful shutdown
-  setupGracefulShutdown(server, transport, console.log);
 }
+// Exactly one connect: the stdio transport can only be started once, so a
+// second call throws "already started" and the process dies before it can
+// serve a single request.
