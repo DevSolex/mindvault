@@ -88,6 +88,7 @@ import { safeErrorMessage, safeLog } from "./redaction.js";
 import { signMutatingHeaders } from "./requestSignature.js";
 import { exportState, restoreState, checkStatePermissions } from "./stateBackup.js";
 import { formatResetPreview, isResetConfirmed, type ResetScope } from "./resetGuard.js";
+import { verifyInstall, formatVerifyInstall } from "./verifyInstall.js";
 import {
   describeTimeouts,
   fetchWithTimeout,
@@ -2499,6 +2500,8 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
       });
     case "mindvault_rotate_publisher_key":
       return rotatePublisherKey(optionalString(args, "profile"));
+    case "mindvault_verify_install":
+      return formatVerifyInstall(verifyInstall(process.env));
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -2984,6 +2987,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    {
+      name: "mindvault_verify_install",
+      description:
+        "Verify the MindVault MCP server is installed and configured correctly. Checks Node.js version (>=20), network settings, URL variables, vault-registry contract ID, and warns about plaintext secrets in the environment. No network calls are made — all checks are local. Run this first when setting up a new agent or diagnosing a configuration problem.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
   ],
 }));
 
@@ -3087,5 +3096,5 @@ if (!process.env.VITEST) {
   await await await server.connect(transport);
 
   // Setup graceful shutdown
-  setupGracefulShutdown(server, transport, console.log);;
+  setupGracefulShutdown(server, transport, console.log);
 }

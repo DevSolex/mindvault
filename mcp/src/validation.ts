@@ -260,6 +260,7 @@ export const TOOL_ARGUMENT_SPECS: Record<string, ToolArgumentSpec> = {
     profile: PROFILE_NAME,
     confirmMainnet: CONFIRM_MAINNET,
   },
+  mindvault_verify_install: {},
 };
 
 // ── Errors ────────────────────────────────────────────────────────────────────
