@@ -114,6 +114,7 @@ import {
   mcpError,
   throwHttpError,
   isTimeoutError,
+  type CredentialContext,
   type ErrorSource,
 } from "./errorMapping.js";
 import { parseMetadataHash } from "./metadataHash.js";
@@ -565,6 +566,7 @@ async function rotatePublisherKey(profileArg?: string): Promise<string> {
       source: "api",
       status: res.status,
       data: res.data,
+      credential: publisherCredential(target),
     });
   }
 
@@ -693,6 +695,17 @@ function requireWallet(): AgentWallet {
     );
   }
   return wallet;
+}
+
+/**
+ * Identify the publisher credential a request is about to carry.
+ *
+ * Passed to the error mapper so a 401 on an API-key call reports the stored key
+ * as revoked — naming the profile it came from — instead of the generic
+ * "credentials are missing" advice that fits an unregistered agent.
+ */
+function publisherCredential(profile: string = activeProfileName): CredentialContext {
+  return { kind: "publisher_api_key", profile };
 }
 
 function requireApiKey(): string {
@@ -1328,6 +1341,7 @@ async function publish(args: {
       source: "api",
       status: createRes.status,
       data: createRes.data,
+      credential: publisherCredential(),
     });
   const resource = createRes.data;
 
@@ -1568,13 +1582,16 @@ export async function registerOnchain(resourceId: string): Promise<string> {
       source: "api",
       status: prep.status,
       data: prep.data,
+      credential: publisherCredential(),
     });
+    // 401/403 are left to the mapper: it knows whether the stored publisher key
+    // was rejected outright or accepted but unauthorized here, and names the
+    // profile to fix. Repeating a generic ownership line here would bury that.
     const specific = [
       prep.status === 400 ? "The resource must be verified before it can be registered." : null,
       prep.status === 409
         ? "The resource is already registered on-chain — no action needed."
         : null,
-      prep.status === 403 ? "This resource is owned by a different publisher." : null,
     ].filter(Boolean);
     throw mcpError({
       ...mapped,
@@ -1609,6 +1626,7 @@ export async function registerOnchain(resourceId: string): Promise<string> {
       source: "api",
       status: submit.status,
       data: submit.data,
+      credential: publisherCredential(),
     });
     throw mcpError({
       ...mapped,
