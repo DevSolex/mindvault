@@ -791,6 +791,10 @@ impl VaultRegistry {
     /// Does not modify `metadata` (the off-chain content pointer).
     /// Tags are normalized to lowercase ASCII before storage; the normalized
     /// form is what gets indexed and returned from `list_by_tag`.
+    ///
+    /// No-op guard: if the normalized `tags` are identical to the resource's
+    /// current tags (same values, same order), the call succeeds without
+    /// touching storage or emitting a `settags` event.
     pub fn set_tags(env: Env, id: String, tags: Vec<String>) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
@@ -798,6 +802,10 @@ impl VaultRegistry {
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
+
+        if resource.tags == norm_tags {
+            return Ok(());
+        }
 
         // Capture previous tags before replacement for event emission and index
         let prev_tags = resource.tags.clone();
