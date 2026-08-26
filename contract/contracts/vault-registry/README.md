@@ -11,18 +11,151 @@ see [`contract/README.md`](../../README.md).
 
 ## Constants quick-reference
 
-| Symbol       | Value         | Notes                                              |
-|--------------|---------------|----------------------------------------------------|
-| Testnet contract ID | `CDQKUIADLO5S5WEHEUTTXX2M45WAHVRU2PBEBD6ZGDKMOP5A72FJ3OD4` | Soroban testnet |
-| Soroban RPC  | `https://soroban-testnet.stellar.org` |                            |
-| 1 USDC       | `10_000_000` stroops | `price` field uses 7 decimal places          |
-| 0.10 USDC    | `1_000_000` stroops  |                                              |
-| Max price    | `1_000_000_000_000_000_000` stroops | 1 trillion USDC       |
-| Max metadata | 512 bytes     | Must start with a supported prefix (see below)     |
-| Max tags     | 8             | Each max 32 bytes, normalized to lowercase ASCII   |
+| Symbol              | Value                                                      | Notes                                            |
+| ------------------- | ---------------------------------------------------------- | ------------------------------------------------ |
+| Testnet contract ID | `CDQKUIADLO5S5WEHEUTTXX2M45WAHVRU2PBEBD6ZGDKMOP5A72FJ3OD4` | Soroban testnet                                  |
+| Soroban RPC         | `https://soroban-testnet.stellar.org`                      |                                                  |
+| 1 USDC              | `10_000_000` stroops                                       | `price` field uses 7 decimal places              |
+| 0.10 USDC           | `1_000_000` stroops                                        |                                                  |
+| Max price           | `1_000_000_000_000_000_000` stroops                        | 1 trillion USDC                                  |
+| Max metadata        | 512 bytes                                                  | Must start with a supported prefix (see below)   |
+| Max tags            | 8                                                          | Each max 32 bytes, normalized to lowercase ASCII |
 
 **Metadata pointer prefixes accepted:** `ipfs://`, `ar://`, `https://`,
 `http://`, `sha256:`, `sha-256:`, `0x`.
+
+---
+
+## Storage TTL threshold constants
+
+Soroban charges rent for stored data and **archives** any entry whose
+time-to-live (TTL) reaches zero. An archived entry is not lost, but it stops
+being readable until someone pays to restore it — a registered resource would
+simply stop resolving. The registry defends against that by re-extending the
+TTL of every entry it touches.
+
+Three constants in [`src/lib.rs`](src/lib.rs) define that policy:
+
+| Constant             | Value     | In time  | Meaning                                                     |
+| -------------------- | --------- | -------- | ----------------------------------------------------------- |
+| `DAY_IN_LEDGERS`     | `17_280`  | ~1 day   | Ledgers per day at Stellar's ~5-second close time.          |
+| `BUMP_AMOUNT`        | `518_400` | ~30 days | The TTL an entry is extended **to** when it is bumped.      |
+| `LIFETIME_THRESHOLD` | `501_120` | ~29 days | Bump only once the remaining TTL has fallen **below** this. |
+
+All three are private to the crate — they are policy, not API. Clients read the
+resulting TTL from the ledger rather than recomputing it.
+
+### How a bump works
+
+Every storage touch goes through one of two helpers, both of which call
+Soroban's `extend_ttl(threshold, extend_to)`:
+
+- `bump_persistent(key)` — for a single persistent entry (a resource, a tag
+  index, a creator's resource list, a payment receipt).
+- `bump_instance()` — for the contract's instance storage (admin, verifier and
+  moderator roles, fee config, network id).
+
+`extend_ttl` is conditional: it extends the entry to `BUMP_AMOUNT` **only if**
+the remaining TTL is already below `LIFETIME_THRESHOLD`. Because the two differ
+by exactly `DAY_IN_LEDGERS`, an entry written and then read again within the
+same day is not re-extended — the bump is a no-op and costs nothing. Past that
+first day, any touch resets the entry to a full ~30 days.
+
+### What this means in practice
+
+- **Writes always bump.** `register`, `set_price`, `update_metadata`,
+  `set_tags`, `set_listed`, `transfer_ownership`, `record_payment` and the rest
+  all extend the entries they write, so an actively-maintained resource is never
+  archived.
+- **Reads bump too.** `get`, `get_owner`, `exists_many`, `list`, `list_by_tag`
+  and `get_payment_receipt` extend the entries they return. A resource that is
+  merely popular stays alive without its creator doing anything.
+- **A cold resource has ~30 days.** An entry that is neither read nor written
+  for `BUMP_AMOUNT` ledgers is archived and stops resolving.
+- **A creator can top up on demand.** `extend_resource_ttl(creator, id)` bumps a
+  resource's entry without changing it, and emits a `ttlext` event. Only the
+  current owner may call it.
+
+### Changing these values
+
+`LIFETIME_THRESHOLD` must stay below `BUMP_AMOUNT`; if they were equal, every
+single read would rewrite the TTL and pay rent for no benefit. Raising
+`BUMP_AMOUNT` raises the rent each write pays, and both are bounded by the
+network's `max_entry_ttl` setting — a bump beyond that ceiling is rejected by
+the host, so the contract would stop accepting writes entirely. Change them
+together, and re-run `cargo test` in `contract/`: the TTL tests assert the
+observed on-ledger TTL against these constants.
+
+---
+
+## Contract version compatibility
+
+The registry reports two independent versions, and they answer different
+questions. Read both with one call:
+
+```bash
+stellar contract invoke --id $CONTRACT --rpc-url $RPC \
+  --network-passphrase "Test SDF Network ; September 2015" \
+  -- contract_version
+# { "crate_version": "0.0.0", "resource_schema_version": 5 }
+```
+
+| Field                     | Source                    | Changes when                                                           |
+| ------------------------- | ------------------------- | ---------------------------------------------------------------------- |
+| `crate_version`           | `CARGO_PKG_VERSION`       | Any release of the crate — including bug fixes and internal refactors. |
+| `resource_schema_version` | `RESOURCE_SCHEMA_VERSION` | The on-chain `Resource` struct changes shape.                          |
+
+**Only `resource_schema_version` affects whether your client still decodes
+correctly.** A `crate_version` bump on its own is always safe to ignore;
+`registry_info` returns the same two values alongside the registry name and the
+network id.
+
+`Resource` also carries its own `schema_version` field, so an entry read from
+the ledger states the shape it was written in without a second call.
+
+### `Resource` schema history
+
+Only two bumps are recorded in the source: **v2** added `tags`, and **v4** added
+`dispute_flag`. The changes behind v1, v3 and v5 were never written down. Any
+future bump should add a row here, naming the field that changed:
+
+| Schema version | Change                                                    |
+| -------------- | --------------------------------------------------------- |
+| 2              | Added `tags` — discovery labels, normalized to lowercase. |
+| 4              | Added `dispute_flag` — moderator dispute state.           |
+| 5              | Current value of `RESOURCE_SCHEMA_VERSION`.               |
+
+### What is and is not a breaking change
+
+Compatible — deployed clients keep working without changes:
+
+- A new **method** on the contract. Existing calls are unaffected.
+- A new **`DataKey` variant**. Existing entries keep their own keys, and nothing
+  that reads them changes.
+- A new **error code**, appended to the end of the enum. A client that does not
+  recognise a code should report it rather than assume a meaning.
+
+Breaking — clients must be updated, and stored state may need migrating:
+
+- **Any change to the fields of `Resource`** — adding, removing, renaming, or
+  retyping one. A `#[contracttype]` struct is encoded as a map keyed by field
+  name and decoded strictly, so a decoder built for one field set will not read
+  a value written with another. This is what `RESOURCE_SCHEMA_VERSION` is for:
+  bump it, and regenerate the bindings.
+- **Renaming a `DataKey` variant.** Variants are encoded by name, so a rename
+  makes every entry written under the old name unreachable — the data is still
+  on the ledger, but nothing looks for it any more. The storage-key migration
+  tests in [`src/test.rs`](src/test.rs) fail on this deliberately.
+- **Reusing an existing error code** for a different condition. Callers that
+  branch on the numeric code will silently take the wrong branch.
+
+### Checking compatibility before and after a deploy
+
+Call `contract_version` against the deployed contract before upgrading and
+again afterwards. If `resource_schema_version` changed, regenerate the client
+bindings (`pnpm contract:bindings`) and update any code that decodes
+`Resource` before pointing clients at the new deployment. The full sequence is
+in [`docs/contract-upgrade-checklist.md`](../../../docs/contract-upgrade-checklist.md).
 
 ---
 
@@ -577,15 +710,15 @@ assert_eq!(
 
 `price` is always in **USDC stroops** (7 decimal places, same as the USDC SAC):
 
-| Human amount | Stroops value  |
-|--------------|----------------|
-| $0.01 USDC   | `100_000`      |
-| $0.05 USDC   | `500_000`      |
-| $0.10 USDC   | `1_000_000`    |
-| $0.50 USDC   | `5_000_000`    |
-| $1.00 USDC   | `10_000_000`   |
-| $5.00 USDC   | `50_000_000`   |
-| $10.00 USDC  | `100_000_000`  |
+| Human amount | Stroops value |
+| ------------ | ------------- |
+| $0.01 USDC   | `100_000`     |
+| $0.05 USDC   | `500_000`     |
+| $0.10 USDC   | `1_000_000`   |
+| $0.50 USDC   | `5_000_000`   |
+| $1.00 USDC   | `10_000_000`  |
+| $5.00 USDC   | `50_000_000`  |
+| $10.00 USDC  | `100_000_000` |
 
 ---
 

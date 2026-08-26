@@ -424,6 +424,39 @@ if (page.next_cursor !== null) {
 | `44` | `InvalidReceiptId`              | `receipt_id` is empty or exceeds `MAX_RECEIPT_ID_LEN` (64 bytes).                       |
 | `45` | `ContentHashTooLong`            | `content_hash` exceeds `MAX_CONTENT_HASH_LEN` (128 bytes).                              |
 
+### Resource ID format and reserved words
+
+A resource `id` is a short, URL-safe string chosen at registration time. It is
+permanent — the same id cannot be reused even after a resource is tombstoned.
+
+**Format rules** (checked by `validate_resource_id`):
+
+- Length: 1 – `MAX_RESOURCE_ID_LEN` (24) bytes (inclusive).
+- Allowed characters: ASCII lowercase letters (`a–z`) and ASCII digits (`0–9`).
+  Uppercase letters, hyphens, underscores, dots, and all other bytes are
+  rejected with `InvalidResourceId`.
+- The cuid2 generator (used by the server and MCP layer) produces ids that
+  always satisfy these rules.
+
+**Reserved words** (checked by `is_reserved_id`, case-insensitive):
+
+| Reserved word | Reason                                                |
+| ------------- | ----------------------------------------------------- |
+| `admin`       | Collides with the admin role and admin-endpoint path. |
+| `null`        | Ambiguous null/empty sentinel in query parameters.    |
+| `registry`    | Matches the contract/registry route prefix.           |
+| `api`         | Reserved route prefix for the server API.             |
+| `index`       | Conflicts with the root/index route.                  |
+| `root`        | Reserved for potential root-level resource routing.   |
+| `system`      | Reserved for internal system-level endpoints.         |
+
+An attempt to register any of these words (in any capitalisation, e.g. `Admin`,
+`NULL`, `REGISTRY`) returns `ReservedId` (error code 16).
+
+The reserved-word check is separate from `validate_resource_id`: an id can be
+well-formed (all lowercase letters/digits, within length) and still be rejected
+for colliding with a reserved word. Client code must handle both errors.
+
 ### Events
 
 All events use the topic `(symbol, id)` for resource-scoped actions, or
@@ -587,15 +620,15 @@ separate config lookup. It always succeeds; there is no error case.
 
 ### Deployment network guard
 
-| Constant                   | Value                        | Description                                                           |
-| -------------------------- | ---------------------------- | --------------------------------------------------------------------- |
-| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.                      |
-| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.                    |
-| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash in bytes.                 |
-| `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).                      |
-| `LIST_PAGE_CAP`            | `20`                         | Maximum items returned per page by all `list*` calls.                 |
-| `RESOURCE_SCHEMA_VERSION`  | `6`                          | Current `Resource` schema version (`metadata_frozen_at` added in v6). |
-| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.                            |
+| Constant                   | Value                        | Description                                           |
+| -------------------------- | ---------------------------- | ----------------------------------------------------- |
+| `MAX_METADATA_POINTER_LEN` | `512`                        | Maximum length of the metadata pointer in bytes.      |
+| `MAX_TERMS_HASH_LEN`       | `64`                         | Maximum length of the creator terms hash in bytes.    |
+| `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash in bytes. |
+| `MAX_PRICE`                | `1_000_000_000_000_000_000`  | Maximum price in USDC stroops (1 trillion USDC).      |
+| `LIST_PAGE_CAP`            | `20`                         | Maximum items returned per page by all `list*` calls. |
+| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2). |
+| `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.            |
 
 Before a deployment is used, call
 `initialize_network(env.ledger().network_id())` once. The contract records the
@@ -622,7 +655,7 @@ must require an explicit deployment guard.
 | `MAX_TX_HASH_LEN`          | `128`                        | Maximum length of a payment receipt tx hash, in bytes.                                                                                       |
 | `MAX_PRICE`                | `10^18`                      | Maximum price, in USDC stroops.                                                                                                              |
 | `LIST_PAGE_CAP`            | `20`                         | Maximum items returned per page by all `list*` calls.                                                                                        |
-| `RESOURCE_SCHEMA_VERSION`  | `6`                          | Current `Resource` schema version (`metadata_frozen_at` added in v6).                                                                        |
+| `RESOURCE_SCHEMA_VERSION`  | `2`                          | Current `Resource` schema version (tags added in v2).                                                                                        |
 | `REGISTRY_NAME`            | `"mindvault-vault-registry"` | Stable name returned by `registry_info()`.                                                                                                   |
 | Constant                   | Value                        | Description                                                                                                                                  |
 | -------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |

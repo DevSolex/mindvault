@@ -34,6 +34,11 @@ const MAX_TAGS: u32 = 8;
 /// Maximum price in USDC stroops (6 decimals). Represents 1 trillion USDC.
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
 const MAX_TAG_LEN: u32 = 32;
+/// Maximum byte length of a resource id (1–`MAX_RESOURCE_ID_LEN` ASCII
+/// lowercase letters/digits). Ids that exceed this are rejected with
+/// `InvalidResourceId`. The cuid2 generator always produces ids within this
+/// bound.
+pub const MAX_RESOURCE_ID_LEN: u32 = 24;
 /// Maximum number of items returned per page by `list`, `list_page`,
 /// `list_listed`, and `list_by_creator`. Centralised here so the cap is
 /// easy to find, document, and change in a single place instead of
@@ -99,6 +104,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("exists_many", "—"),
     ("get_owner", "—"),
     ("count", "—"),
+    ("listed_count", "—"),
     ("creator_resource_count", "—"),
     // ── Paginated catalog ─────────────────────────────────────────────────
     ("list", "—"),
@@ -493,6 +499,8 @@ pub enum DataKey {
     FeeConfig,
     Moderator(Address),
     DisputeFlag(String),
+    /// Number of resources currently in the Listed state.
+    ListedCount,
     /// Hash of a moderator's off-chain dispute reason writeup for a resource,
     /// set via `set_flag_reason_hash`. Independent of `FlagReason` (a fixed
     /// enum code): this carries a digest of free-form detail a moderator
@@ -988,6 +996,13 @@ impl VaultRegistry {
     }
 
     /// Cancel a proposed transfer. Only the current owner can call this.
+    ///
+    /// Self-cancel protection: `cancel_transfer` requires the caller to be the
+    /// current `resource.creator`. After `accept_transfer` completes the
+    /// pending-transfer entry is removed and ownership moves to the new
+    /// creator, so any subsequent `cancel_transfer` call by either party
+    /// returns `NoPendingTransfer` — an accepted transfer can never be
+    /// reversed through this path.
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
@@ -998,6 +1013,20 @@ impl VaultRegistry {
         if !env.storage().persistent().has(&key) {
             return Err(Error::NoPendingTransfer);
         }
+
+        // Self-cancel guard: the pending recipient cannot be the same address
+        // as the current creator. This is structurally enforced by
+        // `propose_transfer` (`AlreadyOwner`), but we verify here so
+        // `cancel_transfer` remains safe even if called from an unusual path.
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NoPendingTransfer)?;
+        if pending == resource.creator {
+            return Err(Error::AlreadyOwner);
+        }
+
         env.storage().persistent().remove(&key);
         env.events()
             .publish((symbol_short!("cancel"), id), resource.creator);
@@ -1479,6 +1508,11 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Number of resources currently in the Listed state.
+    pub fn listed_count(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::ListedCount).unwrap_or(0)
     }
 
     /// Store the intended network identifier once. The supplied ID must match
@@ -2305,7 +2339,7 @@ impl VaultRegistry {
         Self::validate_bounded_string(
             id,
             1,
-            24,
+            MAX_RESOURCE_ID_LEN,
             Error::InvalidResourceId,
             Error::InvalidResourceId,
         )?;
@@ -2365,6 +2399,20 @@ impl VaultRegistry {
             || starts_with(b"sha-256:")
             || starts_with(b"0x")
         {
+            // Enforce that sha256-prefixed pointers carry a 64-hex-char digest.
+            let sha256_prefix_len = if starts_with(b"sha-256:") { 8 } else { 7 };
+            if starts_with(b"sha256:") || starts_with(b"sha-256:") {
+                let hex_part = &buf[sha256_prefix_len..];
+                if hex_part.len() != 64 {
+                    return Err(Error::InvalidMetadataPointer);
+                }
+                // All characters in the hex part must be valid hex digits.
+                for &b in hex_part {
+                    if !matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F') {
+                        return Err(Error::InvalidMetadataPointer);
+                    }
+                }
+            }
             Ok(())
         } else {
             Err(Error::InvalidMetadataPointer)
@@ -2467,9 +2515,32 @@ impl VaultRegistry {
     }
 
     fn transition_state(env: &Env, resource: &mut Resource, next: ResourceState) {
+        let was_listed = resource.state == ResourceState::Listed;
+        let becomes_listed = next == ResourceState::Listed;
         resource.state = next;
-        resource.listed = next == ResourceState::Listed;
+        resource.listed = becomes_listed;
         Self::save(env, resource);
+        // Maintain the listed count index.
+        if !was_listed && becomes_listed {
+            Self::bump_listed_count(env, 1);
+        } else if was_listed && !becomes_listed {
+            Self::bump_listed_count(env, -1);
+        }
+    }
+
+    /// Adjust the listed-count index by a signed delta. Panics on underflow
+    /// (should never happen in production because the delta is always paired
+    /// with a prior state check).
+    fn bump_listed_count(env: &Env, delta: i32) {
+        let current: u32 = env.storage().instance().get(&DataKey::ListedCount).unwrap_or(0);
+        let next = if delta > 0 {
+            current.checked_add(delta as u32).expect("listed count overflow")
+        } else {
+            current
+                .checked_sub(delta.unsigned_abs())
+                .expect("listed count underflow")
+        };
+        env.storage().instance().set(&DataKey::ListedCount, &next);
     }
 
     fn require_current_admin(env: &Env, admin: &Address) -> Result<(), Error> {
@@ -2791,6 +2862,9 @@ impl VaultRegistry {
         env.storage().persistent().set(&key, &resource);
         Self::bump_persistent(&env, &key);
 
+        // New resources start Listed — track in the listed count index.
+        Self::bump_listed_count(&env, 1);
+
         let count: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let idx_key = DataKey::Index(count);
         env.storage().persistent().set(&idx_key, &id);
@@ -2828,8 +2902,16 @@ impl VaultRegistry {
     }
 }
 
+// The TTL policy constants are private (they are policy, not API), so the tests
+// reach them through these aliases. See `contracts/vault-registry/README.md`
+// ("Storage TTL threshold constants") for what each one means.
+#[cfg(test)]
+pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;
 #[cfg(test)]
 pub(crate) const TTL_BUMP_AMOUNT: u32 = BUMP_AMOUNT;
+#[cfg(test)]
+pub(crate) const TTL_LIFETIME_THRESHOLD: u32 = LIFETIME_THRESHOLD;
+
 #[cfg(test)]
 pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;
 
