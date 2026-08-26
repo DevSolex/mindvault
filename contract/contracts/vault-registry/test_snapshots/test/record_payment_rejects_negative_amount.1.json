@@ -56,7 +56,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "payr10"
+                  "string": "payrneg"
                 },
                 {
                   "i128": {
@@ -127,7 +127,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "payr10"
+                      "string": "payrneg"
                     }
                   ]
                 }
@@ -174,7 +174,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "payr10"
+                  "string": "payrneg"
                 }
               }
             },
@@ -193,7 +193,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "payr10"
+                  "string": "payrneg"
                 }
               ]
             },
@@ -213,7 +213,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "payr10"
+                      "string": "payrneg"
                     }
                   ]
                 },
@@ -267,7 +267,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "payr10"
+                        "string": "payrneg"
                       }
                     },
                     {
@@ -288,6 +288,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_frozen_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -302,7 +308,7 @@
                         "symbol": "schema_version"
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 6
                       }
                     },
                     {

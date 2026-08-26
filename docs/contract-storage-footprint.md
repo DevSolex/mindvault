@@ -2,7 +2,7 @@
 
 `vault-registry` writes to Soroban's persistent and instance storage on almost
 every call. Soroban charges rent per ledger entry and archives entries whose
-TTL lapses, so the *shape* of what the contract stores is an operational cost
+TTL lapses, so the _shape_ of what the contract stores is an operational cost
 that outlives any single transaction — and, unlike WASM size, nothing in CI
 measured it.
 
@@ -55,10 +55,10 @@ baseline for comparing one revision of the contract against another.
 
 Aggregates, which are the numbers that scale with usage:
 
-| Operation                                                   | Bytes | Budget |
-| ----------------------------------------------------------- | ----: | -----: |
+| Operation                                                         | Bytes | Budget |
+| ----------------------------------------------------------------- | ----: | -----: |
 | One max-size registration (`Resource` + `Index` + one `TagIndex`) |  1728 |   1900 |
-| One payment (`PaymentReceipt` + `PaymentIndex`)              |   756 |    850 |
+| One payment (`PaymentReceipt` + `PaymentIndex`)                   |   756 |    850 |
 
 A registration with all 8 tags writes 8 `TagIndex` entries, one per tag, plus
 the `CreatorResources` and `CreatorCount` updates — the aggregate above counts
@@ -100,5 +100,6 @@ quietly raising rent. When growth is intended:
 
 Related: [`contract-upgrade-checklist.md`](contract-upgrade-checklist.md) for
 the deployment steps a storage-shape change implies, and the WASM size budget
-in [`contract/Makefile`](../contract/Makefile), which covers code size rather
-than storage.
+in
+[`contract/contracts/vault-registry/Makefile`](../contract/contracts/vault-registry/Makefile),
+which covers code size rather than storage.

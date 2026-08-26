@@ -413,6 +413,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_frozen_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -427,7 +435,7 @@
                         "symbol": "schema_version"
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 6
                       }
                     },
                     {

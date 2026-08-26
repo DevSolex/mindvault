@@ -90,7 +90,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "rcptread"
+                  "string": "rcptpausedread"
                 },
                 {
                   "string": "pausedread"
@@ -125,7 +125,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                 },
                 {
-                  "string": "rcptread"
+                  "string": "rcptpausedread"
                 },
                 {
                   "string": "pausedread"
@@ -402,7 +402,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "rcptread"
+                  "string": "rcptpausedread"
                 }
               }
             },
@@ -421,7 +421,7 @@
                   "symbol": "PaymentReceipt"
                 },
                 {
-                  "string": "rcptread"
+                  "string": "rcptpausedread"
                 }
               ]
             },
@@ -441,7 +441,7 @@
                       "symbol": "PaymentReceipt"
                     },
                     {
-                      "string": "rcptread"
+                      "string": "rcptpausedread"
                     }
                   ]
                 },
@@ -461,6 +461,14 @@
                     },
                     {
                       "key": {
+                        "symbol": "ledger"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "payer"
                       },
                       "val": {
@@ -472,7 +480,7 @@
                         "symbol": "receipt_id"
                       },
                       "val": {
-                        "string": "rcptread"
+                        "string": "rcptpausedread"
                       }
                     },
                     {
@@ -625,6 +633,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_frozen_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -639,7 +653,7 @@
                         "symbol": "schema_version"
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 6
                       }
                     },
                     {

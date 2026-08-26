@@ -414,6 +414,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_frozen_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -428,7 +434,7 @@
                         "symbol": "schema_version"
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 6
                       }
                     },
                     {
@@ -593,6 +599,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_frozen_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -607,7 +619,7 @@
                         "symbol": "schema_version"
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 6
                       }
                     },
                     {
@@ -772,6 +784,12 @@
                     },
                     {
                       "key": {
+                        "symbol": "metadata_frozen_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
                         "symbol": "price"
                       },
                       "val": {
@@ -786,7 +804,7 @@
                         "symbol": "schema_version"
                       },
                       "val": {
-                        "u32": 5
+                        "u32": 6
                       }
                     },
                     {
