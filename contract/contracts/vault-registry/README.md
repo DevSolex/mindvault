@@ -102,6 +102,11 @@ stellar contract invoke \
   --id $CONTRACT --rpc-url $RPC --network-passphrase "Test SDF Network ; September 2015" \
   -- list_by_tag --tag dataset --start 0 --limit 20
 
+# Resources with an active moderator dispute flag
+stellar contract invoke \
+  --id $CONTRACT --rpc-url $RPC --network-passphrase "Test SDF Network ; September 2015" \
+  -- list_by_dispute_status --flagged true --start 0 --limit 20
+
 # How many resources does a creator currently own?
 stellar contract invoke \
   --id $CONTRACT --rpc-url $RPC --network-passphrase "Test SDF Network ; September 2015" \
@@ -164,6 +169,9 @@ stellar contract invoke \
   --id $CONTRACT --rpc-url $RPC --network-passphrase "Test SDF Network ; September 2015" \
   --source my-identity \
   -- freeze_metadata --id swcn98besxpp6t1u8e77fqz3
+
+# The resulting Resource has frozen = true and metadata_frozen_at set to the
+# ledger sequence of the successful freeze_metadata call.
 
 # Transfer ownership immediately
 stellar contract invoke \
