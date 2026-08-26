@@ -647,6 +647,21 @@ mirror, metadata freeze, and index repair merged. If genuine feature additions
 push past it, raise `MAX_SIZE` in `.github/workflows/contract-ci.yml` and
 explain the growth in your PR description.
 
+### Storage footprint
+
+The WASM budget above covers code size; it says nothing about what the contract
+*stores*, which is what Soroban charges rent for. The
+`storage_footprint_report` test measures the XDR size of every ledger entry
+class the registry writes and fails when one grows past its budget:
+
+```bash
+cd contracts/vault-registry && make footprint
+```
+
+See [`docs/contract-storage-footprint.md`](../docs/contract-storage-footprint.md)
+for the current table, per-operation aggregates, and the procedure for raising
+a budget deliberately.
+
 ### Emergency pause
 
 The contract supports an admin-controlled emergency pause via `set_paused(admin, bool)`.

@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "x8z8"
+                  "string": "yn6v1oa8h6h028axc92gc"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 852629849727
+                    "lo": 575357518168
                   }
                 },
                 {
-                  "string": "ipfs:///c"
+                  "string": "ipfs://2_kG_.95\\\\_w\\\\.6tpx.fY9_\\\\_ae\\\\N/TGr\\\\_8/C\\\\_o_yL:LJ_SrQ\\\\rer\\\\_v_\\\\\\\\l_\\\\/hCb7melnf_O_xLr.mjR\\\\xPTe_lDMf\\\\c_"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "x8z8"
+                  "string": "yn6v1oa8h6h028axc92gc"
                 },
                 {
-                  "string": "https://S4ahH9G_m\\\\1Q_gb_t5O_:L__c37P\\\\p_/eHGZ.S_\\\\Qwggy\\\\eH20Ovd.xbG\\\\/_CY09/e6\\\\\\\\g\\\\T:P_\\\\ANM_Yg8CPa\\\\Ev\\\\ud6y7\\\\Of\\\\kxH_\\\\wtzESY"
+                  "string": "https:///8\\\\P_g\\\\M0E.\\\\h\\\\0y_::_R_ukX0627\\\\K.xmX\\\\G6_15_\\\\g\\\\S/hJ\\\\5l\\\\/Uc_v\\\\69O\\\\_Pq7f\\\\_.J"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "x8z8"
+                  "string": "yn6v1oa8h6h028axc92gc"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 693574486529
+                    "lo": 91693335249
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "x8z8"
+                  "string": "yn6v1oa8h6h028axc92gc"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "x8z8"
+                      "string": "yn6v1oa8h6h028axc92gc"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "x8z8"
+                  "string": "yn6v1oa8h6h028axc92gc"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "x8z8"
+                  "string": "yn6v1oa8h6h028axc92gc"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "x8z8"
+                      "string": "yn6v1oa8h6h028axc92gc"
                     }
                   ]
                 },
@@ -301,7 +301,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "x8z8"
+                        "string": "yn6v1oa8h6h028axc92gc"
                       }
                     },
                     {
@@ -309,7 +309,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": false
+                        "bool": true
                       }
                     },
                     {
@@ -317,7 +317,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://S4ahH9G_m\\\\1Q_gb_t5O_:L__c37P\\\\p_/eHGZ.S_\\\\Qwggy\\\\eH20Ovd.xbG\\\\/_CY09/e6\\\\\\\\g\\\\T:P_\\\\ANM_Yg8CPa\\\\Ev\\\\ud6y7\\\\Of\\\\kxH_\\\\wtzESY"
+                        "string": "https:///8\\\\P_g\\\\M0E.\\\\h\\\\0y_::_R_ukX0627\\\\K.xmX\\\\G6_15_\\\\g\\\\S/hJ\\\\5l\\\\/Uc_v\\\\69O\\\\_Pq7f\\\\_.J"
                       }
                     },
                     {
@@ -327,7 +327,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 693574486529
+                          "lo": 91693335249
                         }
                       }
                     },
@@ -346,7 +346,7 @@
                       "val": {
                         "vec": [
                           {
-                            "symbol": "Delisted"
+                            "symbol": "Listed"
                           }
                         ]
                       }

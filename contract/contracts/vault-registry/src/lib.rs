@@ -455,6 +455,7 @@ pub struct CatalogPage {
 }
 
 #[contracttype]
+#[derive(Clone)]
 pub enum DataKey {
     Resource(String),
     Count,

@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "36qo6pgq9f2"
+                  "string": "p425bb"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 990777587827
+                    "lo": 416688849029
                   }
                 },
                 {
-                  "string": "ipfs://MmO_4C_\\\\8ZAt_e\\\\.\\\\V2F\\\\k\\\\5sGe\\\\R76L2\\\\"
+                  "string": "ipfs://\\\\\\\\l5:vMFF5\\\\F9M_nHp_0FJ\\\\QNZ2vMgpx\\\\yTCb.AL:6\\\\pv\\\\_"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "36qo6pgq9f2"
+                  "string": "p425bb"
                 },
                 {
-                  "string": "https://_z\\\\G.uNh1__:oOfc\\\\2-_o\\\\O8\\\\1\\\\OspLum\\\\\\\\U\\\\:216jsQfSY:_nrN/\\\\Ly1\\\\d_BP7lB._J9L:/6_Tm47F_:B-\\\\.MT\\\\8\\\\rnQ\\\\t_5u\\\\wd\\\\j\\\\\\\\EI.x/_U.eFHF__2\\\\h.G"
+                  "string": "https://r:70z.SZ2_C3ZXX_C\\\\xf\\\\V_yD\\\\\\\\__NQEc1_M/J9\\\\h\\\\fH\\\\g4s:whs:O\\\\:/Ippsm._lZ/:VSK5a_zphsoL.__02U7g_Q\\\\8\\\\I\\\\"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "36qo6pgq9f2"
+                  "string": "p425bb"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 616901115174
+                    "lo": 309982749940
                   }
                 }
               ]
@@ -99,7 +99,7 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "36qo6pgq9f2"
+                  "string": "p425bb"
                 },
                 {
                   "bool": false
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "36qo6pgq9f2"
+                      "string": "p425bb"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "36qo6pgq9f2"
+                  "string": "p425bb"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "36qo6pgq9f2"
+                  "string": "p425bb"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "36qo6pgq9f2"
+                      "string": "p425bb"
                     }
                   ]
                 },
@@ -301,7 +301,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "36qo6pgq9f2"
+                        "string": "p425bb"
                       }
                     },
                     {
@@ -317,7 +317,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://_z\\\\G.uNh1__:oOfc\\\\2-_o\\\\O8\\\\1\\\\OspLum\\\\\\\\U\\\\:216jsQfSY:_nrN/\\\\Ly1\\\\d_BP7lB._J9L:/6_Tm47F_:B-\\\\.MT\\\\8\\\\rnQ\\\\t_5u\\\\wd\\\\j\\\\\\\\EI.x/_U.eFHF__2\\\\h.G"
+                        "string": "https://r:70z.SZ2_C3ZXX_C\\\\xf\\\\V_yD\\\\\\\\__NQEc1_M/J9\\\\h\\\\fH\\\\g4s:whs:O\\\\:/Ippsm._lZ/:VSK5a_zphsoL.__02U7g_Q\\\\8\\\\I\\\\"
                       }
                     },
                     {
@@ -327,7 +327,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 616901115174
+                          "lo": 309982749940
                         }
                       }
                     },

@@ -24,6 +24,11 @@ clean:
 # See docs/contract-upgrade-checklist.md for the full deployment checklist,
 # including network, contract ID, and client binding regeneration steps that
 # cannot be automated here.
+# Print the storage footprint report (see docs/contract-storage-footprint.md).
+# The same test also enforces the per-entry budgets during `make test`.
+footprint:
+	cargo test storage_footprint_report -- --nocapture
+
 preflight:
 	@echo "==> [1/3] Running tests..."
 	cargo test
@@ -43,4 +48,4 @@ preflight:
 	cargo build --release --target wasm32-unknown-unknown --no-default-features
 	@echo "==> preflight passed."
 
-.PHONY: default all test build fmt clean preflight
+.PHONY: default all test build fmt clean footprint preflight
