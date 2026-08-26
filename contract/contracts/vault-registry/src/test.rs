@@ -583,6 +583,98 @@ fn cancel_transfer_event_contains_owner() {
     assert_eq!(owner, creator);
 }
 
+// ── Self-cancel protection for accepted transfers (#637) ─────────────────────
+
+/// After `accept_transfer` completes the pending-transfer entry is removed.
+/// Any subsequent `cancel_transfer` call must return `NoPendingTransfer`
+/// regardless of who calls it — an accepted transfer can never be reversed
+/// through `cancel_transfer`.
+#[test]
+fn cancel_after_accept_returns_no_pending_transfer() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "selfcancel1");
+    let new_owner = Address::generate(&env);
+
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &new_owner);
+    client.accept_transfer(&id);
+
+    // Ownership has moved; pending key was removed inside accept_transfer.
+    // Either the old or new owner calling cancel_transfer must get NoPendingTransfer.
+    assert_eq!(
+        client.try_cancel_transfer(&id),
+        Err(Ok(Error::NoPendingTransfer))
+    );
+}
+
+/// The original owner (now dispossessed) cannot cancel the transfer after it
+/// has been accepted — they are no longer `resource.creator` and therefore
+/// fail `require_auth` before even reaching the pending-key check.
+#[test]
+fn original_owner_cannot_cancel_after_accept() {
+    let env = Env::default();
+    let contract_id = env.register(VaultRegistry, ());
+    let client = VaultRegistryClient::new(&env, &contract_id);
+    let creator = Address::generate(&env);
+    let new_owner = Address::generate(&env);
+
+    env.mock_all_auths();
+    let id = String::from_str(&env, "selfcancel2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &new_owner);
+    client.accept_transfer(&id);
+
+    // Resource is now owned by new_owner. Attempting cancel returns NoPendingTransfer
+    // because the pending entry was cleared during acceptance.
+    assert_eq!(
+        client.try_cancel_transfer(&id),
+        Err(Ok(Error::NoPendingTransfer))
+    );
+
+    // Confirm ownership has moved
+    assert_eq!(client.get(&id).creator, new_owner);
+}
+
+/// Verifies that the new owner can propose and then cancel a NEW transfer
+/// after accepting the initial one — only the original accepted transfer
+/// is protected, not future proposals by the new owner.
+#[test]
+fn new_owner_can_propose_and_cancel_new_transfer_after_acceptance() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "selfcancel3");
+    let new_owner = Address::generate(&env);
+    let third_party = Address::generate(&env);
+
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    client.propose_transfer(&id, &new_owner);
+    client.accept_transfer(&id);
+
+    // new_owner is now the creator and may propose a new transfer and cancel it
+    client.propose_transfer(&id, &third_party);
+    client.cancel_transfer(&id);
+
+    // After cancellation ownership is still with new_owner
+    assert_eq!(client.get(&id).creator, new_owner);
+}
+
 #[test]
 fn set_listed_toggles_listing_state() {
     let (env, creator, client) = setup();
@@ -5087,6 +5179,21 @@ fn record_payment_empty_receipt_id_fails() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr9");
     let payer = Address::generate(&env);
+    let empty_receipt_id = String::from_str(&env, "");
+    let res = client.try_record_payment(
+        &settler,
+        &empty_receipt_id,
+        &id,
+        &payer,
+        &1_000_000i128,
+        &String::from_str(&env, "0xtxhash"),
+    );
+    assert_eq!(
+        res,
+        Err(Ok(Error::InvalidReceiptId)),
+        "empty receipt_id must be rejected with InvalidReceiptId"
+    );
+}
 
 /// record_payment accepts a tx_hash exactly at MAX_TX_HASH_LEN.
 #[test]
