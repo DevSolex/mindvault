@@ -7,11 +7,17 @@ use soroban_sdk::{
     testutils::{
         storage::Persistent as _, Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke,
     },
-    Address, BytesN, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
+    Address, BytesN, Env, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
     let key = DataKey::Resource(id.clone());
+    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+}
+
+/// Live TTL of the persistent entry holding the payment receipt `receipt_id`.
+fn payment_receipt_ttl(env: &Env, contract: &soroban_sdk::Address, receipt_id: &String) -> u32 {
+    let key = DataKey::PaymentReceipt(receipt_id.clone());
     env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
 }
 
@@ -96,7 +102,7 @@ fn register_event_contains_full_resource_payload() {
         if t0 != Symbol::new(&env, "register") {
             continue;
         }
-        let resource: RegisterEvent =
+        let event: RegisterEvent =
             <RegisterEvent as TryFromVal<Env, Val>>::try_from_val(&env, &data)
                 .ok()
                 .unwrap();
@@ -1575,8 +1581,8 @@ fn bootstrap_emits_setadmin_not_nomadmin() {
     let all = env.events().all();
     let (_contract, topics, _data) = all.get_unchecked(0);
     // First topic is the event symbol.
-    let topic0: soroban_sdk::Symbol = topics.get_unchecked(0).try_into().unwrap();
-    assert_eq!(topic0.to_buffer(), *b"setadmin");
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get_unchecked(0)).unwrap();
+    assert_eq!(topic0, symbol_short!("setadmin"));
 }
 
 #[test]
@@ -2668,6 +2674,22 @@ fn register_rejects_duplicate_normalized_tags_with_case_variants() {
     let id = String::from_str(&env, "tagdup");
     let metadata = String::from_str(&env, "ipfs://m");
 
+    // "ML" and "ml" normalize to the same tag and must be rejected outright.
+    assert_eq!(
+        client.try_register(
+            &creator,
+            &id,
+            &100i128,
+            &metadata,
+            &tags(&env, &["ML", "ml"])
+        ),
+        Err(Ok(Error::InvalidTag))
+    );
+    assert!(!client.exists(&id), "rejected register must not persist");
+
+    // A single spelling registers and lands in the index exactly once.
+    client.register(&creator, &id, &100i128, &metadata, &tags(&env, &["ML"]));
+
     let result = client.list_by_tag(&String::from_str(&env, "ml"), &0u32, &20u32);
     assert_eq!(
         result.len(),
@@ -3422,6 +3444,16 @@ fn full_workflow_emits_exactly_the_documented_events() {
         &String::from_str(&env, "sha256anchor"),
     ); // -> "anchor"
     record(&env, &client, &mut observed);
+
+    // Re-anchoring the same (resource, buyer) pair is rejected — the
+    // reporting variant records that as an event instead of reverting.
+    assert!(!client.attempt_anchor_purchase_receipt(
+        &verifier,
+        &r0,
+        &buyer,
+        &String::from_str(&env, "sha256anchor2"),
+    )); // -> "anchrfail"
+    record(&env, &client, &mut observed);
     client.remove_verifier(&verifier); // -> "rmverif"
     record(&env, &client, &mut observed);
 
@@ -3441,13 +3473,29 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.repair_tag_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "retagidx"
     record(&env, &client, &mut observed);
 
+    let settler = Address::generate(&env);
+    client.add_settler(&settler); // -> "addsettlr"
+    record(&env, &client, &mut observed);
+
     let payer = Address::generate(&env);
+    let workflow_receipt = String::from_str(&env, "wfrcpt1");
     client.record_payment(
+        &settler,
+        &workflow_receipt,
         &r0,
         &payer,
-        &String::from_str(&env, "txhash123"),
         &1_000_000i128,
-    ); // -> "payrec"
+        &String::from_str(&env, "txhash123"),
+    ); // -> "payment"
+    record(&env, &client, &mut observed);
+    client.settle_payment(&settler, &workflow_receipt); // -> "settle"
+    record(&env, &client, &mut observed);
+    client.remove_settler(&settler); // -> "rmsettlr"
+    record(&env, &client, &mut observed);
+
+    client.set_paused(&admin2, &true); // -> "pause"
+    record(&env, &client, &mut observed);
+    client.set_paused(&admin2, &false);
     record(&env, &client, &mut observed);
 
     // Moderator role and dispute flagging (#389).
@@ -3661,6 +3709,106 @@ fn tombstoned_resource_is_not_discoverable_by_tag_but_stays_auditable() {
     assert_eq!(all.get(0).unwrap().id, id);
 }
 
+// ── Listing index cleanup on tombstone ──────────────────────────────────────
+//
+// Tombstoning is terminal, so the derived listing indexes must not keep
+// pointing at a retired resource. The tag index was already purged; these
+// tests pin the creator index and `creator_resource_count` to the same rule,
+// and pin the two indexes that deliberately are *not* touched (the canonical
+// `Resource` entry, and the monotonic `Index`/`Count` catalog pair).
+
+#[test]
+fn tombstone_removes_resource_from_creator_index() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let kept = register_default(&env, &creator, &client, "tombkeep");
+    let doomed = register_default(&env, &creator, &client, "tombgone");
+
+    assert_eq!(client.list_by_creator(&creator, &0u32, &20u32).len(), 2);
+
+    client.tombstone_resource(&doomed, &admin);
+
+    let listed = client.list_by_creator(&creator, &0u32, &20u32);
+    assert_eq!(
+        listed.len(),
+        1,
+        "tombstoned resources must not surface in list_by_creator"
+    );
+    assert_eq!(listed.get(0).unwrap().id, kept);
+}
+
+#[test]
+fn tombstone_decrements_creator_resource_count() {
+    let (env, creator, admin, client) = setup_with_admin();
+    register_default(&env, &creator, &client, "tombcnt1");
+    let doomed = register_default(&env, &creator, &client, "tombcnt2");
+    assert_eq!(client.creator_resource_count(&creator), 2);
+
+    client.tombstone_resource(&doomed, &admin);
+
+    assert_eq!(
+        client.creator_resource_count(&creator),
+        1,
+        "creator_resource_count must not count retired resources"
+    );
+}
+
+#[test]
+fn tombstone_leaves_global_catalog_index_intact() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "tombcat1");
+    let b = register_default(&env, &creator, &client, "tombcat2");
+
+    client.tombstone_resource(&a, &admin);
+
+    // `Count` is monotonic and `list` stays an audit view over every id ever
+    // registered — only the discovery indexes are pruned.
+    assert_eq!(client.count(), 2, "count() must stay monotonic");
+    let all = client.list(&0u32, &20u32);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all.get(0).unwrap().id, a);
+    assert_eq!(all.get(1).unwrap().id, b);
+    assert!(client.exists(&a));
+}
+
+#[test]
+fn tombstone_cleans_the_current_owner_index_after_transfer() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "tombxfer");
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.creator_resource_count(&new_owner), 1);
+    assert_eq!(client.creator_resource_count(&creator), 0);
+
+    client.tombstone_resource(&id, &admin);
+
+    assert_eq!(
+        client.list_by_creator(&new_owner, &0u32, &20u32).len(),
+        0,
+        "the index cleaned must be the current owner's, not the original creator's"
+    );
+    assert_eq!(client.creator_resource_count(&new_owner), 0);
+    assert_eq!(
+        client.creator_resource_count(&creator),
+        0,
+        "the previous owner's count must not go negative"
+    );
+}
+
+#[test]
+fn tombstone_index_cleanup_leaves_other_creators_untouched() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let other = Address::generate(&env);
+    let mine = register_default(&env, &creator, &client, "tombmine");
+    let theirs = register_default(&env, &other, &client, "tombtheir");
+
+    client.tombstone_resource(&mine, &admin);
+
+    assert_eq!(client.creator_resource_count(&other), 1);
+    let listed = client.list_by_creator(&other, &0u32, &20u32);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.get(0).unwrap().id, theirs);
+}
+
 #[test]
 fn tombstoned_resource_blocks_creator_mutations_deterministically() {
     let (env, creator, admin, client) = setup_with_admin();
@@ -3824,6 +3972,111 @@ fn verification_status_on_missing_resource_fails() {
 }
 
 // ─── Metadata freeze (#438) ────────────────────────────────────────────────
+
+/// `METHOD_SCHEMA` in lib.rs is the single source of truth for the contract's
+/// exported API surface. `contract/README.md`'s Methods table must document
+/// exactly those entries — no stale rows, no undocumented methods.
+#[test]
+fn readme_methods_table_matches_method_schema() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("contract/README.md must be readable from the vault-registry crate");
+
+    let methods_section = readme
+        .split("### Methods")
+        .nth(1)
+        .expect("contract/README.md must have a `### Methods` section")
+        .split("### Roles")
+        .next()
+        .expect("`### Methods` section must be followed by `### Roles`");
+
+    let documented: std::vec::Vec<&str> = methods_section
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("| `")?;
+            let end = rest.find(|c| c == '(' || c == '`')?;
+            Some(&rest[..end])
+        })
+        .collect();
+
+    for (name, _auth) in METHOD_SCHEMA {
+        assert!(
+            documented.contains(name),
+            "METHOD_SCHEMA lists `{name}` but contract/README.md's Methods table \
+             does not document it — update the table to match lib.rs::METHOD_SCHEMA"
+        );
+    }
+
+    for name in &documented {
+        assert!(
+            METHOD_SCHEMA.iter().any(|(method, _)| method == name),
+            "contract/README.md documents method `{name}` but it is not in \
+             lib.rs::METHOD_SCHEMA — either the doc is stale or METHOD_SCHEMA is \
+             missing an entry"
+        );
+    }
+
+    assert_eq!(
+        documented.len(),
+        METHOD_SCHEMA.len(),
+        "contract/README.md's Methods table row count must match METHOD_SCHEMA's \
+         length exactly (no duplicate or missing rows)"
+    );
+}
+
+/// `ERROR_SCHEMA` in lib.rs is the single source of truth for error codes.
+/// `contract/README.md`'s Error codes table must document exactly those codes,
+/// with matching discriminants and names.
+#[test]
+fn readme_error_codes_table_matches_error_schema() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("contract/README.md must be readable from the vault-registry crate");
+
+    let errors_section = readme
+        .split("### Error codes")
+        .nth(1)
+        .expect("contract/README.md must have an `### Error codes` section")
+        .split("### Events")
+        .next()
+        .expect("`### Error codes` section must be followed by `### Events`");
+
+    let documented: std::vec::Vec<(u32, &str)> = errors_section
+        .lines()
+        .filter_map(|line| {
+            let mut cells = line.trim().split('|').map(str::trim);
+            cells.next()?; // leading empty cell
+            let code = cells.next()?.trim_matches('`').parse::<u32>().ok()?;
+            let name = cells.next()?.trim_matches('`');
+            Some((code, name))
+        })
+        .collect();
+
+    for (code, name, _desc) in ERROR_SCHEMA {
+        assert!(
+            documented.contains(&(*code, name)),
+            "ERROR_SCHEMA lists `{code}`/`{name}` but contract/README.md's Error \
+             codes table does not document it — update the table to match \
+             lib.rs::ERROR_SCHEMA"
+        );
+    }
+
+    for (code, name) in &documented {
+        assert!(
+            ERROR_SCHEMA
+                .iter()
+                .any(|(schema_code, schema_name, _)| schema_code == code && schema_name == name),
+            "contract/README.md documents error `{code}`/`{name}` but it is not in \
+             lib.rs::ERROR_SCHEMA — either the doc is stale or ERROR_SCHEMA is \
+             missing an entry"
+        );
+    }
+
+    assert_eq!(
+        documented.len(),
+        ERROR_SCHEMA.len(),
+        "contract/README.md's Error codes table row count must match \
+         ERROR_SCHEMA's length exactly (no duplicate or missing rows)"
+    );
+}
 
 #[test]
 fn event_schema_matches_documented_readme_table() {
@@ -4456,10 +4709,7 @@ fn contract_version_crate_version_is_valid_semver() {
     v.crate_version.copy_into_slice(&mut buf);
     let version_str = alloc::str::from_utf8(&buf).expect("crate_version must be valid UTF-8");
 
-    assert!(
-        !version_str.is_empty(),
-        "crate_version must not be empty"
-    );
+    assert!(!version_str.is_empty(), "crate_version must not be empty");
 
     // Must contain at least two dots (MAJOR.MINOR.PATCH).
     let dot_count = version_str.chars().filter(|&c| c == '.').count();
@@ -4471,20 +4721,18 @@ fn contract_version_crate_version_is_valid_semver() {
 
     // Every segment must be a non-empty string of ASCII digits or digits+pre-release.
     let parts: alloc::vec::Vec<&str> = version_str.splitn(3, '.').collect();
-    assert_eq!(parts.len(), 3, "crate_version must have exactly 3 dot-separated parts");
+    assert_eq!(
+        parts.len(),
+        3,
+        "crate_version must have exactly 3 dot-separated parts"
+    );
     assert!(
         parts[0].chars().all(|c| c.is_ascii_digit()),
         "MAJOR segment '{}' must be numeric",
         parts[0]
     );
-    assert!(
-        !parts[0].is_empty(),
-        "MAJOR segment must not be empty"
-    );
-    assert!(
-        !parts[1].is_empty(),
-        "MINOR segment must not be empty"
-    );
+    assert!(!parts[0].is_empty(), "MAJOR segment must not be empty");
+    assert!(!parts[1].is_empty(), "MINOR segment must not be empty");
 }
 
 /// `registry_info()` must return the stable registry name that clients use
@@ -4546,9 +4794,15 @@ fn exists_many_mixed_present_and_absent() {
 
     let result = client.exists_many(&ids);
     assert_eq!(result.len(), 3);
-    assert!(result.get(0).unwrap(),  "id_a is registered — should be true");
+    assert!(
+        result.get(0).unwrap(),
+        "id_a is registered — should be true"
+    );
     assert!(!result.get(1).unwrap(), "id_b is absent — should be false");
-    assert!(result.get(2).unwrap(),  "id_c is registered — should be true");
+    assert!(
+        result.get(2).unwrap(),
+        "id_c is registered — should be true"
+    );
 }
 
 /// `exists_many` returns all-true when every id is registered.
@@ -4575,7 +4829,10 @@ fn exists_many_all_present() {
     let result = client.exists_many(&ids);
     assert_eq!(result.len(), 3);
     for i in 0..3u32 {
-        assert!(result.get(i).unwrap(), "all ids are registered — should be true");
+        assert!(
+            result.get(i).unwrap(),
+            "all ids are registered — should be true"
+        );
     }
 }
 
@@ -4591,8 +4848,14 @@ fn exists_many_invalid_id_format_treated_as_absent() {
 
     let result = client.exists_many(&ids);
     assert_eq!(result.len(), 2);
-    assert!(!result.get(0).unwrap(), "invalid-format id treated as absent");
-    assert!(!result.get(1).unwrap(), "valid-format but unregistered id is absent");
+    assert!(
+        !result.get(0).unwrap(),
+        "invalid-format id treated as absent"
+    );
+    assert!(
+        !result.get(1).unwrap(),
+        "valid-format but unregistered id is absent"
+    );
 }
 
 /// `exists_many` bumps TTL for each id that resolves to a registered resource.
@@ -4739,8 +5002,7 @@ fn registry_info_resource_schema_version_is_nonzero() {
         "resource_schema_version must be > 0 (it tracks breaking Resource schema changes)"
     );
     assert_eq!(
-        info.resource_schema_version,
-        RESOURCE_SCHEMA_VERSION,
+        info.resource_schema_version, RESOURCE_SCHEMA_VERSION,
         "registry_info().resource_schema_version must equal the RESOURCE_SCHEMA_VERSION constant"
     );
 }
@@ -4907,48 +5169,83 @@ fn anchor_purchase_receipt_requires_verifier_role() {
     );
 }
 
-/// record_payment stamps ledger from the ledger sequence at call time.
+/// record_payment stamps `recorded_at` from the ledger sequence at call time.
 #[test]
 fn record_payment_stamps_ledger_sequence() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payreclgr");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payreclgr");
 
     env.ledger().set_sequence_number(777);
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "txhash777"), &100i128);
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcptlgr"),
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "txhash777"),
+    );
 
     let receipt = client.get_payment_receipt(&id, &payer);
     assert_eq!(
-        receipt.ledger, 777,
-        "ledger must reflect env sequence at record time"
+        receipt.recorded_at, 777,
+        "recorded_at must reflect env sequence at record time"
     );
 }
 
-/// Recording a second payment for the same (resource_id, payer) pair
-/// overwrites the first — the stored value always reflects the most recent.
+/// Receipts are immutable and keyed by `receipt_id`, but the
+/// `(resource_id, payer)` index always resolves to the most recent one.
 #[test]
-fn record_payment_overwrites_previous_receipt() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecow");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
+fn record_payment_index_tracks_most_recent_receipt() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecow");
     let payer = Address::generate(&env);
 
-    client.record_payment(&id, &payer, &String::from_str(&env, "first_tx"), &500i128);
-    client.record_payment(&id, &payer, &String::from_str(&env, "second_tx"), &750i128);
+    let first = String::from_str(&env, "rcptow1");
+    let second = String::from_str(&env, "rcptow2");
+    client.record_payment(
+        &settler,
+        &first,
+        &id,
+        &payer,
+        &500i128,
+        &String::from_str(&env, "first_tx"),
+    );
+    client.record_payment(
+        &settler,
+        &second,
+        &id,
+        &payer,
+        &750i128,
+        &String::from_str(&env, "second_tx"),
+    );
+
+    // Both receipts remain individually addressable...
+    assert_eq!(client.get_payment(&first).amount, 500i128);
+    assert_eq!(client.get_payment(&second).amount, 750i128);
+    // ...but the pair index points at the latest.
+    let latest = client.get_payment_receipt(&id, &payer);
+    assert_eq!(latest.receipt_id, second);
+    assert_eq!(latest.amount, 750i128);
+}
+
+/// A receipt can only leave `Escrowed` once — settling twice fails.
+#[test]
+fn settle_payment_twice_fails() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrectw");
+    let receipt_id = String::from_str(&env, "rcpttw1");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &creator,
+        &100i128,
+        &String::from_str(&env, "0xtxtw"),
+    );
+    client.settle_payment(&settler, &receipt_id);
+    assert_eq!(client.get_payment(&receipt_id).state, PaymentState::Settled);
 
     let res = client.try_settle_payment(&settler, &receipt_id);
     assert_eq!(res, Err(Ok(Error::InvalidPaymentTransition)));
@@ -4986,7 +5283,29 @@ fn record_payment_nonexistent_resource_fails() {
     let missing = String::from_str(&env, "nosuchresource");
     let payer = Address::generate(&env);
 
-    client.record_payment(&id, &payer, &tx_hash, &amount);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptmiss"),
+        &missing,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "0xtxmiss"),
+    );
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+/// record_payment emits a `payment` event keyed by receipt id, carrying the
+/// full receipt so indexers never need a follow-up storage read.
+#[test]
+fn record_payment_emits_payment_event() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecev");
+    let payer = Address::generate(&env);
+    let receipt_id = String::from_str(&env, "rcptev1");
+    let tx_hash = String::from_str(&env, "0xtxev");
+    let amount = 4_200i128;
+
+    client.record_payment(&settler, &receipt_id, &id, &payer, &amount, &tx_hash);
 
     // env.events().all() reflects the most recent invocation
     let all = env.events().all();
@@ -4996,20 +5315,22 @@ fn record_payment_nonexistent_resource_fails() {
     assert_eq!(
         topics.len(),
         2,
-        "payrec topics should be (symbol, resource_id)"
+        "payment topics should be (symbol, receipt_id)"
     );
 
     let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(sym, symbol_short!("payrec"));
+    assert_eq!(sym, symbol_short!("payment"));
 
     let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
-    assert_eq!(topic_id, id);
+    assert_eq!(topic_id, receipt_id);
 
     let receipt: PaymentReceipt = PaymentReceipt::try_from_val(&env, &data).unwrap();
+    assert_eq!(receipt.receipt_id, receipt_id);
     assert_eq!(receipt.resource_id, id);
     assert_eq!(receipt.payer, payer);
     assert_eq!(receipt.tx_hash, tx_hash);
     assert_eq!(receipt.amount, amount);
+    assert_eq!(receipt.state, PaymentState::Escrowed);
 }
 
 #[test]
@@ -5048,7 +5369,10 @@ fn non_settler_cannot_settle_payment() {
     let res = client.try_settle_payment(&stranger, &receipt_id);
     assert_eq!(res, Err(Ok(Error::NotSettler)));
     // Receipt state must not have changed.
-    assert_eq!(client.get_payment(&receipt_id).state, PaymentState::Escrowed);
+    assert_eq!(
+        client.get_payment(&receipt_id).state,
+        PaymentState::Escrowed
+    );
 }
 
 #[test]
@@ -5076,11 +5400,18 @@ fn get_payment_missing_fails() {
 }
 
 #[test]
-fn record_payment_zero_amount_fails() {
+fn record_payment_empty_tx_hash_fails() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr7");
     let payer = Address::generate(&env);
-    let res = client.try_record_payment(&id, &payer, &String::from_str(&env, ""), &100i128);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptnotx"),
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, ""),
+    );
     assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
 }
 
@@ -5103,55 +5434,52 @@ fn record_payment_empty_receipt_id_fails() {
 /// record_payment accepts a tx_hash exactly at MAX_TX_HASH_LEN.
 #[test]
 fn record_payment_accepts_tx_hash_at_max_length() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecmaxh");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecmaxh");
     let payer = Address::generate(&env);
     let max_hash = String::from_str(&env, &"a".repeat(MAX_TX_HASH_LEN as usize));
-    client.record_payment(&id, &payer, &max_hash, &100i128);
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcptmaxh"),
+        &id,
+        &payer,
+        &100i128,
+        &max_hash,
+    );
     assert_eq!(client.get_payment_receipt(&id, &payer).tx_hash, max_hash);
 }
 
 /// record_payment errors InvalidPaymentAmount when amount is zero.
 #[test]
 fn record_payment_rejects_zero_amount() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecbadamt1");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecbadamt1");
     let payer = Address::generate(&env);
-    let res = client.try_record_payment(&id, &payer, &String::from_str(&env, "txhash"), &0i128);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptzero"),
+        &id,
+        &payer,
+        &0i128,
+        &String::from_str(&env, "txhash"),
+    );
     assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
 }
 
+/// record_payment errors InvalidPaymentAmount when amount is negative.
 #[test]
-fn record_payment_emits_payment_event() {
+fn record_payment_rejects_negative_amount() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr10");
-    let receipt_id = String::from_str(&env, "rcptevt1");
-    let tx_hash = String::from_str(&env, "0xtxevt1");
-
-    client.record_payment(
-        &settler,
-        &receipt_id,
-        &id,
-        &creator,
-        &2_000_000i128,
-        &tx_hash,
-    );
     let payer = Address::generate(&env);
-    let res = client.try_record_payment(&id, &payer, &String::from_str(&env, "txhash"), &-1i128);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptneg"),
+        &id,
+        &payer,
+        &-1i128,
+        &String::from_str(&env, "txhash"),
+    );
     assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
 }
 
@@ -5173,10 +5501,9 @@ fn settle_payment_emits_settle_event() {
 
     let all = env.events().all();
     let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol =
-        <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
-            .ok()
-            .unwrap();
+    let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+        .ok()
+        .unwrap();
     assert_eq!(t0, Symbol::new(&env, "settle"));
 
     let decoded: PaymentReceipt =
@@ -5189,19 +5516,19 @@ fn settle_payment_emits_settle_event() {
 /// Failed record_payment calls leave no receipt behind.
 #[test]
 fn failed_record_payment_does_not_store_receipt() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecfailstore");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecfailstore");
     let payer = Address::generate(&env);
 
     // Attempt with zero amount — should fail
-    let _ = client.try_record_payment(&id, &payer, &String::from_str(&env, "txhash"), &0i128);
+    let _ = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptfail"),
+        &id,
+        &payer,
+        &0i128,
+        &String::from_str(&env, "txhash"),
+    );
 
     // No receipt should be stored
     assert_eq!(
@@ -5214,20 +5541,21 @@ fn failed_record_payment_does_not_store_receipt() {
 /// record_payment bumps the receipt entry's TTL on write.
 #[test]
 fn record_payment_sets_ttl_on_write() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecttlw");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecttlw");
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+    let receipt_id = String::from_str(&env, "rcptttlw");
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "tx"),
+    );
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
         TTL_BUMP_AMOUNT,
         "record_payment must set TTL to BUMP_AMOUNT"
     );
@@ -5236,17 +5564,18 @@ fn record_payment_sets_ttl_on_write() {
 /// get_payment_receipt bumps the receipt entry's TTL on a successful read.
 #[test]
 fn get_payment_receipt_bumps_ttl_on_read() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecttlr");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecttlr");
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+    let receipt_id = String::from_str(&env, "rcptttlr");
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "tx"),
+    );
 
     // Decay past LIFETIME_THRESHOLD so extend_ttl fires.
     let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
@@ -5254,7 +5583,7 @@ fn get_payment_receipt_bumps_ttl_on_read() {
         .set_sequence_number(env.ledger().sequence() + decay);
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
         TTL_BUMP_AMOUNT - decay,
         "TTL should have decayed before the read"
     );
@@ -5262,7 +5591,7 @@ fn get_payment_receipt_bumps_ttl_on_read() {
     client.get_payment_receipt(&id, &payer);
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
         TTL_BUMP_AMOUNT,
         "get_payment_receipt must bump TTL back to BUMP_AMOUNT"
     );
@@ -5352,14 +5681,12 @@ fn set_paused_emits_pause_event() {
     let all = env.events().all();
     // The last event is from set_paused (setadmin is first from setup_with_admin).
     let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol =
-        <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
-            .ok()
-            .unwrap();
+    let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+        .ok()
+        .unwrap();
     assert_eq!(t0, Symbol::new(&env, "pause"));
-    let (paused, emitted_admin): (bool, Address) =
-        <(bool, Address)>::try_from_val(&env, &data)
-            .expect("pause event data must be (bool, Address)");
+    let (paused, emitted_admin): (bool, Address) = <(bool, Address)>::try_from_val(&env, &data)
+        .expect("pause event data must be (bool, Address)");
     assert!(paused);
     assert_eq!(emitted_admin, admin);
 }
@@ -5380,14 +5707,14 @@ fn set_paused_noop_still_emits_event() {
         let (_, topics, _) = all.get(i).unwrap();
         topics
             .get(0)
-            .and_then(|v| {
-                <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &v)
-                    .ok()
-            })
+            .and_then(|v| <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &v).ok())
             .map(|sym: Symbol| sym == Symbol::new(&env, "pause"))
             .unwrap_or(false)
     });
-    assert!(found, "set_paused must emit a 'pause' event even on a no-op state transition");
+    assert!(
+        found,
+        "set_paused must emit a 'pause' event even on a no-op state transition"
+    );
 }
 
 // ── flag_resource ─────────────────────────────────────────────────────────
@@ -5455,10 +5782,7 @@ fn flag_resource_replaces_existing_flag() {
     );
 
     client.flag_resource(&id, &moderator, &FlagReason::Malicious);
-    assert_eq!(
-        client.get(&id).metadata,
-        String::from_str(&env, "ipfs://m"),
-    );
+    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ipfs://m"),);
 }
 
 #[test]
@@ -5551,8 +5875,7 @@ fn pause_blocks_set_verification_status() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
     client.set_paused(&admin, &true);
-    let res =
-        client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
     assert_eq!(res, Err(Ok(Error::ContractPaused)));
     assert_eq!(client.get(&id).verified, VerificationStatus::Pending);
 }
@@ -5721,11 +6044,8 @@ fn set_flag_reason_hash_non_moderator_is_unauthorized() {
     let id = register_default(&env, &creator, &client, "reasonhash3");
     let not_moderator = Address::generate(&env);
 
-    let res = client.try_set_flag_reason_hash(
-        &id,
-        &not_moderator,
-        &String::from_str(&env, "sha256:x"),
-    );
+    let res =
+        client.try_set_flag_reason_hash(&id, &not_moderator, &String::from_str(&env, "sha256:x"));
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
 }
 
@@ -5778,22 +6098,19 @@ fn get_flag_reason_hash_missing_fails() {
 
 // ── Storage TTL tests for index entries (#371) ────────────────────────────────
 
-fn index_storage_ttl(env: &Env, contract: &soroban_sdk::Address, index: u32) -> u32 {
-    let key = DataKey::Index(index);
-    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
-}
-
 #[test]
 fn pause_blocks_record_payment() {
-    let (env, creator, admin, client) = setup_with_admin();
+    let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "pausedpayrec");
     let payer = Address::generate(&env);
-    client.set_paused(&admin, &true);
+    client.set_paused(&_admin, &true);
     let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptpaused"),
         &id,
         &payer,
-        &String::from_str(&env, "txhash"),
         &1_000_000i128,
+        &String::from_str(&env, "txhash"),
     );
     assert_eq!(res, Err(Ok(Error::ContractPaused)));
 }
@@ -5802,13 +6119,20 @@ fn pause_blocks_record_payment() {
 
 #[test]
 fn pause_allows_read_only_methods() {
-    let (env, creator, admin, client) = setup_with_admin();
+    let (env, creator, admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "pausedread");
 
     // Record a payment receipt and terms hash while unpaused so we have
     // something to read back.
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "txhash"), &100i128);
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcptread"),
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "txhash"),
+    );
     client.set_terms_hash(&creator, &String::from_str(&env, "termshash"));
 
     client.set_paused(&admin, &true);
@@ -5982,7 +6306,9 @@ proptest! {
         }
 
         if include_duplicate && tag_count >= 2 {
+            // Two tags normalizing to the same value are rejected outright.
             tags_vec.set(1, tags_vec.get(0).unwrap());
+            is_valid = false;
         }
 
         let result = client.try_register(&creator, &id, &100i128, &meta, &tags_vec);
@@ -6412,18 +6738,8 @@ fn anchor_purchase_receipt_duplicate_guard_is_per_buyer() {
     );
 
     // Anchor both buyers.
-    client.anchor_purchase_receipt(
-        &service,
-        &id,
-        &buyer_a,
-        &String::from_str(&env, "hashofa"),
-    );
-    client.anchor_purchase_receipt(
-        &service,
-        &id,
-        &buyer_b,
-        &String::from_str(&env, "hashofb"),
-    );
+    client.anchor_purchase_receipt(&service, &id, &buyer_a, &String::from_str(&env, "hashofa"));
+    client.anchor_purchase_receipt(&service, &id, &buyer_b, &String::from_str(&env, "hashofb"));
 
     // Re-anchoring buyer A still errors — buyer B's anchor is irrelevant.
     assert_eq!(
@@ -6447,5 +6763,811 @@ fn anchor_purchase_receipt_duplicate_guard_is_per_buyer() {
         ),
         Err(Ok(Error::DuplicateReceipt)),
         "buyer B duplicate guard must fire independently of buyer A"
+    );
+}
+
+// ── Reporting anchor failures as events ──────────────────────────────────────
+//
+// `anchor_purchase_receipt` reverts on a rejected anchor, and a Soroban error
+// rolls back the whole invocation — events included — so a batching settlement
+// service loses every surviving anchor and any on-chain trace of what went
+// wrong. `attempt_anchor_purchase_receipt` keeps authorization strict but
+// reports the three data failures as an `anchrfail` event.
+
+/// Helper: a registry with an admin and a verifier that can anchor receipts.
+fn setup_with_anchor_service<'a>() -> (Env, Address, Address, VaultRegistryClient<'a>) {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let service = Address::generate(&env);
+    client.add_verifier(&service);
+    (env, creator, service, client)
+}
+
+/// Decode the `AnchorFailure` payload of the most recent event, asserting the
+/// topic is `anchrfail` and carries the resource id.
+fn last_anchor_failure(env: &Env, expected_id: &String) -> AnchorFailure {
+    let all = env.events().all();
+    let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
+    assert_eq!(
+        topics.len(),
+        2,
+        "anchrfail topics are (symbol, resource_id)"
+    );
+
+    let topic: Symbol = Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic, symbol_short!("anchrfail"));
+    let topic_id: String = String::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(&topic_id, expected_id);
+
+    AnchorFailure::try_from_val(env, &data).unwrap()
+}
+
+#[test]
+fn attempt_anchor_purchase_receipt_succeeds_like_the_reverting_variant() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attanch1");
+    let buyer = Address::generate(&env);
+    let hash = String::from_str(&env, "sha256ok");
+
+    assert!(client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &hash));
+
+    // A success emits the normal `anchor` event, not `anchrfail`. Read it
+    // before any other call: the test env's event log reflects only the most
+    // recent invocation.
+    let all = env.events().all();
+    let (_cid, topics, _data) = all.get_unchecked(all.len() - 1);
+    let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic, symbol_short!("anchor"));
+
+    let anchor = client.get_purchase_receipt(&id, &buyer);
+    assert_eq!(anchor.receipt_hash, hash);
+    assert_eq!(anchor.buyer, buyer);
+}
+
+#[test]
+fn attempt_anchor_reports_unknown_resource() {
+    let (env, _creator, service, client) = setup_with_anchor_service();
+    let missing = String::from_str(&env, "attnores");
+    let buyer = Address::generate(&env);
+    let hash = String::from_str(&env, "sha256missing");
+
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &missing, &buyer, &hash));
+
+    let failure = last_anchor_failure(&env, &missing);
+    assert_eq!(failure.reason, AnchorFailureReason::ResourceNotFound);
+    assert_eq!(failure.buyer, buyer);
+    assert_eq!(failure.receipt_hash, hash);
+    assert_eq!(failure.ledger, env.ledger().sequence());
+}
+
+#[test]
+fn attempt_anchor_reports_empty_and_oversized_receipt_hash() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attbadhsh");
+    let buyer = Address::generate(&env);
+
+    assert!(!client.attempt_anchor_purchase_receipt(
+        &service,
+        &id,
+        &buyer,
+        &String::from_str(&env, "")
+    ));
+    assert_eq!(
+        last_anchor_failure(&env, &id).reason,
+        AnchorFailureReason::InvalidReceiptHash
+    );
+
+    let too_long = String::from_str(&env, &"a".repeat(MAX_TX_HASH_LEN as usize + 1));
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &too_long));
+    assert_eq!(
+        last_anchor_failure(&env, &id).reason,
+        AnchorFailureReason::InvalidReceiptHash
+    );
+
+    // Neither rejected attempt wrote an anchor.
+    assert_eq!(
+        client.try_get_purchase_receipt(&id, &buyer),
+        Err(Ok(Error::NotFound))
+    );
+}
+
+#[test]
+fn attempt_anchor_reports_duplicate_and_preserves_the_original() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attdup");
+    let buyer = Address::generate(&env);
+    let original = String::from_str(&env, "sha256first");
+
+    client.anchor_purchase_receipt(&service, &id, &buyer, &original);
+
+    let replacement = String::from_str(&env, "sha256second");
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &replacement));
+
+    let failure = last_anchor_failure(&env, &id);
+    assert_eq!(failure.reason, AnchorFailureReason::DuplicateReceipt);
+    assert_eq!(
+        failure.receipt_hash, replacement,
+        "the failure event carries the rejected hash, not the stored one"
+    );
+    assert_eq!(
+        client.get_purchase_receipt(&id, &buyer).receipt_hash,
+        original,
+        "a rejected attempt must leave the canonical anchor untouched"
+    );
+}
+
+/// Every reason the reporting variant emits maps to the error the reverting
+/// variant returns for the same input, so callers can treat them alike.
+#[test]
+fn attempt_anchor_failure_reasons_match_the_reverting_variant_errors() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attparity");
+    let buyer = Address::generate(&env);
+    let missing = String::from_str(&env, "attparityx");
+    let good = String::from_str(&env, "sha256parity");
+
+    // Unknown resource. The reported reason has to be read before the next
+    // call: a reverting invocation discards the event log it would have left.
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &missing, &buyer, &good));
+    let reported = last_anchor_failure(&env, &missing).reason;
+    assert_eq!(
+        client.try_anchor_purchase_receipt(&service, &missing, &buyer, &good),
+        Err(Ok(reported.as_error()))
+    );
+
+    // Unusable receipt hash.
+    let empty = String::from_str(&env, "");
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &empty));
+    let reported = last_anchor_failure(&env, &id).reason;
+    assert_eq!(
+        client.try_anchor_purchase_receipt(&service, &id, &buyer, &empty),
+        Err(Ok(reported.as_error()))
+    );
+
+    // Duplicate pair.
+    client.anchor_purchase_receipt(&service, &id, &buyer, &good);
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &good));
+    let reported = last_anchor_failure(&env, &id).reason;
+    assert_eq!(
+        client.try_anchor_purchase_receipt(&service, &id, &buyer, &good),
+        Err(Ok(reported.as_error()))
+    );
+}
+
+/// Authorization is never downgraded to an event: a non-verifier still
+/// reverts, so it cannot write to the event log at all.
+#[test]
+fn attempt_anchor_still_reverts_for_a_non_verifier() {
+    let (env, creator, _service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attauth");
+    let stranger = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    assert_eq!(
+        client.try_attempt_anchor_purchase_receipt(
+            &stranger,
+            &id,
+            &buyer,
+            &String::from_str(&env, "sha256stranger")
+        ),
+        Err(Ok(Error::NotVerifier))
+    );
+}
+
+/// A malformed resource id is a caller bug rather than an anchorable attempt,
+/// so it reverts instead of producing a failure event.
+#[test]
+fn attempt_anchor_still_reverts_for_a_malformed_resource_id() {
+    let (env, _creator, service, client) = setup_with_anchor_service();
+    let buyer = Address::generate(&env);
+
+    assert_eq!(
+        client.try_attempt_anchor_purchase_receipt(
+            &service,
+            &String::from_str(&env, "NOT A VALID ID"),
+            &buyer,
+            &String::from_str(&env, "sha256bad")
+        ),
+        Err(Ok(Error::InvalidResourceId))
+    );
+}
+
+// ── Lifecycle transition property tests ──────────────────────────────────────
+//
+// The lifecycle state machine is documented as a table in `contract/README.md`
+// and implemented across five entry points (`set_listed`, `freeze_resource`,
+// `open_dispute`, `resolve_dispute`, `tombstone_resource`) that each enforce
+// their own slice of it. The example-based tests above cover individual
+// transitions; these properties drive random operation sequences against a
+// model of the table and assert the contract agrees on every step — both when
+// a transition is accepted and when it is refused.
+
+/// The five lifecycle operations, as a model-side enum.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum LifecycleOp {
+    Relist,
+    Delist,
+    Freeze,
+    OpenDispute,
+    Resolve(ResourceState),
+    Tombstone,
+}
+
+impl LifecycleOp {
+    /// Map a generated byte onto an operation, so proptest can shrink over a
+    /// plain `Vec<u8>` rather than a custom strategy.
+    fn from_byte(byte: u8) -> Self {
+        // Weighted so `Tombstone` stays rare (1 in 16): it is terminal, so a
+        // uniform mix would end most sequences after a couple of steps and
+        // leave the rest of the table barely explored.
+        match byte % 16 {
+            0 | 1 => LifecycleOp::Relist,
+            2 | 3 => LifecycleOp::Delist,
+            4 | 5 => LifecycleOp::Freeze,
+            6 | 7 | 8 => LifecycleOp::OpenDispute,
+            9 | 10 => LifecycleOp::Resolve(ResourceState::Listed),
+            11 | 12 => LifecycleOp::Resolve(ResourceState::Delisted),
+            13 | 14 => LifecycleOp::Resolve(ResourceState::Frozen),
+            _ => LifecycleOp::Tombstone,
+        }
+    }
+}
+
+/// The documented transition table, independent of the contract's own
+/// branching. Returns the state the operation should leave the resource in,
+/// or `None` when the contract must refuse it with
+/// `InvalidLifecycleTransition`.
+fn model_transition(current: ResourceState, op: LifecycleOp) -> Option<ResourceState> {
+    use LifecycleOp::*;
+    use ResourceState::*;
+    match (current, op) {
+        // Tombstoned is terminal: nothing leaves it, not even a re-tombstone.
+        (Tombstoned, _) => None,
+        // An admin may retire anything that is not already retired.
+        (_, Tombstone) => Some(Tombstoned),
+        // `set_listed` is a no-op when the resource is already in the target
+        // state — it still succeeds, but does not count as a transition.
+        (Listed, Relist) => Some(Listed),
+        (Delisted, Delist) => Some(Delisted),
+        // Creator-driven transitions.
+        (Listed, Delist) => Some(Delisted),
+        (Delisted, Relist) => Some(Listed),
+        (Listed, Freeze) | (Delisted, Freeze) => Some(Frozen),
+        // Admin-driven dispute hold, from any active state.
+        (Listed, OpenDispute) | (Delisted, OpenDispute) | (Frozen, OpenDispute) => Some(Disputed),
+        // A dispute resolves only to an active state.
+        (Disputed, Resolve(target @ (Listed | Delisted | Frozen))) => Some(target),
+        _ => None,
+    }
+}
+
+/// Apply an operation through the contract, returning the same
+/// `Option<ResourceState>` shape as the model: `None` for a refusal.
+fn apply_lifecycle_op(
+    client: &VaultRegistryClient<'_>,
+    id: &String,
+    admin: &Address,
+    op: LifecycleOp,
+) -> Option<ResourceState> {
+    let result = match op {
+        LifecycleOp::Relist => client.try_set_listed(id, &true),
+        LifecycleOp::Delist => client.try_set_listed(id, &false),
+        LifecycleOp::Freeze => client.try_freeze_resource(id),
+        LifecycleOp::OpenDispute => client.try_open_dispute(id, admin),
+        LifecycleOp::Resolve(target) => client.try_resolve_dispute(id, admin, &target),
+        LifecycleOp::Tombstone => client.try_tombstone_resource(id, admin),
+    };
+    match result {
+        Ok(Ok(())) => Some(client.get(id).state),
+        Err(Ok(Error::InvalidLifecycleTransition)) => None,
+        other => panic!("unexpected lifecycle result for {op:?}: {other:?}"),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(60))]
+
+    /// Every operation in a random sequence is accepted exactly when the
+    /// documented table says it should be, and lands in exactly the state the
+    /// table names. A refusal must leave the state untouched.
+    #[test]
+    fn test_lifecycle_transitions_follow_the_documented_table(
+        ops in prop::collection::vec(any::<u8>(), 1..24),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = register_default(&env, &creator, &client, "lifeprop");
+        let _ = (&env, &creator);
+
+        let mut expected = ResourceState::Listed;
+        for byte in ops {
+            let op = LifecycleOp::from_byte(byte);
+            let allowed = model_transition(expected, op);
+            let observed = apply_lifecycle_op(&client, &id, &admin, op);
+
+            match allowed {
+                Some(next) => {
+                    prop_assert_eq!(
+                        observed,
+                        Some(next),
+                        "{:?} from {:?} must be accepted and land in {:?}",
+                        op,
+                        expected,
+                        next
+                    );
+                    expected = next;
+                }
+                None => {
+                    prop_assert_eq!(
+                        observed,
+                        None,
+                        "{:?} from {:?} must be refused with InvalidLifecycleTransition",
+                        op,
+                        expected
+                    );
+                    prop_assert_eq!(
+                        client.get(&id).state,
+                        expected,
+                        "a refused transition must not change the state"
+                    );
+                }
+            }
+        }
+    }
+
+    /// `listed` is a projection of the state, and the discovery views agree
+    /// with it, after any sequence of lifecycle operations.
+    #[test]
+    fn test_lifecycle_keeps_listed_projection_and_views_consistent(
+        ops in prop::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = String::from_str(&env, "lifeproj");
+        client.register(
+            &creator,
+            &id,
+            &100i128,
+            &String::from_str(&env, "ipfs://lifeproj"),
+            &tags(&env, &["proj"]),
+        );
+
+        for byte in ops {
+            let _ = apply_lifecycle_op(&client, &id, &admin, LifecycleOp::from_byte(byte));
+
+            let resource = client.get(&id);
+            let is_listed = resource.state == ResourceState::Listed;
+            prop_assert_eq!(
+                resource.listed,
+                is_listed,
+                "listed must project state == Listed (state was {:?})",
+                resource.state
+            );
+            prop_assert_eq!(
+                client.list_listed(&0u32, &20u32).len(),
+                if is_listed { 1 } else { 0 },
+                "list_listed membership must follow the Listed state"
+            );
+
+            // Tag discovery survives every state except the terminal one.
+            let tagged = client.list_by_tag(&String::from_str(&env, "proj"), &0u32, &20u32);
+            prop_assert_eq!(
+                tagged.len(),
+                if resource.state == ResourceState::Tombstoned { 0 } else { 1 },
+                "only tombstoning removes a resource from tag discovery"
+            );
+        }
+    }
+
+    /// Creator mutations are permitted exactly in the two active states, for
+    /// every state reachable by a random operation sequence.
+    #[test]
+    fn test_lifecycle_gates_creator_mutations_by_state(
+        ops in prop::collection::vec(any::<u8>(), 0..12),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = register_default(&env, &creator, &client, "lifemut");
+
+        for byte in ops {
+            let _ = apply_lifecycle_op(&client, &id, &admin, LifecycleOp::from_byte(byte));
+        }
+
+        let state = client.get(&id).state;
+        let mutable = matches!(state, ResourceState::Listed | ResourceState::Delisted);
+        let result = client.try_set_price(&id, &4_242i128);
+
+        if mutable {
+            prop_assert!(
+                result.is_ok(),
+                "set_price must be allowed in {:?}",
+                state
+            );
+            prop_assert_eq!(client.get(&id).price, 4_242i128);
+        } else {
+            prop_assert_eq!(
+                result,
+                Err(Ok(Error::ResourceNotMutable)),
+                "set_price must be refused in {:?}",
+                state
+            );
+        }
+    }
+
+    /// Once tombstoned, no operation ever succeeds again, and the resource
+    /// stays readable for audit.
+    #[test]
+    fn test_tombstone_is_terminal_for_every_operation(
+        ops in prop::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = register_default(&env, &creator, &client, "lifeterm");
+        let before = client.get(&id);
+        client.tombstone_resource(&id, &admin);
+        let _ = &env;
+
+        for byte in ops {
+            let op = LifecycleOp::from_byte(byte);
+            prop_assert_eq!(
+                apply_lifecycle_op(&client, &id, &admin, op),
+                None,
+                "{:?} must be refused once tombstoned",
+                op
+            );
+        }
+
+        let after = client.get(&id);
+        prop_assert_eq!(after.state, ResourceState::Tombstoned);
+        prop_assert_eq!(after.id, before.id);
+        prop_assert_eq!(after.creator, before.creator);
+        prop_assert_eq!(after.metadata, before.metadata);
+    }
+}
+
+// ── Contract storage footprint report ────────────────────────────────────────
+//
+// Soroban charges rent per ledger entry and archives entries whose TTL runs
+// out, so the *shape* of what this contract writes is an operational cost, not
+// just an implementation detail. Nothing in the test suite measured it: a
+// change that widened `Resource` by a field, or added a second index entry per
+// write, showed up only as a WASM size delta (which it does not affect at all)
+// or on a rent bill.
+//
+// `storage_footprint_report` builds one registry in a representative state,
+// measures every entry class it writes, and prints the table published in
+// `docs/contract-storage-footprint.md`. Run it with:
+//
+//     cargo test storage_footprint_report -- --nocapture
+//
+// The budgets below are the enforcement half: they fail the suite when an
+// entry class grows past its documented allowance, so growth has to be an
+// explicit decision recorded in the doc rather than a silent regression.
+
+/// Which storage map an entry lives in. Instance entries share the contract's
+/// instance TTL; persistent entries are archived independently.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum StorageKind {
+    Persistent,
+    Instance,
+}
+
+/// One measured entry: the XDR-encoded size of its key and its value.
+struct FootprintRow {
+    label: &'static str,
+    kind: StorageKind,
+    key_bytes: usize,
+    value_bytes: usize,
+    /// Maximum `key_bytes + value_bytes` this entry class may occupy before
+    /// the report fails. See `docs/contract-storage-footprint.md`.
+    budget: usize,
+}
+
+impl FootprintRow {
+    fn total(&self) -> usize {
+        self.key_bytes + self.value_bytes
+    }
+}
+
+/// XDR-encoded byte length of any contract value.
+///
+/// This is the `ScVal` payload only — the size the contract itself controls.
+/// A live ledger entry adds host-side envelope and TTL metadata on top, so
+/// treat these numbers as a floor and a comparison baseline across changes,
+/// not as an exact rent quote.
+fn xdr_len<T: IntoVal<Env, soroban_sdk::Val>>(env: &Env, value: T) -> usize {
+    use soroban_sdk::xdr::{Limits, ScVal, WriteXdr};
+    let val: soroban_sdk::Val = value.into_val(env);
+    ScVal::try_from_val(env, &val)
+        .expect("every stored contract value must be ScVal-encodable")
+        .to_xdr(Limits::none())
+        .expect("ScVal encoding must not exceed XDR limits")
+        .len()
+}
+
+/// Measure the entry stored under `key`, or `None` if nothing is stored there.
+fn measure_entry(
+    env: &Env,
+    contract: &Address,
+    label: &'static str,
+    key: DataKey,
+    kind: StorageKind,
+    budget: usize,
+) -> Option<FootprintRow> {
+    let key_bytes = xdr_len(env, key.clone());
+    let stored: Option<soroban_sdk::Val> = env.as_contract(contract, || match kind {
+        StorageKind::Persistent => env.storage().persistent().get(&key),
+        StorageKind::Instance => env.storage().instance().get(&key),
+    });
+    stored.map(|value| FootprintRow {
+        label,
+        kind,
+        key_bytes,
+        value_bytes: xdr_len(env, value),
+        budget,
+    })
+}
+
+/// Register one resource at every documented maximum — the largest entry the
+/// contract will ever accept — so the report bounds the worst case rather
+/// than a convenient one.
+fn register_max_size_resource(
+    env: &Env,
+    creator: &Address,
+    client: &VaultRegistryClient<'_>,
+) -> String {
+    let id = String::from_str(env, &"m".repeat(MAX_RESOURCE_ID_LEN as usize));
+    let metadata = String::from_str(
+        env,
+        &std::format!(
+            "ipfs://{}",
+            "q".repeat(MAX_METADATA_POINTER_LEN as usize - "ipfs://".len())
+        ),
+    );
+    let mut tag_list = Vec::new(env);
+    for i in 0..MAX_TAGS {
+        // Distinct tags of the maximum length: a leading index keeps them
+        // unique without shortening any of them.
+        let tag = std::format!("{i}{}", "t".repeat(MAX_TAG_LEN as usize - 1));
+        tag_list.push_back(String::from_str(env, &tag));
+    }
+    let content_hash = String::from_str(env, &"c".repeat(MAX_CONTENT_HASH_LEN as usize));
+
+    client.register_with_hash(
+        creator,
+        &id,
+        &MAX_PRICE,
+        &metadata,
+        &tag_list,
+        &Some(content_hash),
+    );
+    id
+}
+
+#[test]
+fn storage_footprint_report() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let contract = client.address.clone();
+
+    // A resource at every documented maximum, plus one ordinary resource so
+    // the report shows both ends of the range.
+    let max_id = register_max_size_resource(&env, &creator, &client);
+    let typical_id = register_tagged(&env, &creator, &client, "typicalres", &["dataset"]);
+
+    // Exercise every remaining entry class the contract can write.
+    let settler = Address::generate(&env);
+    let verifier = Address::generate(&env);
+    let moderator = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let receipt_id = String::from_str(&env, &"r".repeat(MAX_RECEIPT_ID_LEN as usize));
+    let max_hash = String::from_str(&env, &"h".repeat(MAX_TX_HASH_LEN as usize));
+
+    client.add_settler(&settler);
+    client.add_verifier(&verifier);
+    client.add_moderator(&moderator);
+    client.set_terms_hash(
+        &creator,
+        &String::from_str(&env, &"t".repeat(MAX_TERMS_HASH_LEN as usize)),
+    );
+    client.set_fee_config(&FeeConfig {
+        platform_fee_bps: 100,
+        royalty_bps: 250,
+        fee_recipient: Some(admin.clone()),
+    });
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &max_id,
+        &buyer,
+        &MAX_PRICE,
+        &max_hash,
+    );
+    client.anchor_purchase_receipt(&verifier, &max_id, &buyer, &max_hash);
+    client.flag_resource(&max_id, &moderator, &FlagReason::Copyright);
+    client.set_flag_reason_hash(
+        &max_id,
+        &moderator,
+        &String::from_str(&env, &"f".repeat(MAX_FLAG_REASON_HASH_LEN as usize)),
+    );
+
+    let max_tag = client.get(&max_id).tags.get(0).unwrap();
+
+    // Two entry classes hold collections and therefore grow with membership
+    // rather than having a fixed maximum: `CreatorResources` holds one id per
+    // resource the creator owns, and `TagIndex` one id per resource carrying
+    // the tag. Both are measured here at the cardinality this fixture builds
+    // (two resources for the creator, one per tag) — treat those rows as a
+    // per-member baseline, not a ceiling.
+    //
+    // `DataKey::DisputeFlag` is intentionally absent: the dispute flag lives on
+    // the `Resource` struct (see `flag_resource`), so that key is never written
+    // and has no footprint of its own.
+    let specs: std::vec::Vec<(&'static str, DataKey, StorageKind, usize)> = std::vec![
+        (
+            "Resource (max-size)",
+            DataKey::Resource(max_id.clone()),
+            StorageKind::Persistent,
+            1700
+        ),
+        (
+            "Resource (typical)",
+            DataKey::Resource(typical_id.clone()),
+            StorageKind::Persistent,
+            640
+        ),
+        (
+            "Index(u32) -> id",
+            DataKey::Index(0),
+            StorageKind::Persistent,
+            96
+        ),
+        ("Count", DataKey::Count, StorageKind::Instance, 48),
+        (
+            "CreatorResources",
+            DataKey::CreatorResources(creator.clone()),
+            StorageKind::Persistent,
+            160
+        ),
+        (
+            "CreatorCount",
+            DataKey::CreatorCount(creator.clone()),
+            StorageKind::Instance,
+            96
+        ),
+        (
+            "TagIndex (max-size tag)",
+            DataKey::TagIndex(max_tag),
+            StorageKind::Persistent,
+            160
+        ),
+        (
+            "CreatorTerms",
+            DataKey::CreatorTerms(creator.clone()),
+            StorageKind::Persistent,
+            200
+        ),
+        (
+            "PaymentReceipt",
+            DataKey::PaymentReceipt(receipt_id.clone()),
+            StorageKind::Persistent,
+            640
+        ),
+        (
+            "PaymentIndex -> receipt id",
+            DataKey::PaymentIndex(max_id.clone(), buyer.clone()),
+            StorageKind::Persistent,
+            240
+        ),
+        (
+            "PurchaseReceipt (anchor)",
+            DataKey::PurchaseReceipt(max_id.clone(), buyer.clone()),
+            StorageKind::Persistent,
+            480
+        ),
+        (
+            "FlagReasonHash",
+            DataKey::FlagReasonHash(max_id.clone()),
+            StorageKind::Persistent,
+            200
+        ),
+        ("FeeConfig", DataKey::FeeConfig, StorageKind::Instance, 192),
+        ("Admin", DataKey::Admin, StorageKind::Instance, 80),
+        (
+            "Verifier grant",
+            DataKey::Verifier(verifier),
+            StorageKind::Instance,
+            96
+        ),
+        (
+            "Moderator grant",
+            DataKey::Moderator(moderator),
+            StorageKind::Instance,
+            96
+        ),
+        (
+            "Settler grant",
+            DataKey::Settler(settler),
+            StorageKind::Instance,
+            96
+        ),
+        ("Paused flag", DataKey::Paused, StorageKind::Instance, 32),
+    ];
+
+    let mut rows: std::vec::Vec<FootprintRow> = std::vec::Vec::new();
+    let mut missing: std::vec::Vec<&'static str> = std::vec::Vec::new();
+    for (label, key, kind, budget) in specs {
+        match measure_entry(&env, &contract, label, key, kind, budget) {
+            Some(row) => rows.push(row),
+            // `Paused` is only written once `set_paused` is called; every
+            // other class in the list must exist after the setup above.
+            None if label == "Paused flag" => {}
+            None => missing.push(label),
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the report setup did not write these entry classes: {missing:?} — \
+         extend the setup, or drop the row if the class no longer exists"
+    );
+
+    std::println!("\n### Storage footprint (XDR bytes)\n");
+    std::println!("| Entry | Map | Key | Value | Total | Budget |");
+    std::println!("| ----- | --- | ---:| -----:| -----:| ------:|");
+    for row in &rows {
+        let map = match row.kind {
+            StorageKind::Persistent => "persistent",
+            StorageKind::Instance => "instance",
+        };
+        std::println!(
+            "| {} | {} | {} | {} | {} | {} |",
+            row.label,
+            map,
+            row.key_bytes,
+            row.value_bytes,
+            row.total(),
+            row.budget,
+        );
+    }
+
+    // Per-write totals: what one registration and one payment actually cost in
+    // entries, which is the number that scales with catalog size.
+    let per_resource: usize = rows
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.label,
+                "Resource (max-size)" | "Index(u32) -> id" | "TagIndex (max-size tag)"
+            )
+        })
+        .map(FootprintRow::total)
+        .sum();
+    let per_payment: usize = rows
+        .iter()
+        .filter(|r| matches!(r.label, "PaymentReceipt" | "PaymentIndex -> receipt id"))
+        .map(FootprintRow::total)
+        .sum();
+    std::println!(
+        "\nPer max-size registration (Resource + Index + one TagIndex): {per_resource} bytes"
+    );
+    std::println!("Per payment (PaymentReceipt + PaymentIndex): {per_payment} bytes\n");
+
+    for row in &rows {
+        assert!(
+            row.total() <= row.budget,
+            "storage entry `{}` is {} XDR bytes, over its {}-byte budget — if the \
+             growth is intended, raise the budget here and update \
+             docs/contract-storage-footprint.md",
+            row.label,
+            row.total(),
+            row.budget,
+        );
+    }
+
+    // Guard the aggregates too: a change that shaves one entry while adding
+    // two others would otherwise slip through the per-entry budgets.
+    assert!(
+        per_resource <= 1_900,
+        "a max-size registration now writes {per_resource} XDR bytes across its \
+         three entry classes, over the 1900-byte budget"
+    );
+    assert!(
+        per_payment <= 850,
+        "a payment now writes {per_payment} XDR bytes across its two entry \
+         classes, over the 850-byte budget"
     );
 }
