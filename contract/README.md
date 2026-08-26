@@ -500,9 +500,20 @@ transitions and `freeze_resource(id)` to enter `Frozen`. The current admin uses
 `tombstone_resource(id, admin)` for moderation transitions.
 
 `Frozen`, `Disputed`, and `Tombstoned` resources are excluded from
-`list_listed`. Tombstoned resources are also removed from tag discovery and
-excluded from `list_by_tag`, while remaining readable through `get` for audit
-purposes. Creator mutations to price, metadata, tags, or ownership fail with
+`list_listed`. Tombstoning additionally purges the resource from every derived
+listing index the contract can prune in bounded gas:
+
+| Index                                | On tombstone | Effect                                                              |
+| ------------------------------------ | ------------ | ------------------------------------------------------------------- |
+| `TagIndex(tag)`                      | purged       | Drops out of `list_by_tag`.                                          |
+| `CreatorResources` / `CreatorCount`  | purged       | Drops out of `list_by_creator`; `creator_resource_count` decrements. |
+| `Index(u32)` / `Count`               | untouched    | `count()` stays monotonic and `list`/`list_page` remain a full audit view. |
+| `Resource(id)`                       | untouched    | Still readable through `get` for audit purposes.                     |
+
+The catalog `Index`/`Count` pair is deliberately left alone: `Count` is
+monotonic by design, and locating a resource's slot in the insertion-ordered
+index would cost a scan proportional to the catalog size. Use `repair_index`
+if that pair ever needs rebuilding. Creator mutations to price, metadata, tags, or ownership fail with
 `ResourceNotMutable` in those states. All invalid state changes, including
 attempts to leave `Frozen` or `Tombstoned` without admin resolution, fail with
 `InvalidLifecycleTransition`.

@@ -3699,6 +3699,106 @@ fn tombstoned_resource_is_not_discoverable_by_tag_but_stays_auditable() {
     assert_eq!(all.get(0).unwrap().id, id);
 }
 
+// ── Listing index cleanup on tombstone ──────────────────────────────────────
+//
+// Tombstoning is terminal, so the derived listing indexes must not keep
+// pointing at a retired resource. The tag index was already purged; these
+// tests pin the creator index and `creator_resource_count` to the same rule,
+// and pin the two indexes that deliberately are *not* touched (the canonical
+// `Resource` entry, and the monotonic `Index`/`Count` catalog pair).
+
+#[test]
+fn tombstone_removes_resource_from_creator_index() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let kept = register_default(&env, &creator, &client, "tombkeep");
+    let doomed = register_default(&env, &creator, &client, "tombgone");
+
+    assert_eq!(client.list_by_creator(&creator, &0u32, &20u32).len(), 2);
+
+    client.tombstone_resource(&doomed, &admin);
+
+    let listed = client.list_by_creator(&creator, &0u32, &20u32);
+    assert_eq!(
+        listed.len(),
+        1,
+        "tombstoned resources must not surface in list_by_creator"
+    );
+    assert_eq!(listed.get(0).unwrap().id, kept);
+}
+
+#[test]
+fn tombstone_decrements_creator_resource_count() {
+    let (env, creator, admin, client) = setup_with_admin();
+    register_default(&env, &creator, &client, "tombcnt1");
+    let doomed = register_default(&env, &creator, &client, "tombcnt2");
+    assert_eq!(client.creator_resource_count(&creator), 2);
+
+    client.tombstone_resource(&doomed, &admin);
+
+    assert_eq!(
+        client.creator_resource_count(&creator),
+        1,
+        "creator_resource_count must not count retired resources"
+    );
+}
+
+#[test]
+fn tombstone_leaves_global_catalog_index_intact() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "tombcat1");
+    let b = register_default(&env, &creator, &client, "tombcat2");
+
+    client.tombstone_resource(&a, &admin);
+
+    // `Count` is monotonic and `list` stays an audit view over every id ever
+    // registered — only the discovery indexes are pruned.
+    assert_eq!(client.count(), 2, "count() must stay monotonic");
+    let all = client.list(&0u32, &20u32);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all.get(0).unwrap().id, a);
+    assert_eq!(all.get(1).unwrap().id, b);
+    assert!(client.exists(&a));
+}
+
+#[test]
+fn tombstone_cleans_the_current_owner_index_after_transfer() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "tombxfer");
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.creator_resource_count(&new_owner), 1);
+    assert_eq!(client.creator_resource_count(&creator), 0);
+
+    client.tombstone_resource(&id, &admin);
+
+    assert_eq!(
+        client.list_by_creator(&new_owner, &0u32, &20u32).len(),
+        0,
+        "the index cleaned must be the current owner's, not the original creator's"
+    );
+    assert_eq!(client.creator_resource_count(&new_owner), 0);
+    assert_eq!(
+        client.creator_resource_count(&creator),
+        0,
+        "the previous owner's count must not go negative"
+    );
+}
+
+#[test]
+fn tombstone_index_cleanup_leaves_other_creators_untouched() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let other = Address::generate(&env);
+    let mine = register_default(&env, &creator, &client, "tombmine");
+    let theirs = register_default(&env, &other, &client, "tombtheir");
+
+    client.tombstone_resource(&mine, &admin);
+
+    assert_eq!(client.creator_resource_count(&other), 1);
+    let listed = client.list_by_creator(&other, &0u32, &20u32);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.get(0).unwrap().id, theirs);
+}
+
 #[test]
 fn tombstoned_resource_blocks_creator_mutations_deterministically() {
     let (env, creator, admin, client) = setup_with_admin();

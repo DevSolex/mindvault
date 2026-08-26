@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "o01"
+                  "string": "sxuyc1te0tr"
                 },
                 {
                   "i128": {
@@ -27,7 +27,7 @@
                   }
                 },
                 {
-                  "string": "ipfs://UUUUUUUUUUUUUUUUUUU"
+                  "string": "ipfs://0000000000000000000000000000000000000000000000000000000000000000000"
                 },
                 {
                   "vec": []
@@ -49,10 +49,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "o01"
+                  "string": "sxuyc1te0tr"
                 },
                 {
-                  "string": "https://UUUUUUUUUUUUUUUUUUU"
+                  "string": "https://0000000000000000000000000000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -110,7 +110,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "o01"
+                      "string": "sxuyc1te0tr"
                     }
                   ]
                 }
@@ -157,7 +157,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "o01"
+                  "string": "sxuyc1te0tr"
                 }
               }
             },
@@ -176,7 +176,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "o01"
+                  "string": "sxuyc1te0tr"
                 }
               ]
             },
@@ -196,7 +196,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "o01"
+                      "string": "sxuyc1te0tr"
                     }
                   ]
                 },
@@ -250,7 +250,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "o01"
+                        "string": "sxuyc1te0tr"
                       }
                     },
                     {
@@ -266,7 +266,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://UUUUUUUUUUUUUUUUUUU"
+                        "string": "https://0000000000000000000000000000000000000000000000000000000000000000000"
                       }
                     },
                     {
@@ -507,7 +507,7 @@
                 "symbol": "updmeta"
               },
               {
-                "string": "o01"
+                "string": "sxuyc1te0tr"
               }
             ],
             "data": {
@@ -517,7 +517,7 @@
                     "symbol": "id"
                   },
                   "val": {
-                    "string": "o01"
+                    "string": "sxuyc1te0tr"
                   }
                 },
                 {
@@ -525,7 +525,7 @@
                     "symbol": "new_metadata"
                   },
                   "val": {
-                    "string": "https://UUUUUUUUUUUUUUUUUUU"
+                    "string": "https://0000000000000000000000000000000000000000000000000000000000000000000"
                   }
                 },
                 {
@@ -533,7 +533,7 @@
                     "symbol": "old_metadata"
                   },
                   "val": {
-                    "string": "ipfs://UUUUUUUUUUUUUUUUUUU"
+                    "string": "ipfs://0000000000000000000000000000000000000000000000000000000000000000000"
                   }
                 }
               ]

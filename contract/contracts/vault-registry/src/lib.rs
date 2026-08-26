@@ -1026,6 +1026,14 @@ impl VaultRegistry {
 
     /// Permanently retire a resource. Only an admin may tombstone it; the
     /// tombstoned state has no outgoing transitions.
+    ///
+    /// Tombstoning purges the resource from every derived listing index the
+    /// contract can reach in bounded gas — the tag index and the creator
+    /// index — so it stops surfacing in `list_by_tag`, `list_by_creator`, and
+    /// `creator_resource_count`. The canonical `Resource` entry is left in
+    /// place and stays readable through `get` for audit, and the global
+    /// `Index`/`Count` pair is deliberately untouched: `Count` is monotonic
+    /// and finding a resource's slot in it would cost an unbounded scan.
     pub fn tombstone_resource(env: Env, id: String, admin: Address) -> Result<(), Error> {
         Self::validate_resource_id(&id)?;
         Self::require_current_admin(&env, &admin)?;
@@ -1034,8 +1042,13 @@ impl VaultRegistry {
             return Err(Error::InvalidLifecycleTransition);
         }
 
-        // Tombstoned resources must no longer be discoverable by tag.
+        // Tombstoned resources must no longer be discoverable by tag...
         Self::tag_index_remove(&env, &resource.tags, &id);
+        // ...nor listed under the creator that owned them.
+        Self::remove_from_creator_index(&env, &resource.creator, &id);
+        let owned = Self::creator_count(&env, &resource.creator);
+        Self::set_creator_count(&env, &resource.creator, owned.saturating_sub(1));
+
         Self::transition_state(&env, &mut resource, ResourceState::Tombstoned);
         Ok(())
     }

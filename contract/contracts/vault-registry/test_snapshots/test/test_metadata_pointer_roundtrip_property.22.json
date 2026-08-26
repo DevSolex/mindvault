@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "58fozxjwt613z67"
+                  "string": "8w7h10k4isgt4"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 382071784999
+                    "lo": 552438800241
                   }
                 },
                 {
-                  "string": "ipfs://La_hO/1x\\\\_QcaY_7\\\\_7Qs"
+                  "string": "ipfs://ws\\\\_EqXJ_yo_\\\\k\\\\U.:Xc__/5_\\\\O9E8-\\\\3_:.3_eX2\\\\Rs\\\\__grda5.:Fy\\\\/ZU_6CC_Ib7\\\\L6__u//r\\\\4Z74/\\\\w_LU_f:_E0\\\\/w\\\\f-_ni:xK_5-r\\\\p\\\\B_Ig0F/oZb\\\\9\\\\6ZeVrk.\\\\Fv/x\\\\.F\\\\F\\\\8\\\\\\\\__d:OkKinpL/vQJz__zk_f.39qsy\\\\"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "58fozxjwt613z67"
+                  "string": "8w7h10k4isgt4"
                 },
                 {
-                  "string": "https://1w\\\\Vq\\\\XZoXIb2_qEStKri\\\\hIm7__H\\\\_T.eFL__UbBNq39exq\\\\kz\\\\IB\\\\a\\\\_BYENx11\\\\X\\\\\\\\:qT_4Nu/_\\\\/\\\\H\\\\_04\\\\\\\\_cfStaeV_7/\\\\M:i\\\\e8_nmHs68_o3cM/E_nfuRe.hc\\\\W:D_u__b\\\\-\\\\4__c__RG\\\\iXCL\\\\\\\\9D.HxBZ_t\\\\xg\\\\XC:z_\\\\b_A\\\\xy1_8\\\\HUbm_2_B\\\\c\\\\y\\\\\\\\zE7_/\\\\E_/_nF_G\\\\dQXi.B.zt/\\\\__97H\\\\chsh.__7FjsvR_:_//G:yd_:Pkw71b_\\\\VuTRn\\\\Y_U.R\\\\-\\\\Mi0un..\\\\c.KubZ\\\\\\\\C/\\\\n\\\\W.uZ\\\\\\\\_6z/8__i/_\\\\Q7lH\\\\3Na4I_a\\\\V_3\\\\K/_v5_76.T_\\\\G\\\\_P\\\\aU5.\\\\bGN\\\\8Q\\\\TB\\\\WbMb.R\\\\5X\\\\E\\\\1wkKiVwz-h7d\\\\_rIL15z\\\\.p\\\\iy6_:W_\\\\\\\\J_/s\\\\w7I3\\\\\\\\v_3l-L-:Jo.4/C"
+                  "string": "https://\\\\dO\\\\:_L/\\\\S\\\\U\\\\Kp:jI\\\\w_/vL0qj\\\\O\\\\_jXNBI-iu4\\\\_O/66uWaOa._Mu8P:Qqi\\\\\\\\\\\\_A8mEv\\\\\\\\UmXL\\\\C_:2_Cf\\\\U0_I\\\\\\\\cW.vINnt_ooaky:\\\\m:1/W\\\\-I_qLrRS\\\\us2\\\\:\\\\\\\\__G:Z_13_J1WJ9en5\\\\R-JqixzuPnd7\\\\-"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "58fozxjwt613z67"
+                  "string": "8w7h10k4isgt4"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 633602624863
+                    "lo": 651745572663
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "58fozxjwt613z67"
+                  "string": "8w7h10k4isgt4"
                 },
                 {
-                  "bool": true
+                  "bool": false
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "58fozxjwt613z67"
+                      "string": "8w7h10k4isgt4"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "58fozxjwt613z67"
+                  "string": "8w7h10k4isgt4"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "58fozxjwt613z67"
+                  "string": "8w7h10k4isgt4"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "58fozxjwt613z67"
+                      "string": "8w7h10k4isgt4"
                     }
                   ]
                 },
@@ -301,7 +301,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "58fozxjwt613z67"
+                        "string": "8w7h10k4isgt4"
                       }
                     },
                     {
@@ -309,7 +309,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -317,7 +317,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://1w\\\\Vq\\\\XZoXIb2_qEStKri\\\\hIm7__H\\\\_T.eFL__UbBNq39exq\\\\kz\\\\IB\\\\a\\\\_BYENx11\\\\X\\\\\\\\:qT_4Nu/_\\\\/\\\\H\\\\_04\\\\\\\\_cfStaeV_7/\\\\M:i\\\\e8_nmHs68_o3cM/E_nfuRe.hc\\\\W:D_u__b\\\\-\\\\4__c__RG\\\\iXCL\\\\\\\\9D.HxBZ_t\\\\xg\\\\XC:z_\\\\b_A\\\\xy1_8\\\\HUbm_2_B\\\\c\\\\y\\\\\\\\zE7_/\\\\E_/_nF_G\\\\dQXi.B.zt/\\\\__97H\\\\chsh.__7FjsvR_:_//G:yd_:Pkw71b_\\\\VuTRn\\\\Y_U.R\\\\-\\\\Mi0un..\\\\c.KubZ\\\\\\\\C/\\\\n\\\\W.uZ\\\\\\\\_6z/8__i/_\\\\Q7lH\\\\3Na4I_a\\\\V_3\\\\K/_v5_76.T_\\\\G\\\\_P\\\\aU5.\\\\bGN\\\\8Q\\\\TB\\\\WbMb.R\\\\5X\\\\E\\\\1wkKiVwz-h7d\\\\_rIL15z\\\\.p\\\\iy6_:W_\\\\\\\\J_/s\\\\w7I3\\\\\\\\v_3l-L-:Jo.4/C"
+                        "string": "https://\\\\dO\\\\:_L/\\\\S\\\\U\\\\Kp:jI\\\\w_/vL0qj\\\\O\\\\_jXNBI-iu4\\\\_O/66uWaOa._Mu8P:Qqi\\\\\\\\\\\\_A8mEv\\\\\\\\UmXL\\\\C_:2_Cf\\\\U0_I\\\\\\\\cW.vINnt_ooaky:\\\\m:1/W\\\\-I_qLrRS\\\\us2\\\\:\\\\\\\\__G:Z_13_J1WJ9en5\\\\R-JqixzuPnd7\\\\-"
                       }
                     },
                     {
@@ -327,7 +327,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 633602624863
+                          "lo": 651745572663
                         }
                       }
                     },
@@ -346,7 +346,7 @@
                       "val": {
                         "vec": [
                           {
-                            "symbol": "Listed"
+                            "symbol": "Delisted"
                           }
                         ]
                       }
