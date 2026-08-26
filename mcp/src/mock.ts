@@ -110,13 +110,31 @@ async function normalizeRequest(
  * calls. Paid endpoints return 200 directly, so the x402 wrapper passes through
  * without a payment challenge — exactly as scripts/mock-server.ts does.
  */
-export function createMockFetch(): typeof fetch {
+export function createMockFetch(getActivePublicKey?: () => string | undefined | null): typeof fetch {
   const resources = seedResources();
   let counter = 0;
+
+  const ensureProfileFixture = () => {
+    const pk = getActivePublicKey?.();
+    if (pk && !resources.has("mock-profile")) {
+      resources.set("mock-profile", {
+        id: "mock-profile",
+        title: "Your Profile Fixture",
+        description: "A mock resource owned by the active profile.",
+        price: "2.5",
+        resourceType: "link",
+        verificationStatus: "verified",
+        accessUrl: "https://example.com/mock-profile",
+      });
+    }
+    return pk;
+  };
 
   const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const { url, method, body: rawBody } = await normalizeRequest(input, init);
     const { pathname } = new URL(url);
+
+    ensureProfileFixture();
 
     // Sponsored-account service: mint a real (random) keypair so the server can
     // build an x402 signer without hitting the chain.
@@ -244,11 +262,18 @@ function isSorobanRpc(body: string): boolean {
   return parsed?.jsonrpc === "2.0" && typeof parsed?.method === "string";
 }
 
-export function mockRegistryLookup(resourceId: string, contractId: string): string {
+export function mockRegistryLookup(resourceId: string, contractId: string, activePublicKey?: string | null): string {
   const seeded: Record<string, { creator: string; price: string; metadata: string }> = {
     "mock-1": { creator: "GMOCKCREATOR1", price: "1.5000000", metadata: "Intro to Stellar" },
     "mock-2": { creator: "GMOCKCREATOR2", price: "0.5000000", metadata: "x402 Cheat Sheet" },
   };
+  if (activePublicKey) {
+    seeded["mock-profile"] = {
+      creator: activePublicKey,
+      price: "2.5000000",
+      metadata: "Your Profile Fixture",
+    };
+  }
   const hit = seeded[resourceId];
   if (!hit) {
     return JSON.stringify(
@@ -362,11 +387,22 @@ const MOCK_REGISTRY_RESOURCES = [
 /**
  * Stand-in for on-chain registry list(). Paginates the same seeded rows as lookup.
  */
-export function mockRegistryList(start: number, limit: number, contractId: string): string {
-  const slice = MOCK_REGISTRY_RESOURCES.slice(start, start + limit);
+export function mockRegistryList(start: number, limit: number, contractId: string, activePublicKey?: string | null): string {
+  const allResources = [...MOCK_REGISTRY_RESOURCES];
+  if (activePublicKey) {
+    allResources.push({
+      id: "mock-profile",
+      creator: activePublicKey,
+      price: "2.5000000 USDC",
+      metadata: "Your Profile Fixture",
+      listed: true,
+      tags: [],
+    });
+  }
+  const slice = allResources.slice(start, start + limit);
   if (slice.length === 0) {
     const message =
-      start === 0 && MOCK_REGISTRY_RESOURCES.length === 0
+      start === 0 && allResources.length === 0
         ? "No resources registered on-chain yet (mock mode)."
         : `No on-chain resources in range [${start}, ${start + limit}) (mock mode). Try a lower start index.`;
     return JSON.stringify(
