@@ -1409,6 +1409,96 @@ fn invalid_metadata_pointer_rejected() {
 }
 
 #[test]
+fn sha256_pointer_rejects_short_hash() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "shortsha");
+    // 63 hex chars — one short of the required 64
+    let metadata = String::from_str(&env, "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678");
+
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidMetadataPointer))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
+fn sha256_pointer_rejects_long_hash() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "longsha");
+    // 65 hex chars — one more than the required 64
+    let metadata = String::from_str(&env, "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab");
+
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidMetadataPointer))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
+fn sha256_pointer_rejects_non_hex_chars() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "nonhexsha");
+    // 64 chars but contains 'g' (not a hex digit)
+    let metadata = String::from_str(&env, "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789g");
+
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidMetadataPointer))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
+fn sha256_pointer_accepts_valid_64_hex_hash() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "goodsha");
+    let metadata = String::from_str(&env, "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    let r = client.get(&id);
+    assert_eq!(r.metadata, metadata);
+}
+
+#[test]
+fn sha256_dash_prefix_pointer_rejects_short_hash() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "dashshort");
+    // sha-256: with only 63 hex chars
+    let metadata = String::from_str(&env, "sha-256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678");
+
+    assert_eq!(
+        client.try_register(&creator, &id, &100i128, &metadata, &empty_tags(&env)),
+        Err(Ok(Error::InvalidMetadataPointer))
+    );
+    assert!(!client.exists(&id));
+}
+
+#[test]
+fn sha256_dash_prefix_pointer_accepts_valid_64_hex_hash() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "dashgood");
+    let metadata = String::from_str(&env, "sha-256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789");
+
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    let r = client.get(&id);
+    assert_eq!(r.metadata, metadata);
+}
+
+#[test]
+fn sha256_pointer_rejected_with_uppercase_hex() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "uppercasesha");
+    // 64 chars, valid hex, but uppercase — the contract should still accept it
+    let metadata = String::from_str(&env, "sha256:ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789");
+
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    let r = client.get(&id);
+    assert_eq!(r.metadata, metadata);
+}
+
+#[test]
 fn invalid_tag_rejected() {
     let (env, creator, client) = setup();
     let id = String::from_str(&env, "badtag");
