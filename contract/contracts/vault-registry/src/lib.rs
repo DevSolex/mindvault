@@ -976,6 +976,13 @@ impl VaultRegistry {
     }
 
     /// Cancel a proposed transfer. Only the current owner can call this.
+    ///
+    /// Self-cancel protection: `cancel_transfer` requires the caller to be the
+    /// current `resource.creator`. After `accept_transfer` completes the
+    /// pending-transfer entry is removed and ownership moves to the new
+    /// creator, so any subsequent `cancel_transfer` call by either party
+    /// returns `NoPendingTransfer` — an accepted transfer can never be
+    /// reversed through this path.
     pub fn cancel_transfer(env: Env, id: String) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         let resource = Self::load(&env, &id)?;
@@ -986,6 +993,20 @@ impl VaultRegistry {
         if !env.storage().persistent().has(&key) {
             return Err(Error::NoPendingTransfer);
         }
+
+        // Self-cancel guard: the pending recipient cannot be the same address
+        // as the current creator. This is structurally enforced by
+        // `propose_transfer` (`AlreadyOwner`), but we verify here so
+        // `cancel_transfer` remains safe even if called from an unusual path.
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NoPendingTransfer)?;
+        if pending == resource.creator {
+            return Err(Error::AlreadyOwner);
+        }
+
         env.storage().persistent().remove(&key);
         env.events()
             .publish((symbol_short!("cancel"), id), resource.creator);
