@@ -124,20 +124,96 @@ function errorMessage(error: unknown): string {
 }
 
 /**
+ * The credential a request carried, when it carried one.
+ *
+ * A 401 means something different depending on this: with no credential the
+ * agent simply has not registered yet, while with a stored publisher key it
+ * means the key it has been using is no longer accepted — revoked, rotated from
+ * another session, or attached to a publisher that no longer exists. Those need
+ * opposite recovery steps, so the mapper needs to know which one happened.
+ */
+export interface CredentialContext {
+  kind: "publisher_api_key";
+  /** Profile the credential was read from, so the fix names the right profile. */
+  profile: string;
+}
+
+/**
+ * True when a rejected request carried a stored publisher API key that the
+ * server refused to recognise (401), rather than accepting the key and denying
+ * the operation (403).
+ */
+export function isRevokedApiKey(
+  status: number,
+  credential: CredentialContext | undefined,
+): boolean {
+  return status === 401 && credential?.kind === "publisher_api_key";
+}
+
+/** Recovery step for a publisher key the server no longer recognises. */
+function revokedKeyAction(profile: string): string {
+  return (
+    `The publisher API key stored in profile "${profile}" is no longer accepted — ` +
+    "it was revoked, rotated from another session, or its publisher record was removed. " +
+    "The stored key cannot be revived: run mindvault_register to obtain a new one, " +
+    "mindvault_use_profile to switch to a profile whose key still works, or " +
+    "mindvault_restore_state to restore a backup that holds a valid key."
+  );
+}
+
+/** Recovery step for a key the server accepted but that lacks access here. */
+function forbiddenKeyAction(profile: string): string {
+  return (
+    `The publisher API key in profile "${profile}" is valid but not authorized for this ` +
+    "resource — it belongs to a different publisher. Switch to the owning profile with " +
+    "mindvault_use_profile, or act on a resource this publisher owns."
+  );
+}
+
+/**
  * Map a non-ok HTTP response into a structured error.
  *
  * `operation` is the caller-facing verb ("Browse failed", "Publish failed") and
  * is preserved verbatim at the head of the summary so existing tool contracts
  * and their assertions keep working.
+ *
+ * Pass `credential` on requests that carried a stored publisher API key: a 401
+ * then reports the key as revoked (naming the profile and the way back) instead
+ * of the generic "credentials are missing or not accepted".
  */
 export function mapHttpError(input: {
   operation: string;
   source: ErrorSource;
   status: number;
   data: unknown;
+  credential?: CredentialContext;
 }): MappedError {
   const category = categorizeStatus(input.status);
   const detail = extractDetail(input.data);
+  const credential = input.credential;
+
+  if (credential && isRevokedApiKey(input.status, credential)) {
+    return {
+      source: input.source,
+      category,
+      status: input.status,
+      summary:
+        `${input.operation}: ${detail} ` +
+        `(publisher API key for profile "${credential.profile}" was rejected as unknown)`,
+      action: revokedKeyAction(credential.profile),
+    };
+  }
+
+  if (credential && input.status === 403) {
+    return {
+      source: input.source,
+      category,
+      status: input.status,
+      summary: `${input.operation}: ${detail}`,
+      action: forbiddenKeyAction(credential.profile),
+    };
+  }
+
   return {
     source: input.source,
     category,
@@ -229,6 +305,7 @@ export function throwHttpError(input: {
   source: ErrorSource;
   status: number;
   data: unknown;
+  credential?: CredentialContext;
 }): never {
   throw mcpError(mapHttpError(input));
 }

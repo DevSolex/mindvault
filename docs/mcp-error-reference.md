@@ -54,13 +54,43 @@ always produces the same text, so agent behavior is reproducible.
 | `timeout`    | Aborted request, HTTP 408 / 504       | Retry, or raise `MINDVAULT_HTTP_TIMEOUT_MS`                   |
 | `payment`    | HTTP 402                              | Check the wallet, fund it with USDC, retry                    |
 | `validation` | HTTP 400 / 422 (and other 4xx)        | Correct the invalid arguments and call again                  |
-| `auth`       | HTTP 401 / 403                        | Run `mindvault_register`, or switch profile                   |
+| `auth`       | HTTP 401 / 403                        | Run `mindvault_register`, or switch profile — see below       |
 | `not_found`  | HTTP 404, or a missing registry entry | Confirm the id with browse/search, or register on-chain       |
 | `conflict`   | HTTP 409                              | Already in the requested state — no action needed             |
 | `rate_limit` | HTTP 429                              | Wait for the window, then retry                               |
 | `server`     | HTTP 5xx                              | Retry shortly; if it persists the service is down             |
 | `contract`   | Non-NotFound contract rejection       | Verify contract ID and network with `mindvault_registry_info` |
 | `unknown`    | Anything unclassified                 | Retry once, then report the summary                           |
+
+## Rejected publisher API keys
+
+`auth` covers three different situations, and the `Next:` line distinguishes
+them so an agent does not retry a credential that can never work again.
+
+| Situation                                | What the agent sees                                                   |
+| ---------------------------------------- | --------------------------------------------------------------------- |
+| No key stored (never registered)         | "Credentials are missing or not accepted. Run `mindvault_register` …" |
+| Stored key rejected as unknown (401)     | The key is reported **revoked**, naming the profile it came from      |
+| Stored key valid but not the owner (403) | The key is reported valid but **not authorized** for that resource    |
+
+A key that was rotated from another session, revoked server-side, or whose
+publisher record was deleted still sits in `~/.mindvault/state.json`, so the
+agent keeps sending it and keeps getting a bare `401 Invalid API key`. The
+mapper detects that the failed request carried a stored publisher key and says
+so:
+
+```
+Publish failed: Invalid API key (publisher API key for profile "publisher" was rejected as unknown)
+Source: MindVault API · Category: auth · HTTP 401
+Next: The publisher API key stored in profile "publisher" is no longer accepted — it was revoked, rotated from another session, or its publisher record was removed. The stored key cannot be revived: run mindvault_register to obtain a new one, mindvault_use_profile to switch to a profile whose key still works, or mindvault_restore_state to restore a backup that holds a valid key.
+```
+
+Note what is **not** suggested: `mindvault_rotate_publisher_key` needs a working
+key to rotate, so it cannot recover a revoked one.
+
+The classification line stays `Category: auth` in all three cases, so existing
+agent branches on the category keep working — the difference is carried by the
+summary and the next step.
 
 ## Soft failures are not errors
 

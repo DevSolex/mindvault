@@ -63,7 +63,7 @@ Available tools:
 | ------------------------------ | -------------------------------------------------------------------------- | --------------------------------------------------------------- |
 | `mindvault_setup_wallet`       | Create a Stellar wallet using the sponsored account protocol               | `"Create a wallet for me"`                                      |
 | `mindvault_wallet_info`        | Check wallet address and USDC balance                                      | `"What's my wallet balance?"`                                   |
-| `mindvault_browse`             | List catalog resources (same filters as search)                            | `"Show verified links under 1 USDC"`                            |
+| `mindvault_browse`             | List catalog resources (same filters and sort options as search)           | `"List the cheapest resources first"`                           |
 | `mindvault_search`             | Search catalog by keyword, price, type, status, owner, tags, listed        | `"Find verified links under 1 USDC"`                            |
 | `mindvault_preview`            | Get details and price for a resource                                       | `"Preview resource swcn98besxpp6t1u8e77fqz3"`                   |
 | `mindvault_register`           | Register as a publisher using the agent's wallet                           | `"Register me as Alice, alice@example.com"`                     |
@@ -71,6 +71,7 @@ Available tools:
 | `mindvault_publish_status`     | Poll verification and on-chain sync status after publish                   | `"Check publish status for swcn98besxpp6t1u8e77fqz3"`           |
 | `mindvault_buy`                | Pay USDC and access a resource via x402                                    | `"Buy resource swcn98besxpp6t1u8e77fqz3"`                       |
 | `mindvault_purchase_history`   | List locally persisted purchase receipts (filter by resource/network)      | `"Show my purchase history for stellar:testnet"`                |
+| `mindvault_export_receipts`    | Export purchase receipts as a schema-versioned JSON or CSV document        | `"Export August's receipts as CSV"`                             |
 | `mindvault_register_onchain`   | Retry on-chain registration for a published, verified resource             | `"Register resource swcn98besxpp6t1u8e77fqz3 on-chain"`         |
 | `mindvault_update_metadata`    | Update on-chain metadata pointer for a resource                            | `"Update metadata for swcn98besxpp6t1u8e77fqz3 to ipfs://..."`  |
 | `mindvault_set_price`          | Update on-chain USDC price for a resource                                  | `"Set price for swcn98besxpp6t1u8e77fqz3 to 10 USDC"`           |
@@ -119,9 +120,13 @@ For a copy-pasteable, end-to-end agent session — wallet setup → register →
 
 To verify the whole flow automatically, run the smoke test (`pnpm --filter @mindvault/mcp smoke`) — it boots the MCP server and drives setup → register → publish → preview → buy against a mock backend (or testnet), exiting non-zero on any failed tool call. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md)**.
 
+CI additionally runs a fixture-backed **install smoke test** (`pnpm --filter @mindvault/mcp smoke:install`) that starts the built server the way an agent client does — `node mcp/dist/index.js` over stdio — and drives read-only tool calls against in-process fixtures, so an install that cannot boot or serve its tools fails the build. See **[docs/mcp-smoke-test.md](docs/mcp-smoke-test.md#install-smoke-smokeinstall)**.
+
 For fast Vitest coverage of the MCP request surface itself (`listTools` / `callTool` over an in-memory SDK transport with mocked fetch/registry), see **[docs/mcp-integration-harness.md](docs/mcp-integration-harness.md)**.
 
 Tool failures from the API, x402, Horizon, and the vault-registry are normalized into a single structured form — a summary, a machine-readable `Source · Category · HTTP` line, and one actionable next step. See **[docs/mcp-error-reference.md](docs/mcp-error-reference.md)**.
+
+Receipts from `mindvault_buy` can be exported as a schema-versioned JSON or CSV document with an explicit currency and total, returned as MCP `structuredContent`. See **[docs/mcp-receipt-export.md](docs/mcp-receipt-export.md)**.
 
 Every outbound call runs under a configurable `AbortController` deadline, so a hung backend fails fast instead of blocking the agent. Idempotent reads additionally retry transient failures with bounded, jittered backoff — payments never do, since a replay could settle twice. See **[docs/mcp-timeouts-retries.md](docs/mcp-timeouts-retries.md)**.
 
