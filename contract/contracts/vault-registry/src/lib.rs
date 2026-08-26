@@ -103,6 +103,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("exists_many", "—"),
     ("get_owner", "—"),
     ("count", "—"),
+    ("listed_count", "—"),
     ("creator_resource_count", "—"),
     // ── Paginated catalog ─────────────────────────────────────────────────
     ("list", "—"),
@@ -492,6 +493,8 @@ pub enum DataKey {
     FeeConfig,
     Moderator(Address),
     DisputeFlag(String),
+    /// Number of resources currently in the Listed state.
+    ListedCount,
     /// Hash of a moderator's off-chain dispute reason writeup for a resource,
     /// set via `set_flag_reason_hash`. Independent of `FlagReason` (a fixed
     /// enum code): this carries a digest of free-form detail a moderator
@@ -1456,6 +1459,11 @@ impl VaultRegistry {
     /// Total number of resources successfully registered (monotonic; not decremented on transfer).
     pub fn count(env: Env) -> u32 {
         env.storage().instance().get(&DataKey::Count).unwrap_or(0)
+    }
+
+    /// Number of resources currently in the Listed state.
+    pub fn listed_count(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::ListedCount).unwrap_or(0)
     }
 
     /// Store the intended network identifier once. The supplied ID must match
@@ -2448,9 +2456,32 @@ impl VaultRegistry {
     }
 
     fn transition_state(env: &Env, resource: &mut Resource, next: ResourceState) {
+        let was_listed = resource.state == ResourceState::Listed;
+        let becomes_listed = next == ResourceState::Listed;
         resource.state = next;
-        resource.listed = next == ResourceState::Listed;
+        resource.listed = becomes_listed;
         Self::save(env, resource);
+        // Maintain the listed count index.
+        if !was_listed && becomes_listed {
+            Self::bump_listed_count(env, 1);
+        } else if was_listed && !becomes_listed {
+            Self::bump_listed_count(env, -1);
+        }
+    }
+
+    /// Adjust the listed-count index by a signed delta. Panics on underflow
+    /// (should never happen in production because the delta is always paired
+    /// with a prior state check).
+    fn bump_listed_count(env: &Env, delta: i32) {
+        let current: u32 = env.storage().instance().get(&DataKey::ListedCount).unwrap_or(0);
+        let next = if delta > 0 {
+            current.checked_add(delta as u32).expect("listed count overflow")
+        } else {
+            current
+                .checked_sub(delta.unsigned_abs())
+                .expect("listed count underflow")
+        };
+        env.storage().instance().set(&DataKey::ListedCount, &next);
     }
 
     fn require_current_admin(env: &Env, admin: &Address) -> Result<(), Error> {
@@ -2770,6 +2801,9 @@ impl VaultRegistry {
         };
         env.storage().persistent().set(&key, &resource);
         Self::bump_persistent(&env, &key);
+
+        // New resources start Listed — track in the listed count index.
+        Self::bump_listed_count(&env, 1);
 
         let count: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
         let idx_key = DataKey::Index(count);

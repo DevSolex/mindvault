@@ -6769,6 +6769,80 @@ fn set_verification_status_event_topic_holds_full_max_length_id() {
     assert_eq!(topic_id.len(), MAX_RESOURCE_ID_LEN);
 }
 
+// ── listed_count tests ──────────────────────────────────────────────────────
+
+#[test]
+fn listed_count_starts_at_zero() {
+    let (env, _creator, client) = setup();
+    assert_eq!(client.listed_count(), 0u32);
+}
+
+#[test]
+fn listed_count_increments_on_register() {
+    let (env, creator, client) = setup();
+    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 1);
+    client.register(&creator, &"res2", &200i128, &String::from_str(&env, "ipfs://b"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 2);
+}
+
+#[test]
+fn listed_count_decrements_on_set_listed_false() {
+    let (env, creator, client) = setup();
+    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 1);
+    client.set_listed(&"res1", &false);
+    assert_eq!(client.listed_count(), 0);
+}
+
+#[test]
+fn listed_count_increments_when_relisted() {
+    let (env, creator, client) = setup();
+    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 1);
+    client.set_listed(&"res1", &false);
+    assert_eq!(client.listed_count(), 0);
+    client.set_listed(&"res1", &true);
+    assert_eq!(client.listed_count(), 1);
+}
+
+#[test]
+fn listed_count_noop_when_already_in_target_state() {
+    let (env, creator, client) = setup();
+    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 1);
+    // set_listed(true) on an already-listed resource should not change count
+    client.set_listed(&"res1", &true);
+    assert_eq!(client.listed_count(), 1);
+}
+
+#[test]
+fn listed_count_decrements_on_freeze() {
+    let (env, creator, client) = setup();
+    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 1);
+    client.freeze_resource(&"res1");
+    assert_eq!(client.listed_count(), 0);
+}
+
+#[test]
+fn listed_count_decrements_on_tombstone() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 1);
+    client.tombstone_resource(&"res1", &_admin);
+    assert_eq!(client.listed_count(), 0);
+}
+
+#[test]
+fn listed_count_increments_when_dispute_resolved_to_listed() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    assert_eq!(client.listed_count(), 1);
+    client.open_dispute(&"res1", &_admin);
+    assert_eq!(client.listed_count(), 0);
+    client.resolve_dispute(&"res1", &_admin, &ResourceState::Listed);
+    assert_eq!(client.listed_count(), 1);
 // ── Duplicate receipt buyer normalization (#683) ──────────────────────────────
 //
 // The duplicate-receipt guard is keyed on the exact `(resource_id, buyer)`
