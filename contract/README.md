@@ -266,91 +266,38 @@ This table is the canonical, human-readable mirror of `EVENT_SCHEMA` in
 if this table and `EVENT_SCHEMA` (or the contract's actual emissions) drift
 apart, so update all three together.
 
-| Event       | Payload                                                            | Triggered by                                               |
-| ----------- | ------------------------------------------------------------------ | ---------------------------------------------------------- |
-| `register`  | `Resource` (full resource record)                                  | `register()` succeeds                                      |
-| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`               | `set_price()` succeeds                                     |
-| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`           | `update_metadata()` succeeds                               |
-| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`                 | `set_tags()` succeeds                                      |
-| `transfer`  | `(previous_owner: Address, new_owner: Address)`                    | `transfer_ownership()` or `accept_transfer()` succeeds     |
-| `propose`   | `(owner: Address, proposed: Address)`                              | `propose_transfer()` succeeds                              |
-| `cancel`    | `owner: Address`                                                   | `cancel_transfer()` succeeds                               |
-| `setlisted` | `(old_listed: bool, new_listed: bool)`                             | `set_listed()` (and `delist()`) succeeds                   |
-| `setterms`  | `terms_hash: String`                                               | `set_terms_hash()` succeeds                                |
-| `setadmin`  | `new_admin: Address`                                               | The first (bootstrap) `nominate_new_admin()` call succeeds |
-| `nomadmin`  | `new_admin: Address`                                               | A subsequent `nominate_new_admin()` call succeeds          |
-| `accadmin`  | `new_admin: Address`                                               | `accept_admin()` succeeds                                  |
-| `freeze`    | `()`                                                               | `freeze_metadata()` succeeds                               |
+| Event       | Payload                                                    | Triggered by                                               |
+| ----------- | ---------------------------------------------------------- | ---------------------------------------------------------- |
+| `register`  | `Resource` (full resource record)                          | `register()` succeeds                                      |
+| `setprice`  | `PriceUpdated { id, old_price, new_price, updater }`       | `set_price()` succeeds                                     |
+| `updmeta`   | `MetadataUpdateEvent { id, old_metadata, new_metadata }`   | `update_metadata()` succeeds                               |
+| `settags`   | `(prev_tags: Vec<String>, next_tags: Vec<String>)`         | `set_tags()` succeeds                                      |
+| `transfer`  | `(previous_owner: Address, new_owner: Address)`            | `transfer_ownership()` or `accept_transfer()` succeeds     |
+| `propose`   | `(owner: Address, proposed: Address)`                      | `propose_transfer()` succeeds                              |
+| `cancel`    | `owner: Address`                                           | `cancel_transfer()` succeeds                               |
+| `setlisted` | `(old_listed: bool, new_listed: bool)`                     | `set_listed()` (and `delist()`) succeeds                   |
+| `setterms`  | `terms_hash: String`                                       | `set_terms_hash()` succeeds                                |
+| `setadmin`  | `new_admin: Address`                                       | The first (bootstrap) `nominate_new_admin()` call succeeds |
+| `nomadmin`  | `new_admin: Address`                                       | A subsequent `nominate_new_admin()` call succeeds          |
+| `accadmin`  | `new_admin: Address`                                       | `accept_admin()` succeeds                                  |
+| `freeze`    | `()`                                                       | `freeze_metadata()` succeeds                               |
 | `verify`    | `(old_status: VerificationStatus, new_status: VerificationStatus)` | `set_verification_status()` succeeds                       |
-| `addverif`  | `true`                                                             | `add_verifier()` succeeds                                  |
-| `rmverif`   | `false`                                                            | `remove_verifier()` succeeds                               |
-| `reindex`   | `new_count: u32 (topic carries old_count: u32)`                    | `repair_index()` succeeds                                  |
-| `payrec`    | `PaymentReceipt { resource_id, payer, tx_hash, amount, ledger }`   | `record_payment()` succeeds                                |
-| `anchor`    | `PurchaseReceiptAnchor { resource_id, buyer, receipt_hash, ledger }` | `anchor_purchase_receipt()` succeeds                        |
-| `addmod`    | `true`                                                             | `add_moderator()` succeeds                                 |
-| `rmmod`     | `false`                                                            | `remove_moderator()` succeeds                              |
+| `addverif`  | `true`                                                     | `add_verifier()` succeeds                                  |
+| `rmverif`   | `false`                                                    | `remove_verifier()` succeeds                               |
+| `reindex`   | `new_count: u32 (topic carries old_count: u32)`            | `repair_index()` succeeds                                  |
+| `payment`   | `PaymentReceipt { receipt_id, resource_id, payer, amount, state, tx_hash, recorded_at }` | `record_payment()` succeeds                                |
+| `anchor`    | `PurchaseReceiptAnchor { resource_id, buyer, receipt_hash, ledger }` | `anchor_purchase_receipt()` succeeds                       |
+| `addmod`    | `true`                                                     | `add_moderator()` succeeds                                 |
+| `rmmod`     | `false`                                                    | `remove_moderator()` succeeds                              |
 | `flag`      | `FlagEvent { id, moderator, reason }`                      | `flag_resource()` succeeds                                 |
 | `unflag`    | `resource id`                                              | `unflag_resource()` succeeds                               |
 | `retagidx`  | `new_count: u32`                                           | `repair_tag_index()` succeeds                              |
 | `setfee`    | `FeeConfigUpdated { old_config, new_config }`              | `set_fee_config()` succeeds                                |
 | `ttlext`    | `()`                                                       | `extend_resource_ttl()` succeeds                           |
-
-The `setlisted` event payload is a two-element tuple `(old_listed, new_listed)` so
-listeners can determine the transition direction without querying additional state:
-
-| Transition            | `(old, new)`     |
-| --------------------- | ---------------- |
-| Delist (was listed)   | `(true, false)`  |
-| Relist (was delisted) | `(false, true)`  |
-| No-op relist          | `(true, true)`   |
-| No-op delist          | `(false, false)` |
-
-Both `set_listed(id, false)` and `delist(id)` produce an identical `setlisted`
-event — `delist` is a thin convenience wrapper that calls `set_listed`.
-For backwards compatibility, no-op listing calls still emit the corresponding
-`setlisted` event but do not count as lifecycle transitions.
-
-### Resource lifecycle state machine
-
-New resources start in `Listed`. `listed` is maintained as a compatibility
-projection and is `true` only in that state. `freeze_metadata()` is independent:
-it makes the metadata pointer immutable but does not change `ResourceState`.
-
-| Current state | Allowed next states                            | Authorized actor                                                   |
-| ------------- | ---------------------------------------------- | ------------------------------------------------------------------ |
-| `Listed`      | `Delisted`, `Frozen`, `Disputed`, `Tombstoned` | creator for `Delisted`/`Frozen`; admin for `Disputed`/`Tombstoned` |
-| `Delisted`    | `Listed`, `Frozen`, `Disputed`, `Tombstoned`   | creator for `Listed`/`Frozen`; admin for `Disputed`/`Tombstoned`   |
-| `Frozen`      | `Disputed`, `Tombstoned`                       | admin                                                              |
-| `Disputed`    | `Listed`, `Delisted`, `Frozen`, `Tombstoned`   | admin                                                              |
-| `Tombstoned`  | none                                           | —                                                                  |
-
-Use `set_listed(id, true|false)` for the creator-controlled listed/delisted
-transitions and `freeze_resource(id)` to enter `Frozen`. The current admin uses
-`open_dispute(id, admin)`, `resolve_dispute(id, admin, state)`, and
-`tombstone_resource(id, admin)` for moderation transitions.
-
-`Frozen`, `Disputed`, and `Tombstoned` resources are excluded from
-`list_listed`. Tombstoned resources are also removed from tag discovery and
-excluded from `list_by_tag`, while remaining readable through `get` for audit
-purposes. Creator mutations to price, metadata, tags, or ownership fail with
-`ResourceNotMutable` in those states. All invalid state changes, including
-attempts to leave `Frozen` or `Tombstoned` without admin resolution, fail with
-`InvalidLifecycleTransition`.
-
-The `updmeta` event carries structured data so that off-chain indexers can build
-a full audit trail without querying historical ledger state:
-
-```rust
-pub struct MetadataUpdateEvent {
-    pub id: String,           // the resource id
-    pub old_metadata: String, // metadata pointer before the update
-    pub new_metadata: String, // metadata pointer after the update
-}
-```
-
-The `settags` event emits both previous and next tags, enabling indexers
-to detect tag removals and reconcile state changes without requiring full history
-scans.
+| `pause`     | `(paused: bool, admin: Address)`                           | `set_paused()` succeeds                                    |
+| `settle`    | `PaymentReceipt`                                           | `settle_payment()` succeeds                                |
+| `addsettlr` | `true`                                                     | `add_settler()` succeeds                                   |
+| `rmsettlr`  | `false`                                                    | `remove_settler()` succeeds                                |
 
 ### Registry info (discovery)
 
