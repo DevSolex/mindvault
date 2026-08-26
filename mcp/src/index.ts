@@ -55,6 +55,8 @@ import {
   mockSetListed,
 } from "./mock.js";
 import { purchaseHistoryTool, recordPurchase } from "./purchaseHistory.js";
+import { exportReceiptsTool } from "./receipts.js";
+import { TOOL_DEFINITIONS, type ToolDefinition } from "./tools.js";
 import { dryRunPublish, dryRunBuy, dryRunOnchain } from "./dryRun.js";
 import { initAuditLogging, logToolStart, logToolSuccess, logToolError } from "./auditLog.js";
 import { REGISTRY_LIST_DEFAULT_LIMIT, REGISTRY_LIST_DEFAULT_START } from "./registryPagination.js";
@@ -115,10 +117,12 @@ import {
   mcpError,
   throwHttpError,
   isTimeoutError,
+  type CredentialContext,
   type ErrorSource,
 } from "./errorMapping.js";
 import { parseMetadataHash } from "./metadataHash.js";
 import {
+  applyCatalogSort,
   applyClientCatalogFilters,
   buildCatalogQueryString,
   catalogFilterInputProperties,
@@ -566,6 +570,7 @@ async function rotatePublisherKey(profileArg?: string): Promise<string> {
       source: "api",
       status: res.status,
       data: res.data,
+      credential: publisherCredential(target),
     });
   }
 
@@ -694,6 +699,17 @@ function requireWallet(): AgentWallet {
     );
   }
   return wallet;
+}
+
+/**
+ * Identify the publisher credential a request is about to carry.
+ *
+ * Passed to the error mapper so a 401 on an API-key call reports the stored key
+ * as revoked — naming the profile it came from — instead of the generic
+ * "credentials are missing" advice that fits an unregistered agent.
+ */
+function publisherCredential(profile: string = activeProfileName): CredentialContext {
+  return { kind: "publisher_api_key", profile };
 }
 
 function requireApiKey(): string {
@@ -1092,7 +1108,7 @@ export async function browse(filters: CatalogFilters = {}): Promise<string> {
   const res = await jsonFetch(url);
   if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
   let items: any[] = Array.isArray(res.data) ? res.data : [];
-  items = applyClientCatalogFilters(items, filters);
+  items = applyCatalogSort(applyClientCatalogFilters(items, filters), filters.sort);
   const body =
     items.length === 0
       ? filters.query ||
@@ -1140,7 +1156,7 @@ export async function search(filtersOrQuery: string | CatalogFilters): Promise<s
 
   // Client-side keyword / tags / listed / skipped for unit-test compatibility
   // and parity with fields the public catalog schema does not accept.
-  items = applyClientCatalogFilters(items, filters);
+  items = applyCatalogSort(applyClientCatalogFilters(items, filters), filters.sort);
 
   if (items.length === 0) return `No resources match ${describeCatalogFilters(filters)}.`;
   return truncateResponse(items.map(formatResource).join("\n\n"));
@@ -1329,6 +1345,7 @@ async function publish(args: {
       source: "api",
       status: createRes.status,
       data: createRes.data,
+      credential: publisherCredential(),
     });
   const resource = createRes.data;
 
@@ -1579,13 +1596,16 @@ export async function registerOnchain(
       source: "api",
       status: prep.status,
       data: prep.data,
+      credential: publisherCredential(),
     });
+    // 401/403 are left to the mapper: it knows whether the stored publisher key
+    // was rejected outright or accepted but unauthorized here, and names the
+    // profile to fix. Repeating a generic ownership line here would bury that.
     const specific = [
       prep.status === 400 ? "The resource must be verified before it can be registered." : null,
       prep.status === 409
         ? "The resource is already registered on-chain — no action needed."
         : null,
-      prep.status === 403 ? "This resource is owned by a different publisher." : null,
     ].filter(Boolean);
     throw mcpError({
       ...mapped,
@@ -1622,6 +1642,7 @@ export async function registerOnchain(
       source: "api",
       status: submit.status,
       data: submit.data,
+      credential: publisherCredential(),
     });
     throw mcpError({
       ...mapped,
@@ -2497,6 +2518,8 @@ export async function dispatchTool(
       return buy(requiredString(args, "resourceId"), flag(args, "dryRun"), undefined, onProgress);
     case "mindvault_purchase_history":
       return purchaseHistoryTool(rawRecord);
+    case "mindvault_export_receipts":
+      return exportReceiptsTool(rawRecord);
     case "mindvault_register_onchain":
       return registerOnchain(requiredString(args, "resourceId"), onProgress);
     case "mindvault_agent_status":
@@ -2545,6 +2568,45 @@ export async function dispatchTool(
       return formatVerifyInstall(verifyInstall(process.env));
     default:
       throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+/**
+ * Look up an advertised tool definition by name.
+ *
+ * Tool metadata lives in two places today: the literal list below and
+ * `TOOL_DEFINITIONS` in tools.ts, which the validation layer and its coverage
+ * tests read. Anything defined once — a tool with an `outputSchema`, whose
+ * schema the structured result must match — is declared in tools.ts and pulled
+ * in here, so the advertised schema, the validation spec, and the result shape
+ * cannot drift apart.
+ */
+function toolDefinition(name: string): ToolDefinition {
+  const definition = TOOL_DEFINITIONS.find((tool) => tool.name === name);
+  if (!definition) throw new Error(`No tool definition for ${name} in TOOL_DEFINITIONS.`);
+  return definition;
+}
+
+/** Tools that declare an outputSchema, by name, for structured results. */
+const TOOLS_WITH_OUTPUT_SCHEMA = new Set(
+  TOOL_DEFINITIONS.filter((tool) => tool.outputSchema).map((tool) => tool.name),
+);
+
+/**
+ * The structured form of a tool result, when the tool advertises one.
+ *
+ * A tool with an `outputSchema` must return structured content conforming to it
+ * (MCP 2025-06-18). Those tools already produce their result as JSON text, so
+ * the object is recovered by parsing it — the text block stays exactly as it
+ * was, which keeps every existing client and test working.
+ */
+function structuredResult(name: string, text: string): Record<string, unknown> | undefined {
+  if (!TOOLS_WITH_OUTPUT_SCHEMA.has(name)) return undefined;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -2757,6 +2819,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    // Declared in tools.ts: it carries an outputSchema, and the advertised
+    // schema, the validation spec, and the structured result must agree.
+    toolDefinition("mindvault_export_receipts"),
     {
       name: "mindvault_register_onchain",
       description:
@@ -3138,9 +3203,8 @@ if (!process.env.VITEST) {
   // Handle stdin EOF (pipe closed)
   process.stdin.on("end", () => shutdown("stdin-EOF"));
 
+  // Exactly one connect: the stdio transport can only be started once, so a
+  // second call throws "already started" and the process dies before it can
+  // serve a single request.
   await server.connect(transport);
-  await await await server.connect(transport);
-
-  // Setup graceful shutdown
-  setupGracefulShutdown(server, transport, console.log);
 }
