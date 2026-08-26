@@ -24,6 +24,7 @@ import {
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { PROMPT_DEFINITIONS, getPrompt } from "./prompts.js";
+import { createProgressEmitter, type ProgressContext } from "./progress.js";
 import { truncateResponse } from "./truncation.js";
 import { createEd25519Signer } from "@x402/stellar";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
@@ -1459,6 +1460,7 @@ export async function buy(
   resourceId: string,
   dryRun?: boolean,
   estimatedPrice?: string | null,
+  onProgress?: (progress: number, total?: number, message?: string) => Promise<void>,
 ): Promise<string> {
   if (dryRun) {
     return JSON.stringify(
@@ -1472,6 +1474,7 @@ export async function buy(
 
   // Check the wallet can cover the price before attempting payment so a
   // shortfall returns an actionable message instead of an opaque payment error.
+  await onProgress?.(1, 4, "Validating resource");
   const meta = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
   if (meta.ok && meta.data?.price != null) {
     const shortMsg = await insufficientFundsMessage(
@@ -1495,6 +1498,7 @@ export async function buy(
   const paidFetch = makePaidFetch(wallet);
   let res: Response;
   try {
+    await onProgress?.(2, 4, "Submitting payment");
     res = await paidFetch(`${BASE_URL}/resources/${resourceId}`);
   } catch (err) {
     metrics.recordPayment(false);
@@ -1526,6 +1530,7 @@ export async function buy(
 
   // Persist a local receipt so mindvault_purchase_history can list prior buys.
   // Recording failures must not fail the successful purchase response.
+  await onProgress?.(3, 4, "Recording purchase");
   try {
     recordPurchase({
       resourceId,
@@ -1549,6 +1554,8 @@ export async function buy(
     txHash,
   };
 
+  await onProgress?.(4, 4, "Done");
+
   return JSON.stringify(summary, null, 2);
 }
 
@@ -1561,12 +1568,16 @@ export async function buy(
  * register transaction (owner-only), signs it with the agent wallet — which is
  * the resource creator for agent-published resources — and submits it.
  */
-export async function registerOnchain(resourceId: string): Promise<string> {
+export async function registerOnchain(
+  resourceId: string,
+  onProgress?: (progress: number, total?: number, message?: string) => Promise<void>,
+): Promise<string> {
   const wallet = requireWallet();
   const apiKey = requireApiKey();
   if (!resourceId) throw new Error("resourceId is required.");
 
   // Step 1: prepare the unsigned register transaction (owner-only).
+  await onProgress?.(1, 3, "Preparing transaction");
   const prep = await jsonFetch(`${BASE_URL}/resources/${resourceId}/register/prepare`, {
     headers: { "x-api-key": apiKey },
   });
@@ -1603,6 +1614,7 @@ export async function registerOnchain(resourceId: string): Promise<string> {
   }
 
   // Step 2: sign with the agent wallet (the resource creator).
+  await onProgress?.(2, 3, "Signing transaction");
   const { Keypair, Transaction } = await import("@stellar/stellar-sdk");
   const passphrase = networkPassphrase ?? REGISTRY_NETWORK_PASSPHRASE;
   const tx = new Transaction(unsignedXdr, passphrase);
@@ -1610,6 +1622,7 @@ export async function registerOnchain(resourceId: string): Promise<string> {
   const signedXdr = tx.toXDR();
 
   // Step 3: submit the signed transaction.
+  await onProgress?.(3, 3, "Submitting transaction");
   const submit = await jsonFetch(`${BASE_URL}/resources/${resourceId}/register`, {
     method: "POST",
     headers: { "x-api-key": apiKey },
@@ -2434,7 +2447,11 @@ function isDispatchableTool(name: string): boolean {
  * Route a validated tool call to its implementation. Used by the MCP CallTool
  * handler and by unit tests.
  */
-export async function dispatchTool(name: string, rawArgs: unknown): Promise<string> {
+export async function dispatchTool(
+  name: string,
+  rawArgs: unknown,
+  onProgress?: (progress: number, total?: number, message?: string) => Promise<void>,
+): Promise<string> {
   if (!isDispatchableTool(name)) {
     throw new UnknownToolError(name);
   }
@@ -2491,13 +2508,13 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
     case "mindvault_publish_status":
       return publishStatus(rawRecord);
     case "mindvault_buy":
-      return buy(requiredString(args, "resourceId"), flag(args, "dryRun"));
+      return buy(requiredString(args, "resourceId"), flag(args, "dryRun"), undefined, onProgress);
     case "mindvault_purchase_history":
       return purchaseHistoryTool(rawRecord);
     case "mindvault_export_receipts":
       return exportReceiptsTool(rawRecord);
     case "mindvault_register_onchain":
-      return registerOnchain(requiredString(args, "resourceId"));
+      return registerOnchain(requiredString(args, "resourceId"), onProgress);
     case "mindvault_agent_status":
       return agentStatus();
     case "mindvault_registry_info":
@@ -3078,18 +3095,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args = {} } = request.params;
+  const progressToken = request.params._meta?.progressToken;
+  const onProgress =
+    progressToken != null
+      ? createProgressEmitter({ token: progressToken, send: extra.sendNotification })
+      : undefined;
   try {
     // Errors thrown by tools (and by measureTool's re-throw) become a deterministic
     // MCP error result: `isError: true` and text prefixed with `Error:`, with secrets
     // stripped via safeErrorMessage. Clients should treat that shape as failure.
-    const result = await measureTool(metrics, name, () => dispatchTool(name, args));
-    const structured = structuredResult(name, result);
-    return {
-      content: [{ type: "text", text: result }],
-      ...(structured ? { structuredContent: structured } : {}),
-    };
+    const result = await measureTool(metrics, name, () => dispatchTool(name, args, onProgress));
+    return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
     return { content: [{ type: "text", text: `Error: ${safeErrorMessage(err)}` }], isError: true };
   }
