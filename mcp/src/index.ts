@@ -24,6 +24,7 @@ import {
   GetPromptRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { PROMPT_DEFINITIONS, getPrompt } from "./prompts.js";
+import { createProgressEmitter, type ProgressContext } from "./progress.js";
 import { truncateResponse } from "./truncation.js";
 import { createEd25519Signer } from "@x402/stellar";
 import { ExactStellarScheme } from "@x402/stellar/exact/client";
@@ -54,6 +55,8 @@ import {
   mockSetListed,
 } from "./mock.js";
 import { purchaseHistoryTool, recordPurchase } from "./purchaseHistory.js";
+import { exportReceiptsTool } from "./receipts.js";
+import { TOOL_DEFINITIONS, type ToolDefinition } from "./tools.js";
 import { dryRunPublish, dryRunBuy, dryRunOnchain } from "./dryRun.js";
 import { initAuditLogging, logToolStart, logToolSuccess, logToolError } from "./auditLog.js";
 import { REGISTRY_LIST_DEFAULT_LIMIT, REGISTRY_LIST_DEFAULT_START } from "./registryPagination.js";
@@ -88,10 +91,12 @@ import { safeErrorMessage, safeLog } from "./redaction.js";
 import { signMutatingHeaders } from "./requestSignature.js";
 import { exportState, restoreState, checkStatePermissions } from "./stateBackup.js";
 import { formatResetPreview, isResetConfirmed, type ResetScope } from "./resetGuard.js";
+import { verifyInstall, formatVerifyInstall } from "./verifyInstall.js";
 import {
   describeTimeouts,
   fetchWithTimeout,
   resolveTimeouts,
+  resolveUserAgent,
   withTimeout,
   type TimeoutService,
 } from "./httpTimeout.js";
@@ -109,13 +114,21 @@ import {
   mapHttpError,
   mapRegistryError,
   mapTransportError,
+  mappedErrorOf,
   mcpError,
   throwHttpError,
   isTimeoutError,
+  type CredentialContext,
   type ErrorSource,
 } from "./errorMapping.js";
+import {
+  mapSponsoredHttpFailure,
+  mapSponsoredTransportFailure,
+  SPONSORED_CREATE_PATH,
+} from "./sponsoredDiagnostics.js";
 import { parseMetadataHash } from "./metadataHash.js";
 import {
+  applyCatalogSort,
   applyClientCatalogFilters,
   buildCatalogQueryString,
   catalogFilterInputProperties,
@@ -167,6 +180,15 @@ initAuditLogging(process.env);
 // outbound requests go through `httpFetch`, which is the mock shim in this mode
 // and the global fetch otherwise.
 const MOCK = mockEnabledFromEnv(process.env);
+/** Live mock-mode check — reads process.env at call time so tests can toggle it. */
+function _isMock(): boolean {
+  return mockEnabledFromEnv(process.env);
+}
+/** Test helper: override mock mode without restarting the process. */
+export function _setMockMode(on: boolean): void {
+  if (on) process.env.MINDVAULT_MOCK = "1";
+  else delete process.env.MINDVAULT_MOCK;
+}
 // In real mode, defer to the global `fetch` at call time (not a captured
 // reference) so a test-stubbed global is still honoured.
 const httpFetch: typeof fetch = MOCK
@@ -179,6 +201,10 @@ const TIMEOUTS = resolveTimeouts(process.env);
 
 // Bounded, jittered retry for idempotent calls only. Payments never use it.
 const RETRY_POLICY = retryPolicyFromEnv(process.env);
+
+// User-Agent sent on every outbound HTTP request. Configurable via
+// MINDVAULT_USER_AGENT; defaults to "mindvault-mcp/1.0.0".
+const USER_AGENT = resolveUserAgent(process.env);
 
 /**
  * Retry chatter goes to stderr so operators can see transient failures being
@@ -207,8 +233,12 @@ function httpRetryOptions(label: string) {
  * is retried; the JSON-RPC method name is part of the log label.
  */
 function sorobanRpcFetch(init: RequestInit, label: string): Promise<Response> {
+  const initWithUA: RequestInit = {
+    ...init,
+    headers: { "User-Agent": USER_AGENT, ...(init.headers as Record<string, string> | undefined) },
+  };
   return withRetry(
-    () => fetchWithTimeout(httpFetch, SOROBAN_RPC_URL, init, "soroban", TIMEOUTS.soroban),
+    () => fetchWithTimeout(httpFetch, SOROBAN_RPC_URL, initWithUA, "soroban", TIMEOUTS.soroban),
     httpRetryOptions(label),
   );
 }
@@ -388,9 +418,13 @@ async function checkDependency(
   url: string,
   init?: RequestInit,
 ): Promise<DependencyStatus> {
+  const initWithUA: RequestInit = {
+    ...init,
+    headers: { "User-Agent": USER_AGENT, ...(init?.headers as Record<string, string> | undefined) },
+  };
   try {
     const res = await withRetry(
-      () => fetchWithTimeout(httpFetch, url, init, "http", TIMEOUTS.http),
+      () => fetchWithTimeout(httpFetch, url, initWithUA, "http", TIMEOUTS.http),
       httpRetryOptions(`health:${name}`),
     );
     if (res.ok) {
@@ -542,6 +576,7 @@ async function rotatePublisherKey(profileArg?: string): Promise<string> {
       source: "api",
       status: res.status,
       data: res.data,
+      credential: publisherCredential(target),
     });
   }
 
@@ -621,6 +656,7 @@ async function jsonFetch(
     typeof init?.body === "string" ? init.body : init?.body ? JSON.stringify(init.body) : undefined;
   const baseHeaders: Record<string, string> = {
     "Content-Type": "application/json",
+    "User-Agent": USER_AGENT,
     ...(init?.headers as Record<string, string> | undefined),
   };
   const headers = signMutatingHeaders(url, method, baseHeaders, body);
@@ -669,6 +705,17 @@ function requireWallet(): AgentWallet {
     );
   }
   return wallet;
+}
+
+/**
+ * Identify the publisher credential a request is about to carry.
+ *
+ * Passed to the error mapper so a 401 on an API-key call reports the stored key
+ * as revoked — naming the profile it came from — instead of the generic
+ * "credentials are missing" advice that fits an unregistered agent.
+ */
+function publisherCredential(profile: string = activeProfileName): CredentialContext {
+  return { kind: "publisher_api_key", profile };
 }
 
 function requireApiKey(): string {
@@ -722,7 +769,7 @@ async function getBalanceDetails(publicKey: string): Promise<BalanceDetails> {
         fetchWithTimeout(
           httpFetch,
           `${HORIZON_URL}/accounts/${publicKey}`,
-          undefined,
+          { headers: { "User-Agent": USER_AGENT } },
           "horizon",
           TIMEOUTS.horizon,
         ),
@@ -837,7 +884,7 @@ async function getAccountBalances(
       fetchWithTimeout(
         httpFetch,
         `${HORIZON_URL}/accounts/${publicKey}`,
-        undefined,
+        { headers: { "User-Agent": USER_AGENT } },
         "horizon",
         TIMEOUTS.horizon,
       ),
@@ -949,48 +996,52 @@ export async function txStatus(txHash: string): Promise<string> {
 
 // ── Tool handlers ─────────────────────────────────────────────────────────────
 
+function hasPublicErrorDetail(data: unknown): boolean {
+  if (typeof data === "string") return data.trim().length > 0;
+  if (!data || typeof data !== "object") return false;
+  const obj = data as Record<string, unknown>;
+  return ["error", "message", "detail", "reason"].some((key) => {
+    const value = obj[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+function sponsoredAccountErrorData(status: number, data: unknown): unknown {
+  if (status >= 500 && !hasPublicErrorDetail(data)) {
+    return { message: "internal service error" };
+  }
+  return data;
+}
+
 async function setupWallet(profileArg?: string): Promise<string> {
   const target = resolveProfileName(profileArg);
-  const res = await jsonFetch(`${SPONSORED_ACCOUNT_URL}/create`, { method: "POST" });
+  const operation = "mindvault_setup_wallet failed to create wallet";
+
+  // The sponsored-account service is the single dependency of wallet setup, so
+  // both of its failure paths get the same structured diagnostics: a transport
+  // failure (nothing answered) is classified here rather than escaping as the
+  // generic "Sponsored-account request failed" jsonFetch would otherwise throw.
+  let res: Awaited<ReturnType<typeof jsonFetch>>;
+  try {
+    res = await jsonFetch(`${SPONSORED_ACCOUNT_URL}${SPONSORED_CREATE_PATH}`, { method: "POST" });
+  } catch (err) {
+    const mapped = mappedErrorOf(err);
+    if (!mapped) throw err;
+    throw mcpError(
+      mapSponsoredTransportFailure({ operation, serviceUrl: SPONSORED_ACCOUNT_URL, mapped }),
+    );
+  }
+
   if (!res.ok) {
-    const mapped = mapHttpError({
-      operation: "Failed to create wallet",
-      source: "sponsored",
-      status: res.status,
-      data: res.data,
-    });
-
-    const diagnostics = [
-      `Service: ${SPONSORED_ACCOUNT_URL}`,
-      res.status ? `Status: ${res.status}` : null,
-      mapped.category ? `Issue: ${mapped.category}` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-
-    const guidance = [
-      mapped.status === 503
-        ? "The account sponsorship service is unavailable; it may be restarting."
-        : null,
-      mapped.status === 429
-        ? "Rate limit reached on account creation; wait a moment and retry."
-        : null,
-      mapped.status === 400
-        ? "The request was malformed; this may indicate a client-side issue."
-        : null,
-      mapped.status === 500
-        ? "The service encountered an internal error; contact support if it persists."
-        : null,
-      !mapped.status ? "Network connectivity issue; check your connection and retry." : null,
-    ]
-      .filter(Boolean)
-      .join(" ");
-
-    throw mcpError({
-      ...mapped,
-      summary: `${mapped.summary}\n${diagnostics}`,
-      action: guidance || mapped.action,
-    });
+    throw mcpError(
+      mapSponsoredHttpFailure({
+        operation,
+        serviceUrl: SPONSORED_ACCOUNT_URL,
+        status: res.status,
+        data: res.data,
+        headers: res.headers,
+      }),
+    );
   }
   activeProfileName = target;
   activeProfile().wallet = { publicKey: res.data.publicKey, secretKey: res.data.secretKey };
@@ -1065,9 +1116,18 @@ export async function browse(filters: CatalogFilters = {}): Promise<string> {
   const qs = buildCatalogQueryString(filters);
   const url = qs ? `${BASE_URL}/resources?${qs}` : `${BASE_URL}/resources`;
   const res = await jsonFetch(url);
-  if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok) {
+    throw mcpError(
+      mapHttpError({
+        operation: "Browse failed",
+        source: "api",
+        status: res.status,
+        data: res.data,
+      }),
+    );
+  }
   let items: any[] = Array.isArray(res.data) ? res.data : [];
-  items = applyClientCatalogFilters(items, filters);
+  items = applyCatalogSort(applyClientCatalogFilters(items, filters), filters.sort);
   const body =
     items.length === 0
       ? filters.query ||
@@ -1110,12 +1170,21 @@ export async function search(filtersOrQuery: string | CatalogFilters): Promise<s
   const qs = buildCatalogQueryString(filters);
   const url = qs ? `${BASE_URL}/resources?${qs}` : `${BASE_URL}/resources`;
   const res = await jsonFetch(url);
-  if (!res.ok) throw new Error(`Search failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok) {
+    throw mcpError(
+      mapHttpError({
+        operation: "Search failed",
+        source: "api",
+        status: res.status,
+        data: res.data,
+      }),
+    );
+  }
   let items: any[] = Array.isArray(res.data) ? res.data : [];
 
   // Client-side keyword / tags / listed / skipped for unit-test compatibility
   // and parity with fields the public catalog schema does not accept.
-  items = applyClientCatalogFilters(items, filters);
+  items = applyCatalogSort(applyClientCatalogFilters(items, filters), filters.sort);
 
   if (items.length === 0) return `No resources match ${describeCatalogFilters(filters)}.`;
   return truncateResponse(items.map(formatResource).join("\n\n"));
@@ -1304,6 +1373,7 @@ async function publish(args: {
       source: "api",
       status: createRes.status,
       data: createRes.data,
+      credential: publisherCredential(),
     });
   const resource = createRes.data;
 
@@ -1425,6 +1495,7 @@ export async function buy(
   resourceId: string,
   dryRun?: boolean,
   estimatedPrice?: string | null,
+  onProgress?: (progress: number, total?: number, message?: string) => Promise<void>,
 ): Promise<string> {
   if (dryRun) {
     return JSON.stringify(
@@ -1438,6 +1509,7 @@ export async function buy(
 
   // Check the wallet can cover the price before attempting payment so a
   // shortfall returns an actionable message instead of an opaque payment error.
+  await onProgress?.(1, 4, "Validating resource");
   const meta = await jsonFetch(`${BASE_URL}/resources/${resourceId}/meta`);
   if (meta.ok && meta.data?.price != null) {
     const shortMsg = await insufficientFundsMessage(
@@ -1461,6 +1533,7 @@ export async function buy(
   const paidFetch = makePaidFetch(wallet);
   let res: Response;
   try {
+    await onProgress?.(2, 4, "Submitting payment");
     res = await paidFetch(`${BASE_URL}/resources/${resourceId}`);
   } catch (err) {
     metrics.recordPayment(false);
@@ -1492,6 +1565,7 @@ export async function buy(
 
   // Persist a local receipt so mindvault_purchase_history can list prior buys.
   // Recording failures must not fail the successful purchase response.
+  await onProgress?.(3, 4, "Recording purchase");
   try {
     recordPurchase({
       resourceId,
@@ -1515,6 +1589,8 @@ export async function buy(
     txHash,
   };
 
+  await onProgress?.(4, 4, "Done");
+
   return JSON.stringify(summary, null, 2);
 }
 
@@ -1527,12 +1603,16 @@ export async function buy(
  * register transaction (owner-only), signs it with the agent wallet — which is
  * the resource creator for agent-published resources — and submits it.
  */
-export async function registerOnchain(resourceId: string): Promise<string> {
+export async function registerOnchain(
+  resourceId: string,
+  onProgress?: (progress: number, total?: number, message?: string) => Promise<void>,
+): Promise<string> {
   const wallet = requireWallet();
   const apiKey = requireApiKey();
   if (!resourceId) throw new Error("resourceId is required.");
 
   // Step 1: prepare the unsigned register transaction (owner-only).
+  await onProgress?.(1, 3, "Preparing transaction");
   const prep = await jsonFetch(`${BASE_URL}/resources/${resourceId}/register/prepare`, {
     headers: { "x-api-key": apiKey },
   });
@@ -1544,13 +1624,16 @@ export async function registerOnchain(resourceId: string): Promise<string> {
       source: "api",
       status: prep.status,
       data: prep.data,
+      credential: publisherCredential(),
     });
+    // 401/403 are left to the mapper: it knows whether the stored publisher key
+    // was rejected outright or accepted but unauthorized here, and names the
+    // profile to fix. Repeating a generic ownership line here would bury that.
     const specific = [
       prep.status === 400 ? "The resource must be verified before it can be registered." : null,
       prep.status === 409
         ? "The resource is already registered on-chain — no action needed."
         : null,
-      prep.status === 403 ? "This resource is owned by a different publisher." : null,
     ].filter(Boolean);
     throw mcpError({
       ...mapped,
@@ -1566,6 +1649,7 @@ export async function registerOnchain(resourceId: string): Promise<string> {
   }
 
   // Step 2: sign with the agent wallet (the resource creator).
+  await onProgress?.(2, 3, "Signing transaction");
   const { Keypair, Transaction } = await import("@stellar/stellar-sdk");
   const passphrase = networkPassphrase ?? REGISTRY_NETWORK_PASSPHRASE;
   const tx = new Transaction(unsignedXdr, passphrase);
@@ -1573,6 +1657,7 @@ export async function registerOnchain(resourceId: string): Promise<string> {
   const signedXdr = tx.toXDR();
 
   // Step 3: submit the signed transaction.
+  await onProgress?.(3, 3, "Submitting transaction");
   const submit = await jsonFetch(`${BASE_URL}/resources/${resourceId}/register`, {
     method: "POST",
     headers: { "x-api-key": apiKey },
@@ -1585,6 +1670,7 @@ export async function registerOnchain(resourceId: string): Promise<string> {
       source: "api",
       status: submit.status,
       data: submit.data,
+      credential: publisherCredential(),
     });
     throw mcpError({
       ...mapped,
@@ -1647,7 +1733,7 @@ export function usdcToStroops(usdc: string): bigint {
 
 export async function updateMetadata(resourceId: string, metadata: string): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockUpdateMetadata(resourceId, metadata);
+  if (_isMock()) return mockUpdateMetadata(resourceId, metadata);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -1726,7 +1812,7 @@ export async function updateMetadata(resourceId: string, metadata: string): Prom
 
 export async function setPrice(resourceId: string, price: string): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockSetPrice(resourceId, price);
+  if (_isMock()) return mockSetPrice(resourceId, price);
 
   const stroops = usdcToStroops(price);
 
@@ -1807,7 +1893,7 @@ export async function setPrice(resourceId: string, price: string): Promise<strin
 
 export async function transferOwnership(resourceId: string, newCreator: string): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockTransferOwnership(resourceId, newCreator);
+  if (_isMock()) return mockTransferOwnership(resourceId, newCreator);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -1886,7 +1972,7 @@ export async function transferOwnership(resourceId: string, newCreator: string):
 
 export async function setListed(resourceId: string, listed: boolean): Promise<string> {
   const wallet = requireWallet();
-  if (MOCK) return mockSetListed(resourceId, listed);
+  if (_isMock()) return mockSetListed(resourceId, listed);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -1964,7 +2050,7 @@ export async function setListed(resourceId: string, listed: boolean): Promise<st
 }
 
 export async function registryLookup(resourceId: string): Promise<string> {
-  if (MOCK) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
+  if (_isMock()) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -2046,7 +2132,7 @@ export async function registryLookup(resourceId: string): Promise<string> {
  * Data comes from Soroban, not the MindVault API catalog.
  */
 export async function registryList(start: number, limit: number): Promise<string> {
-  if (MOCK) return mockRegistryList(start, limit, REGISTRY_CONTRACT_ID);
+  if (_isMock()) return mockRegistryList(start, limit, REGISTRY_CONTRACT_ID);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
@@ -2349,7 +2435,7 @@ export function networkProfile(): string {
  * note when the contract/RPC is unreachable).
  */
 async function checkBindings(): Promise<string> {
-  if (MOCK) return "Mock mode: contract binding check skipped (no live RPC).";
+  if (_isMock()) return "Mock mode: contract binding check skipped (no live RPC).";
   const result = await checkContractBindings({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -2396,25 +2482,31 @@ function isDispatchableTool(name: string): boolean {
  * Route a validated tool call to its implementation. Used by the MCP CallTool
  * handler and by unit tests.
  */
-export async function dispatchTool(name: string, rawArgs: unknown): Promise<string> {
+export async function dispatchTool(
+  name: string,
+  rawArgs: unknown,
+  onProgress?: (progress: number, total?: number, message?: string) => Promise<void>,
+): Promise<string> {
   if (!isDispatchableTool(name)) {
     throw new UnknownToolError(name);
   }
-
-  const args: ValidatedArgs = name in TOOL_ARGUMENT_SPECS ? validateToolArgs(name, rawArgs) : {};
-
-  assertMainnetMutationAllowed(
-    NETWORK,
-    name,
-    typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
-      ? (rawArgs as Record<string, unknown>)
-      : undefined,
-  );
 
   const rawRecord =
     typeof rawArgs === "object" && rawArgs !== null && !Array.isArray(rawArgs)
       ? (rawArgs as Record<string, unknown>)
       : {};
+
+  // For dry-run calls on publish and buy the user intentionally passes invalid
+  // inputs to inspect structured validation feedback.  Skip the gateway check
+  // and let dryRunPublish / dryRunBuy produce the per-field result instead.
+  const isDryRunCall =
+    (name === "mindvault_publish" || name === "mindvault_buy") && rawRecord.dryRun === true;
+
+  const args: ValidatedArgs =
+    name in TOOL_ARGUMENT_SPECS && !isDryRunCall ? validateToolArgs(name, rawArgs) : {};
+  const dryRunArgs = isDryRunCall ? (rawRecord as ValidatedArgs) : args;
+
+  assertMainnetMutationAllowed(NETWORK, name, rawRecord);
 
   switch (name) {
     case "mindvault_setup_wallet":
@@ -2443,20 +2535,22 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
       );
     case "mindvault_publish":
       return publish({
-        title: requiredString(args, "title"),
-        description: optionalString(args, "description"),
-        price: requiredString(args, "price"),
-        externalUrl: requiredString(args, "externalUrl"),
-        dryRun: flag(args, "dryRun"),
+        title: requiredString(dryRunArgs, "title"),
+        description: optionalString(dryRunArgs, "description"),
+        price: requiredString(dryRunArgs, "price"),
+        externalUrl: requiredString(dryRunArgs, "externalUrl"),
+        dryRun: flag(dryRunArgs, "dryRun"),
       });
     case "mindvault_publish_status":
       return publishStatus(rawRecord);
     case "mindvault_buy":
-      return buy(requiredString(args, "resourceId"), flag(args, "dryRun"));
+      return buy(requiredString(args, "resourceId"), flag(args, "dryRun"), undefined, onProgress);
     case "mindvault_purchase_history":
       return purchaseHistoryTool(rawRecord);
+    case "mindvault_export_receipts":
+      return exportReceiptsTool(rawRecord);
     case "mindvault_register_onchain":
-      return registerOnchain(requiredString(args, "resourceId"));
+      return registerOnchain(requiredString(args, "resourceId"), onProgress);
     case "mindvault_agent_status":
       return agentStatus();
     case "mindvault_registry_info":
@@ -2477,6 +2571,17 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
         optionalInt(args, "start", REGISTRY_LIST_DEFAULT_START),
         optionalInt(args, "limit", REGISTRY_LIST_DEFAULT_LIMIT),
       );
+    case "mindvault_update_metadata":
+      return updateMetadata(requiredString(args, "resourceId"), requiredString(args, "metadata"));
+    case "mindvault_set_price":
+      return setPrice(requiredString(args, "resourceId"), requiredString(args, "price"));
+    case "mindvault_transfer_ownership":
+      return transferOwnership(
+        requiredString(args, "resourceId"),
+        requiredString(args, "newCreator"),
+      );
+    case "mindvault_set_listed":
+      return setListed(requiredString(args, "resourceId"), flag(args, "listed"));
     case "mindvault_tx_status":
       return txStatus(requiredString(args, "txHash"));
     case "mindvault_reset":
@@ -2499,8 +2604,49 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
       });
     case "mindvault_rotate_publisher_key":
       return rotatePublisherKey(optionalString(args, "profile"));
+    case "mindvault_verify_install":
+      return formatVerifyInstall(verifyInstall(process.env));
     default:
       throw new Error(`Unknown tool: ${name}`);
+  }
+}
+
+/**
+ * Look up an advertised tool definition by name.
+ *
+ * Tool metadata lives in two places today: the literal list below and
+ * `TOOL_DEFINITIONS` in tools.ts, which the validation layer and its coverage
+ * tests read. Anything defined once — a tool with an `outputSchema`, whose
+ * schema the structured result must match — is declared in tools.ts and pulled
+ * in here, so the advertised schema, the validation spec, and the result shape
+ * cannot drift apart.
+ */
+function toolDefinition(name: string): ToolDefinition {
+  const definition = TOOL_DEFINITIONS.find((tool) => tool.name === name);
+  if (!definition) throw new Error(`No tool definition for ${name} in TOOL_DEFINITIONS.`);
+  return definition;
+}
+
+/** Tools that declare an outputSchema, by name, for structured results. */
+const TOOLS_WITH_OUTPUT_SCHEMA = new Set(
+  TOOL_DEFINITIONS.filter((tool) => tool.outputSchema).map((tool) => tool.name),
+);
+
+/**
+ * The structured form of a tool result, when the tool advertises one.
+ *
+ * A tool with an `outputSchema` must return structured content conforming to it
+ * (MCP 2025-06-18). Those tools already produce their result as JSON text, so
+ * the object is recovered by parsing it — the text block stays exactly as it
+ * was, which keeps every existing client and test working.
+ */
+function structuredResult(name: string, text: string): Record<string, unknown> | undefined {
+  if (!TOOLS_WITH_OUTPUT_SCHEMA.has(name)) return undefined;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -2713,6 +2859,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    // Declared in tools.ts: it carries an outputSchema, and the advertised
+    // schema, the validation spec, and the structured result must agree.
+    toolDefinition("mindvault_export_receipts"),
     {
       name: "mindvault_register_onchain",
       description:
@@ -2984,16 +3133,27 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: [],
       },
     },
+    {
+      name: "mindvault_verify_install",
+      description:
+        "Verify the MindVault MCP server is installed and configured correctly. Checks Node.js version (>=20), network settings, URL variables, vault-registry contract ID, and warns about plaintext secrets in the environment. No network calls are made — all checks are local. Run this first when setting up a new agent or diagnosing a configuration problem.",
+      inputSchema: { type: "object", properties: {}, required: [] },
+    },
   ],
 }));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
+server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args = {} } = request.params;
+  const progressToken = request.params._meta?.progressToken;
+  const onProgress =
+    progressToken != null
+      ? createProgressEmitter({ token: progressToken, send: extra.sendNotification })
+      : undefined;
   try {
     // Errors thrown by tools (and by measureTool's re-throw) become a deterministic
     // MCP error result: `isError: true` and text prefixed with `Error:`, with secrets
     // stripped via safeErrorMessage. Clients should treat that shape as failure.
-    const result = await measureTool(metrics, name, () => dispatchTool(name, args));
+    const result = await measureTool(metrics, name, () => dispatchTool(name, args, onProgress));
     return { content: [{ type: "text", text: result }] };
   } catch (err: any) {
     return { content: [{ type: "text", text: `Error: ${safeErrorMessage(err)}` }], isError: true };
@@ -3083,9 +3243,8 @@ if (!process.env.VITEST) {
   // Handle stdin EOF (pipe closed)
   process.stdin.on("end", () => shutdown("stdin-EOF"));
 
+  // Exactly one connect: the stdio transport can only be started once, so a
+  // second call throws "already started" and the process dies before it can
+  // serve a single request.
   await server.connect(transport);
-  await await await server.connect(transport);
-
-  // Setup graceful shutdown
-  setupGracefulShutdown(server, transport, console.log);;
 }

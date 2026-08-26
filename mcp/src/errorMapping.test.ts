@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  isRevokedApiKey,
   categorizeStatus,
   extractDetail,
   formatMappedError,
@@ -264,5 +265,91 @@ describe("mcpError / throwHttpError", () => {
     expect(() =>
       throwHttpError({ operation: "Register failed", source: "api", status: 401, data: {} }),
     ).toThrow("Category: auth");
+  });
+});
+
+describe("publisher API key rejection", () => {
+  const credential = { kind: "publisher_api_key", profile: "publisher" } as const;
+
+  it("flags a 401 that carried a stored publisher key as revoked", () => {
+    expect(isRevokedApiKey(401, credential)).toBe(true);
+  });
+
+  it("does not flag a 401 from a request that carried no credential", () => {
+    expect(isRevokedApiKey(401, undefined)).toBe(false);
+  });
+
+  it("does not flag a 403 — the key was recognised, the operation was not allowed", () => {
+    expect(isRevokedApiKey(403, credential)).toBe(false);
+  });
+
+  it("names the profile and the way back when the stored key is rejected", () => {
+    const mapped = mapHttpError({
+      operation: "Publish failed",
+      source: "api",
+      status: 401,
+      data: { error: "Invalid API key" },
+      credential,
+    });
+
+    expect(mapped.category).toBe("auth");
+    expect(mapped.summary).toContain("Publish failed: Invalid API key");
+    expect(mapped.summary).toContain('publisher API key for profile "publisher" was rejected');
+    expect(mapped.action).toContain("revoked");
+    expect(mapped.action).toContain("mindvault_register");
+    expect(mapped.action).toContain("mindvault_use_profile");
+    expect(mapped.action).toContain("mindvault_restore_state");
+  });
+
+  it("keeps the generic advice when no credential was sent", () => {
+    const mapped = mapHttpError({
+      operation: "Publish failed",
+      source: "api",
+      status: 401,
+      data: { error: "Missing x-api-key header" },
+    });
+
+    expect(mapped.action).toContain("Credentials are missing or not accepted");
+    expect(mapped.summary).not.toContain("was rejected as unknown");
+  });
+
+  it("distinguishes a valid-but-unauthorized key from a revoked one", () => {
+    const mapped = mapHttpError({
+      operation: "On-chain registration failed",
+      source: "api",
+      status: 403,
+      data: { error: "Not the owner" },
+      credential,
+    });
+
+    expect(mapped.category).toBe("auth");
+    expect(mapped.action).toContain("valid but not authorized");
+    expect(mapped.action).toContain("different publisher");
+    expect(mapped.action).not.toContain("revoked");
+  });
+
+  it("leaves non-auth statuses untouched when a credential is present", () => {
+    const mapped = mapHttpError({
+      operation: "Publish failed",
+      source: "api",
+      status: 500,
+      data: { error: "boom" },
+      credential,
+    });
+
+    expect(mapped.category).toBe("server");
+    expect(mapped.action).toContain("The upstream service is failing");
+  });
+
+  it("renders the revoked case as the standard three-line agent error", () => {
+    expect(() =>
+      throwHttpError({
+        operation: "Publish failed",
+        source: "api",
+        status: 401,
+        data: { error: "Invalid API key" },
+        credential,
+      }),
+    ).toThrow(/Source: MindVault API · Category: auth · HTTP 401/);
   });
 });

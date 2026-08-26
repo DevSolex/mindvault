@@ -15,7 +15,11 @@ vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
 
 vi.mock("@modelcontextprotocol/sdk/types.js", () => ({
   CallToolRequestSchema: {},
+  ListPromptsRequestSchema: {},
+  GetPromptRequestSchema: {},
   ListToolsRequestSchema: {},
+  ListPromptsRequestSchema: {},
+  GetPromptRequestSchema: {},
 }));
 
 vi.mock("@x402/stellar", () => ({ createEd25519Signer: vi.fn() }));
@@ -154,7 +158,9 @@ describe("browse", () => {
     await browse();
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining("/resources"),
-      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
     );
   });
 });
@@ -230,7 +236,9 @@ describe("search", () => {
     await search("test");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining("/resources"),
-      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
     );
   });
 
@@ -1338,7 +1346,7 @@ describe("setupWallet – sponsored account failure diagnostics", () => {
       await dispatchTool("mindvault_setup_wallet", {});
     } catch (err: any) {
       const msg = err.message;
-      expect(msg).toContain("setup");
+      expect(msg).toContain("Failed to create wallet");
       expect(msg).toContain("unavailable");
       expect(msg).toMatch(/restarting|wait/i);
     }
@@ -1418,6 +1426,52 @@ describe("setupWallet – sponsored account failure diagnostics", () => {
       const msg = err.message;
       expect(msg).toContain("Next:");
       expect(msg).toMatch(/network|connect/i);
+    }
+  });
+
+  // An outage usually means the service never answers at all. That throws at the
+  // transport layer, so these assert the diagnostics survive that path too.
+  it("reports full diagnostics when the service is unreachable", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED: Connection refused"));
+
+    expect.assertions(5);
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      const msg = err.message;
+      expect(msg).toContain("Service:");
+      expect(msg).toContain("Issue: unreachable");
+      expect(msg).toContain("Reachable: no");
+      expect(msg).toContain("Retryable: yes");
+      expect(msg).not.toContain("Status:");
+    }
+  });
+
+  it("marks a rejected request as not worth retrying unchanged", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({ error: "bad request" }, false, 400),
+    );
+
+    expect.assertions(2);
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      expect(err.message).toContain("Retryable: no");
+      expect(err.message).toContain("Issue: rejected");
+    }
+  });
+
+  it("passes the service's Retry-After through to the agent", async () => {
+    const res = mockResponse({ error: "too many requests" }, false, 429);
+    res.headers = new Headers({ "retry-after": "20" });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(res);
+
+    expect.assertions(2);
+    try {
+      await dispatchTool("mindvault_setup_wallet", {});
+    } catch (err: any) {
+      expect(err.message).toContain("Retry-After: 20s");
+      expect(err.message).toContain("20s wait");
     }
   });
 });
