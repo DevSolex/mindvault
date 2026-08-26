@@ -3444,6 +3444,16 @@ fn full_workflow_emits_exactly_the_documented_events() {
         &String::from_str(&env, "sha256anchor"),
     ); // -> "anchor"
     record(&env, &client, &mut observed);
+
+    // Re-anchoring the same (resource, buyer) pair is rejected — the
+    // reporting variant records that as an event instead of reverting.
+    assert!(!client.attempt_anchor_purchase_receipt(
+        &verifier,
+        &r0,
+        &buyer,
+        &String::from_str(&env, "sha256anchor2"),
+    )); // -> "anchrfail"
+    record(&env, &client, &mut observed);
     client.remove_verifier(&verifier); // -> "rmverif"
     record(&env, &client, &mut observed);
 
@@ -6758,5 +6768,210 @@ fn anchor_purchase_receipt_duplicate_guard_is_per_buyer() {
         ),
         Err(Ok(Error::DuplicateReceipt)),
         "buyer B duplicate guard must fire independently of buyer A"
+    );
+}
+
+// ── Reporting anchor failures as events ──────────────────────────────────────
+//
+// `anchor_purchase_receipt` reverts on a rejected anchor, and a Soroban error
+// rolls back the whole invocation — events included — so a batching settlement
+// service loses every surviving anchor and any on-chain trace of what went
+// wrong. `attempt_anchor_purchase_receipt` keeps authorization strict but
+// reports the three data failures as an `anchrfail` event.
+
+/// Helper: a registry with an admin and a verifier that can anchor receipts.
+fn setup_with_anchor_service<'a>() -> (Env, Address, Address, VaultRegistryClient<'a>) {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let service = Address::generate(&env);
+    client.add_verifier(&service);
+    (env, creator, service, client)
+}
+
+/// Decode the `AnchorFailure` payload of the most recent event, asserting the
+/// topic is `anchrfail` and carries the resource id.
+fn last_anchor_failure(env: &Env, expected_id: &String) -> AnchorFailure {
+    let all = env.events().all();
+    let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
+    assert_eq!(
+        topics.len(),
+        2,
+        "anchrfail topics are (symbol, resource_id)"
+    );
+
+    let topic: Symbol = Symbol::try_from_val(env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic, symbol_short!("anchrfail"));
+    let topic_id: String = String::try_from_val(env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(&topic_id, expected_id);
+
+    AnchorFailure::try_from_val(env, &data).unwrap()
+}
+
+#[test]
+fn attempt_anchor_purchase_receipt_succeeds_like_the_reverting_variant() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attanch1");
+    let buyer = Address::generate(&env);
+    let hash = String::from_str(&env, "sha256ok");
+
+    assert!(client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &hash));
+
+    // A success emits the normal `anchor` event, not `anchrfail`. Read it
+    // before any other call: the test env's event log reflects only the most
+    // recent invocation.
+    let all = env.events().all();
+    let (_cid, topics, _data) = all.get_unchecked(all.len() - 1);
+    let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic, symbol_short!("anchor"));
+
+    let anchor = client.get_purchase_receipt(&id, &buyer);
+    assert_eq!(anchor.receipt_hash, hash);
+    assert_eq!(anchor.buyer, buyer);
+}
+
+#[test]
+fn attempt_anchor_reports_unknown_resource() {
+    let (env, _creator, service, client) = setup_with_anchor_service();
+    let missing = String::from_str(&env, "attnores");
+    let buyer = Address::generate(&env);
+    let hash = String::from_str(&env, "sha256missing");
+
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &missing, &buyer, &hash));
+
+    let failure = last_anchor_failure(&env, &missing);
+    assert_eq!(failure.reason, AnchorFailureReason::ResourceNotFound);
+    assert_eq!(failure.buyer, buyer);
+    assert_eq!(failure.receipt_hash, hash);
+    assert_eq!(failure.ledger, env.ledger().sequence());
+}
+
+#[test]
+fn attempt_anchor_reports_empty_and_oversized_receipt_hash() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attbadhsh");
+    let buyer = Address::generate(&env);
+
+    assert!(!client.attempt_anchor_purchase_receipt(
+        &service,
+        &id,
+        &buyer,
+        &String::from_str(&env, "")
+    ));
+    assert_eq!(
+        last_anchor_failure(&env, &id).reason,
+        AnchorFailureReason::InvalidReceiptHash
+    );
+
+    let too_long = String::from_str(&env, &"a".repeat(MAX_TX_HASH_LEN as usize + 1));
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &too_long));
+    assert_eq!(
+        last_anchor_failure(&env, &id).reason,
+        AnchorFailureReason::InvalidReceiptHash
+    );
+
+    // Neither rejected attempt wrote an anchor.
+    assert_eq!(
+        client.try_get_purchase_receipt(&id, &buyer),
+        Err(Ok(Error::NotFound))
+    );
+}
+
+#[test]
+fn attempt_anchor_reports_duplicate_and_preserves_the_original() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attdup");
+    let buyer = Address::generate(&env);
+    let original = String::from_str(&env, "sha256first");
+
+    client.anchor_purchase_receipt(&service, &id, &buyer, &original);
+
+    let replacement = String::from_str(&env, "sha256second");
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &replacement));
+
+    let failure = last_anchor_failure(&env, &id);
+    assert_eq!(failure.reason, AnchorFailureReason::DuplicateReceipt);
+    assert_eq!(
+        failure.receipt_hash, replacement,
+        "the failure event carries the rejected hash, not the stored one"
+    );
+    assert_eq!(
+        client.get_purchase_receipt(&id, &buyer).receipt_hash,
+        original,
+        "a rejected attempt must leave the canonical anchor untouched"
+    );
+}
+
+/// Every reason the reporting variant emits maps to the error the reverting
+/// variant returns for the same input, so callers can treat them alike.
+#[test]
+fn attempt_anchor_failure_reasons_match_the_reverting_variant_errors() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attparity");
+    let buyer = Address::generate(&env);
+    let missing = String::from_str(&env, "attparityx");
+    let good = String::from_str(&env, "sha256parity");
+
+    // Unknown resource. The reported reason has to be read before the next
+    // call: a reverting invocation discards the event log it would have left.
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &missing, &buyer, &good));
+    let reported = last_anchor_failure(&env, &missing).reason;
+    assert_eq!(
+        client.try_anchor_purchase_receipt(&service, &missing, &buyer, &good),
+        Err(Ok(reported.as_error()))
+    );
+
+    // Unusable receipt hash.
+    let empty = String::from_str(&env, "");
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &empty));
+    let reported = last_anchor_failure(&env, &id).reason;
+    assert_eq!(
+        client.try_anchor_purchase_receipt(&service, &id, &buyer, &empty),
+        Err(Ok(reported.as_error()))
+    );
+
+    // Duplicate pair.
+    client.anchor_purchase_receipt(&service, &id, &buyer, &good);
+    assert!(!client.attempt_anchor_purchase_receipt(&service, &id, &buyer, &good));
+    let reported = last_anchor_failure(&env, &id).reason;
+    assert_eq!(
+        client.try_anchor_purchase_receipt(&service, &id, &buyer, &good),
+        Err(Ok(reported.as_error()))
+    );
+}
+
+/// Authorization is never downgraded to an event: a non-verifier still
+/// reverts, so it cannot write to the event log at all.
+#[test]
+fn attempt_anchor_still_reverts_for_a_non_verifier() {
+    let (env, creator, _service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "attauth");
+    let stranger = Address::generate(&env);
+    let buyer = Address::generate(&env);
+
+    assert_eq!(
+        client.try_attempt_anchor_purchase_receipt(
+            &stranger,
+            &id,
+            &buyer,
+            &String::from_str(&env, "sha256stranger")
+        ),
+        Err(Ok(Error::NotVerifier))
+    );
+}
+
+/// A malformed resource id is a caller bug rather than an anchorable attempt,
+/// so it reverts instead of producing a failure event.
+#[test]
+fn attempt_anchor_still_reverts_for_a_malformed_resource_id() {
+    let (env, _creator, service, client) = setup_with_anchor_service();
+    let buyer = Address::generate(&env);
+
+    assert_eq!(
+        client.try_attempt_anchor_purchase_receipt(
+            &service,
+            &String::from_str(&env, "NOT A VALID ID"),
+            &buyer,
+            &String::from_str(&env, "sha256bad")
+        ),
+        Err(Ok(Error::InvalidResourceId))
     );
 }

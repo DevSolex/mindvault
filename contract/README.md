@@ -208,6 +208,7 @@ See [`docs/adr-fee-config.md`](../docs/adr-fee-config.md) for the full design ra
 | `get_payment(receipt_id)`                        | —                                                        | `receipt_id: String`                                                                                                                  | `Result<PaymentReceipt, Error>` | Fetch a receipt by id. Errors `NotFound` if absent. Bumps the entry's TTL. |
 | `get_payment_receipt(resource_id, payer)`        | —                                                        | `resource_id: String`; `payer: Address`                                                                                               | `Result<PaymentReceipt, Error>` | Fetch the most recent receipt recorded for the pair, via the `PaymentIndex` secondary index. Errors `NotFound` if absent. |
 | `anchor_purchase_receipt(service, resource_id, buyer, receipt_hash)` | `verifier`                              | `service: Address`; `resource_id: String`; `buyer: Address`; `receipt_hash: String`                                                                                                                                                                  | `Result<(), Error>`       | Anchor an immutable purchase receipt hash. Duplicate buyer/resource anchors error `DuplicateReceipt`. Emits `anchor`.                                                                                                                                                                                    |
+| `attempt_anchor_purchase_receipt(service, resource_id, buyer, receipt_hash)` | `verifier` | `service: Address`; `resource_id: String`; `buyer: Address`; `receipt_hash: String` | `Result<bool, Error>` | Same anchor, but a rejected attempt emits `anchrfail` and returns `false` instead of reverting. Authorization failures still revert. |
 | `get_purchase_receipt(resource_id, buyer)`      | —                                                        | `resource_id: String`; `buyer: Address`                                                                                                                                                                                                              | `Result<PurchaseReceiptAnchor, Error>` | Fetch a purchase receipt anchor. Errors `NotFound` if absent.                                                                                                                                                                                                                                |
 | `extend_resource_ttl(creator, resource_id)`     | `creator`                                                | `creator: Address`; `resource_id: String`                                                                                                                                                                                                            | `Result<(), Error>`       | Refresh a resource's persistent storage TTL. Emits `ttlext`.                                                                                                                                                                                                                                            |
 | `add_settler(settler)`                          | `admin`                                                  | `settler: Address`                                                                                                                                   | `Result<(), Error>`       | Grant the settler role. Emits `addsettlr`. |
@@ -456,6 +457,7 @@ apart, so update all three together.
 | `rmsettlr`  | `false`                                                            | `remove_settler()` succeeds                                |
 | `pause`     | `(paused: bool, admin: Address)`                                   | `set_paused()` succeeds (including no-op transitions)      |
 | `anchor`    | `PurchaseReceiptAnchor { resource_id, buyer, receipt_hash, ledger }` | `anchor_purchase_receipt()` succeeds                        |
+| `anchrfail` | `AnchorFailure { resource_id, buyer, receipt_hash, reason, ledger }` | `attempt_anchor_purchase_receipt()` rejects an anchor       |
 | `addmod`    | `true`                                                             | `add_moderator()` succeeds                                 |
 | `rmmod`     | `false`                                                            | `remove_moderator()` succeeds                              |
 | `flag`      | `FlagEvent { id, moderator, reason }`                      | `flag_resource()` succeeds                                 |
@@ -532,6 +534,39 @@ pub struct MetadataUpdateEvent {
 The `settags` event emits both previous and next tags, enabling indexers
 to detect tag removals and reconcile state changes without requiring full history
 scans.
+
+### Reporting anchor failures
+
+`anchor_purchase_receipt` returns an `Error` when an anchor cannot be written,
+and a Soroban error rolls the whole invocation back — emitted events included.
+A settlement service anchoring many receipts in one transaction therefore loses
+both the anchors that would have succeeded and any on-chain record of what went
+wrong.
+
+`attempt_anchor_purchase_receipt` is the reporting variant. It performs exactly
+the same checks, but turns the three *data* failures into an `anchrfail` event
+and a `false` return instead of reverting:
+
+| Rejected because                          | `AnchorFailureReason` | `anchor_purchase_receipt` returns |
+| ----------------------------------------- | --------------------- | --------------------------------- |
+| No resource registered under `resource_id` | `ResourceNotFound`    | `NotFound`                        |
+| `receipt_hash` empty or over 128 bytes     | `InvalidReceiptHash`  | `InvalidTxHash`                   |
+| `(resource_id, buyer)` already anchored    | `DuplicateReceipt`    | `DuplicateReceipt`                |
+
+Authorization is never downgraded to an event: a caller without the verifier
+role, or one supplying a malformed `resource_id`, still reverts, so an address
+that cannot anchor cannot write to the event log either. A rejected attempt
+writes no storage and leaves any existing anchor for the pair untouched.
+
+```rust
+pub struct AnchorFailure {
+    pub resource_id: String,
+    pub buyer: Address,
+    pub receipt_hash: String,      // the hash that was rejected, not the stored one
+    pub reason: AnchorFailureReason,
+    pub ledger: u32,               // ledger sequence the attempt was rejected at
+}
+```
 
 ### Registry info (discovery)
 

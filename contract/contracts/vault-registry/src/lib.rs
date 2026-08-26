@@ -150,6 +150,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("get_payment", "—"),
     ("get_payment_receipt", "—"),
     ("anchor_purchase_receipt", "verifier"),
+    ("attempt_anchor_purchase_receipt", "verifier"),
     ("get_purchase_receipt", "—"),
     // ── TTL ───────────────────────────────────────────────────────────────
     ("extend_resource_ttl", "creator"),
@@ -264,6 +265,10 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     (
         "anchor",
         "PurchaseReceiptAnchor { resource_id, buyer, receipt_hash, ledger }",
+    ),
+    (
+        "anchrfail",
+        "AnchorFailure { resource_id, buyer, receipt_hash, reason, ledger }",
     ),
     ("addmod", "true"),
     ("rmmod", "false"),
@@ -594,6 +599,49 @@ pub struct PurchaseReceiptAnchor {
     pub resource_id: String,
     pub buyer: Address,
     pub receipt_hash: String,
+    pub ledger: u32,
+}
+
+/// Why an `attempt_anchor_purchase_receipt` call could not write an anchor.
+///
+/// The discriminants are stable — do not renumber existing variants. Each
+/// maps 1:1 to the `Error` that `anchor_purchase_receipt` would have returned
+/// for the same input, so a consumer can treat the two paths interchangeably.
+#[contracttype]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AnchorFailureReason {
+    /// No resource is registered under `resource_id` (`Error::NotFound`).
+    ResourceNotFound = 0,
+    /// `receipt_hash` is empty or exceeds `MAX_TX_HASH_LEN`
+    /// (`Error::InvalidTxHash`).
+    InvalidReceiptHash = 1,
+    /// An anchor already exists for `(resource_id, buyer)`
+    /// (`Error::DuplicateReceipt`).
+    DuplicateReceipt = 2,
+}
+
+impl AnchorFailureReason {
+    /// The error `anchor_purchase_receipt` returns for this reason.
+    pub fn as_error(self) -> Error {
+        match self {
+            AnchorFailureReason::ResourceNotFound => Error::NotFound,
+            AnchorFailureReason::InvalidReceiptHash => Error::InvalidTxHash,
+            AnchorFailureReason::DuplicateReceipt => Error::DuplicateReceipt,
+        }
+    }
+}
+
+/// Structured payload emitted by `attempt_anchor_purchase_receipt` when an
+/// anchor is rejected. Carries everything the caller supplied plus the reason
+/// and the ledger it was rejected at, so a monitor can reconstruct the failed
+/// attempt without the caller's own logs.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnchorFailure {
+    pub resource_id: String,
+    pub buyer: Address,
+    pub receipt_hash: String,
+    pub reason: AnchorFailureReason,
     pub ledger: u32,
 }
 
@@ -1891,38 +1939,55 @@ impl VaultRegistry {
         buyer: Address,
         receipt_hash: String,
     ) -> Result<(), Error> {
-        service.require_auth();
-        if !Self::is_verifier(env.clone(), service) {
-            return Err(Error::NotVerifier);
-        }
+        Self::require_anchor_authority(&env, &service)?;
         Self::validate_resource_id(&resource_id)?;
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Resource(resource_id.clone()))
-        {
-            return Err(Error::NotFound);
+        if let Some(reason) = Self::anchor_blocker(&env, &resource_id, &buyer, &receipt_hash) {
+            return Err(reason.as_error());
         }
-        if receipt_hash.is_empty() || receipt_hash.len() > MAX_TX_HASH_LEN {
-            return Err(Error::InvalidTxHash);
-        }
-
-        let key = DataKey::PurchaseReceipt(resource_id.clone(), buyer.clone());
-        if env.storage().persistent().has(&key) {
-            return Err(Error::DuplicateReceipt);
-        }
-
-        let anchor = PurchaseReceiptAnchor {
-            resource_id: resource_id.clone(),
-            buyer,
-            receipt_hash,
-            ledger: env.ledger().sequence(),
-        };
-        env.storage().persistent().set(&key, &anchor);
-        Self::bump_persistent(&env, &key);
-        env.events()
-            .publish((symbol_short!("anchor"), resource_id), anchor);
+        Self::write_anchor(&env, resource_id, buyer, receipt_hash);
         Ok(())
+    }
+
+    /// Attempt to anchor a purchase receipt, reporting a rejected attempt as
+    /// an on-chain `anchrfail` event instead of reverting.
+    ///
+    /// `anchor_purchase_receipt` returns an `Error` when the attempt is not
+    /// anchorable, and a Soroban error rolls the whole invocation back —
+    /// events included — so a settlement service batching many anchors loses
+    /// both the surviving anchors and any on-chain trace of what failed. This
+    /// variant keeps authorization strict (a non-verifier still reverts, and
+    /// so does a malformed `resource_id`) but turns the three *data* failures
+    /// — unknown resource, unusable receipt hash, and an already-anchored
+    /// `(resource_id, buyer)` pair — into an [`AnchorFailure`] event plus a
+    /// `false` return, so monitors can see the rejected attempt and its
+    /// reason without replaying the caller's logs.
+    ///
+    /// Returns `true` and emits the usual `anchor` event on success.
+    pub fn attempt_anchor_purchase_receipt(
+        env: Env,
+        service: Address,
+        resource_id: String,
+        buyer: Address,
+        receipt_hash: String,
+    ) -> Result<bool, Error> {
+        Self::require_anchor_authority(&env, &service)?;
+        Self::validate_resource_id(&resource_id)?;
+
+        if let Some(reason) = Self::anchor_blocker(&env, &resource_id, &buyer, &receipt_hash) {
+            let failure = AnchorFailure {
+                resource_id: resource_id.clone(),
+                buyer,
+                receipt_hash,
+                reason,
+                ledger: env.ledger().sequence(),
+            };
+            env.events()
+                .publish((symbol_short!("anchrfail"), resource_id), failure);
+            return Ok(false);
+        }
+
+        Self::write_anchor(&env, resource_id, buyer, receipt_hash);
+        Ok(true)
     }
 
     /// Fetch a purchase receipt anchor for `(resource_id, buyer)`.
@@ -2456,6 +2521,63 @@ impl VaultRegistry {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::AdminNotSet)
+    }
+
+    /// Both anchor entry points are verifier-gated; neither ever reports an
+    /// authorization problem as an `anchrfail` event, because an address that
+    /// cannot anchor must not be able to write to the event log either.
+    fn require_anchor_authority(env: &Env, service: &Address) -> Result<(), Error> {
+        service.require_auth();
+        if !Self::is_verifier(env.clone(), service.clone()) {
+            return Err(Error::NotVerifier);
+        }
+        Ok(())
+    }
+
+    /// The reason this `(resource_id, buyer)` anchor cannot be written, or
+    /// `None` when it can. Shared by `anchor_purchase_receipt` (which turns it
+    /// into an `Error`) and `attempt_anchor_purchase_receipt` (which turns it
+    /// into an `anchrfail` event), so the two can never disagree about what
+    /// counts as anchorable.
+    fn anchor_blocker(
+        env: &Env,
+        resource_id: &String,
+        buyer: &Address,
+        receipt_hash: &String,
+    ) -> Option<AnchorFailureReason> {
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Resource(resource_id.clone()))
+        {
+            return Some(AnchorFailureReason::ResourceNotFound);
+        }
+        if receipt_hash.is_empty() || receipt_hash.len() > MAX_TX_HASH_LEN {
+            return Some(AnchorFailureReason::InvalidReceiptHash);
+        }
+        if env.storage().persistent().has(&DataKey::PurchaseReceipt(
+            resource_id.clone(),
+            buyer.clone(),
+        )) {
+            return Some(AnchorFailureReason::DuplicateReceipt);
+        }
+        None
+    }
+
+    /// Persist an anchor that `anchor_blocker` has already cleared and emit
+    /// the `anchor` event.
+    fn write_anchor(env: &Env, resource_id: String, buyer: Address, receipt_hash: String) {
+        let key = DataKey::PurchaseReceipt(resource_id.clone(), buyer.clone());
+        let anchor = PurchaseReceiptAnchor {
+            resource_id: resource_id.clone(),
+            buyer,
+            receipt_hash,
+            ledger: env.ledger().sequence(),
+        };
+        env.storage().persistent().set(&key, &anchor);
+        Self::bump_persistent(env, &key);
+        env.events()
+            .publish((symbol_short!("anchor"), resource_id), anchor);
     }
 
     /// Return `ContractPaused` if the emergency pause flag is set.
