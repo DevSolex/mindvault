@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "1j5bl"
+                  "string": "4"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 567179726572
+                    "lo": 465630697121
                   }
                 },
                 {
-                  "string": "ipfs://O68_pok_D\\\\MSu_Fy6wiKG\\\\u0V3ZgSEs::GSPW0_n_\\\\8_\\\\y4S_3/\\\\T\\\\9:5Ey\\\\\\\\E_g_P\\\\P_dnN_\\\\\\\\7aa__:8TO_\\\\r9REl0W__knZ.\\\\\\\\c1/B2_.\\\\5m\\\\qQpBE9/m0\\\\q\\\\3_n\\\\\\\\7.0Kmj6aW\\\\_u\\\\\\\\6_o_6B4n1\\\\0:6aS9_/5d\\\\_/86\\\\\\\\c\\\\z5\\\\UQ:DXbhh\\\\:n\\\\qrhw3\\\\WTU3_/_HXcZf\\\\\\\\6c__:P1J4UMSnIb2L\\\\Q:rxF\\\\ODA\\\\F_:_.O/Li_/\\\\/R\\\\\\\\w_G_Fp_0_2NSU-H\\\\\\\\\\\\__:6o:\\\\7qm.1ePM.uCE9d5\\\\26H__2_gGW9L0_WpOm1\\\\"
+                  "string": "ipfs://\\\\4AvEgf_n\\\\\\\\__3\\\\\\\\tI__u_Qt\\\\G\\\\eL\\\\_7p-j__xaRIp9\\\\f.w/r7\\\\mavfW\\\\uci\\\\.io\\\\K_\\\\v1t__l\\\\_FSJ8\\\\1./_hvYX5_P7Ratj9d8\\\\6Q7_e_/z\\\\MJ\\\\ZUE_HjM3mTkV_IW\\\\9Y\\\\YSyZ\\\\8TJEnQR_u6\\\\n/\\\\.k8Q:Us:\\\\8jr\\\\x-D8m20_VIu.L_6\\\\\\\\VdodW_e.kr9m\\\\Xr\\\\7__.RL/4/e\\\\wV_\\\\s\\\\5\\\\_/gp/2MlOdP7/i\\\\_2o:_M_\\\\\\\\e_25\\\\\\\\/iG_Fh5d1.JEme\\\\WUXs\\\\I_/cyr_6.D_b0P_\\\\_"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "1j5bl"
+                  "string": "4"
                 },
                 {
-                  "string": "https://sn/wP\\\\Q_0d_\\\\Cnw_MJD_jRT.p_0n\\\\W8\\\\w/\\\\\\\\\\\\__qvad./70rBT3\\\\SJ\\\\/UPIii\\\\\\\\O_l\\\\7\\\\_Q\\\\2\\\\Ot\\\\DZ8\\\\16M-.\\\\2_V\\\\7./z_A9\\\\1Zc9\\\\W\\\\CA\\\\\\\\d5\\\\\\\\K4YdL_/9q_\\\\N-w__\\\\ury9L1WC6q\\\\v8TmsW\\\\TH8L\\\\yOF__av\\\\K_:S_w_F__k:b4\\\\i:yT\\\\fP.PS91vYR_FXmR/8_Aaz:\\\\fX:m/_k_G5ak62_h\\\\_p\\\\\\\\C3Zw3\\\\3QTjN\\\\Z_S:\\\\\\\\9\\\\2_0Kd059"
+                  "string": "https://:FuW\\\\9Wo_\\\\S\\\\4EM6_5sEU_4\\\\\\\\_\\\\09\\\\//bcp_/\\\\qsklpz_H_nj8:eJAS3Rx\\\\\\\\V\\\\2_N:G1_I_Bo\\\\_f_A_w_O\\\\NCGd__x_bEAehp\\\\/\\\\Xf\\\\\\\\0_Z6\\\\\\\\g6_"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "1j5bl"
+                  "string": "4"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 659357187161
+                    "lo": 977062638299
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "1j5bl"
+                  "string": "4"
                 },
                 {
-                  "bool": true
+                  "bool": false
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "1j5bl"
+                      "string": "4"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "1j5bl"
+                  "string": "4"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "1j5bl"
+                  "string": "4"
                 }
               ]
             },
@@ -247,7 +247,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "1j5bl"
+                      "string": "4"
                     }
                   ]
                 },
@@ -301,7 +301,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "1j5bl"
+                        "string": "4"
                       }
                     },
                     {
@@ -309,7 +309,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": true
+                        "bool": false
                       }
                     },
                     {
@@ -317,7 +317,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://sn/wP\\\\Q_0d_\\\\Cnw_MJD_jRT.p_0n\\\\W8\\\\w/\\\\\\\\\\\\__qvad./70rBT3\\\\SJ\\\\/UPIii\\\\\\\\O_l\\\\7\\\\_Q\\\\2\\\\Ot\\\\DZ8\\\\16M-.\\\\2_V\\\\7./z_A9\\\\1Zc9\\\\W\\\\CA\\\\\\\\d5\\\\\\\\K4YdL_/9q_\\\\N-w__\\\\ury9L1WC6q\\\\v8TmsW\\\\TH8L\\\\yOF__av\\\\K_:S_w_F__k:b4\\\\i:yT\\\\fP.PS91vYR_FXmR/8_Aaz:\\\\fX:m/_k_G5ak62_h\\\\_p\\\\\\\\C3Zw3\\\\3QTjN\\\\Z_S:\\\\\\\\9\\\\2_0Kd059"
+                        "string": "https://:FuW\\\\9Wo_\\\\S\\\\4EM6_5sEU_4\\\\\\\\_\\\\09\\\\//bcp_/\\\\qsklpz_H_nj8:eJAS3Rx\\\\\\\\V\\\\2_N:G1_I_Bo\\\\_f_A_w_O\\\\NCGd__x_bEAehp\\\\/\\\\Xf\\\\\\\\0_Z6\\\\\\\\g6_"
                       }
                     },
                     {
@@ -327,7 +327,7 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 659357187161
+                          "lo": 977062638299
                         }
                       }
                     },
@@ -346,7 +346,7 @@
                       "val": {
                         "vec": [
                           {
-                            "symbol": "Listed"
+                            "symbol": "Delisted"
                           }
                         ]
                       }
