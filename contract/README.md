@@ -637,15 +637,22 @@ Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 US
 ### WASM size budget
 
 This contract enforces a strictly tracked optimized WASM size budget in CI
-(`stellar contract build --optimize`). Currently the limit is **36,864 bytes
-(36 KB)**, against a current optimized size of ~33 KB.
+(`stellar contract build --optimize`). Currently the limit is **98,304 bytes
+(96 KB)**, against a current optimized size of ~82 KB.
 
-The budget has been raised twice as the surface grew: from a stale 10 KB
-figure to 28 KB (tags, pagination, admin, terms hashes), and from 28 KB to
-36 KB once `registry_info`, the verifier role, the on-chain verification
-mirror, metadata freeze, and index repair merged. If genuine feature additions
-push past it, raise `MAX_SIZE` in `.github/workflows/contract-ci.yml` and
-explain the growth in your PR description.
+The budget has been raised as the surface grew: from a stale 10 KB figure to
+28 KB (tags, pagination, admin, terms hashes), to 36 KB (`registry_info`, the
+verifier role, the on-chain verification mirror, metadata freeze, index
+repair), and to 96 KB for everything that landed after that — the lifecycle
+state machine, the moderator role and dispute flags, fee config, the tag index
+and its repair, the deployment network guard, payment receipts and the settler
+role, purchase receipt anchoring, and the emergency pause. That last raise was
+overdue: the crate did not compile for a stretch, so the 36 KB gate could not
+be measured against the code it was meant to guard. If genuine feature
+additions push past the current limit, raise `MAX_SIZE` in
+`.github/workflows/contract-ci.yml` (and `MAX` in
+`contracts/vault-registry/Makefile`) and explain the growth in your PR
+description.
 
 ### Storage footprint
 

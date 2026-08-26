@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "fc27n"
+                  "string": "z"
                 },
                 {
                   "i128": {
@@ -27,7 +27,7 @@
                   }
                 },
                 {
-                  "string": "ipfs://33333333333333333333333333333333333333"
+                  "string": "ipfs://ggggggggggggggggggggggggggggggggggggg"
                 },
                 {
                   "vec": []
@@ -49,10 +49,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "fc27n"
+                  "string": "z"
                 },
                 {
-                  "string": "https://33333333333333333333333333333333333333"
+                  "string": "https://ggggggggggggggggggggggggggggggggggggg"
                 }
               ]
             }
@@ -110,7 +110,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "fc27n"
+                      "string": "z"
                     }
                   ]
                 }
@@ -157,7 +157,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "fc27n"
+                  "string": "z"
                 }
               }
             },
@@ -176,7 +176,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "fc27n"
+                  "string": "z"
                 }
               ]
             },
@@ -196,7 +196,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "fc27n"
+                      "string": "z"
                     }
                   ]
                 },
@@ -250,7 +250,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "fc27n"
+                        "string": "z"
                       }
                     },
                     {
@@ -266,7 +266,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://33333333333333333333333333333333333333"
+                        "string": "https://ggggggggggggggggggggggggggggggggggggg"
                       }
                     },
                     {
@@ -507,7 +507,7 @@
                 "symbol": "updmeta"
               },
               {
-                "string": "fc27n"
+                "string": "z"
               }
             ],
             "data": {
@@ -517,7 +517,7 @@
                     "symbol": "id"
                   },
                   "val": {
-                    "string": "fc27n"
+                    "string": "z"
                   }
                 },
                 {
@@ -525,7 +525,7 @@
                     "symbol": "new_metadata"
                   },
                   "val": {
-                    "string": "https://33333333333333333333333333333333333333"
+                    "string": "https://ggggggggggggggggggggggggggggggggggggg"
                   }
                 },
                 {
@@ -533,7 +533,7 @@
                     "symbol": "old_metadata"
                   },
                   "val": {
-                    "string": "ipfs://33333333333333333333333333333333333333"
+                    "string": "ipfs://ggggggggggggggggggggggggggggggggggggg"
                   }
                 }
               ]
