@@ -54,13 +54,43 @@ always produces the same text, so agent behavior is reproducible.
 | `timeout`    | Aborted request, HTTP 408 / 504       | Retry, or raise `MINDVAULT_HTTP_TIMEOUT_MS`                   |
 | `payment`    | HTTP 402                              | Check the wallet, fund it with USDC, retry                    |
 | `validation` | HTTP 400 / 422 (and other 4xx)        | Correct the invalid arguments and call again                  |
-| `auth`       | HTTP 401 / 403                        | Run `mindvault_register`, or switch profile                   |
+| `auth`       | HTTP 401 / 403                        | Run `mindvault_register`, or switch profile — see below       |
 | `not_found`  | HTTP 404, or a missing registry entry | Confirm the id with browse/search, or register on-chain       |
 | `conflict`   | HTTP 409                              | Already in the requested state — no action needed             |
 | `rate_limit` | HTTP 429                              | Wait for the window, then retry                               |
 | `server`     | HTTP 5xx                              | Retry shortly; if it persists the service is down             |
 | `contract`   | Non-NotFound contract rejection       | Verify contract ID and network with `mindvault_registry_info` |
 | `unknown`    | Anything unclassified                 | Retry once, then report the summary                           |
+
+## Rejected publisher API keys
+
+`auth` covers three different situations, and the `Next:` line distinguishes
+them so an agent does not retry a credential that can never work again.
+
+| Situation                                | What the agent sees                                                   |
+| ---------------------------------------- | --------------------------------------------------------------------- |
+| No key stored (never registered)         | "Credentials are missing or not accepted. Run `mindvault_register` …" |
+| Stored key rejected as unknown (401)     | The key is reported **revoked**, naming the profile it came from      |
+| Stored key valid but not the owner (403) | The key is reported valid but **not authorized** for that resource    |
+
+A key that was rotated from another session, revoked server-side, or whose
+publisher record was deleted still sits in `~/.mindvault/state.json`, so the
+agent keeps sending it and keeps getting a bare `401 Invalid API key`. The
+mapper detects that the failed request carried a stored publisher key and says
+so:
+
+```
+Publish failed: Invalid API key (publisher API key for profile "publisher" was rejected as unknown)
+Source: MindVault API · Category: auth · HTTP 401
+Next: The publisher API key stored in profile "publisher" is no longer accepted — it was revoked, rotated from another session, or its publisher record was removed. The stored key cannot be revived: run mindvault_register to obtain a new one, mindvault_use_profile to switch to a profile whose key still works, or mindvault_restore_state to restore a backup that holds a valid key.
+```
+
+Note what is **not** suggested: `mindvault_rotate_publisher_key` needs a working
+key to rotate, so it cannot recover a revoked one.
+
+The classification line stays `Category: auth` in all three cases, so existing
+agent branches on the category keep working — the difference is carried by the
+summary and the next step.
 
 ## Soft failures are not errors
 
@@ -81,6 +111,54 @@ a `message` explaining the range is empty, and `resources: []` (not an MCP error
 }
 ```
 
+## Sponsored-account outages
+
+`mindvault_setup_wallet` depends on a single external service — the
+sponsored-account service that mints and funds the Stellar account — so an
+outage there blocks an agent at its first call. That failure carries an extra
+diagnostics line between the summary and `Next:`:
+
+```
+mindvault_setup_wallet failed to create wallet: service temporarily unavailable
+Service: https://stellar-sponsored-agent-account.onrender.com · Endpoint: POST /create · Status: 503 · Issue: unavailable · Reachable: yes · Retryable: yes
+Source: sponsored-account service · Category: server · HTTP 503
+Next: The account sponsorship service is unavailable; it may be restarting. Wait for it to come back and retry — no wallet was created, so retrying is safe.
+```
+
+`Issue` is the field to branch on:
+
+| Issue          | When                                                   | Retryable         |
+| -------------- | ------------------------------------------------------ | ----------------- |
+| `unreachable`  | DNS failure, refused connection — nothing answered     | yes               |
+| `timeout`      | Connected, but no response within the budget           | yes               |
+| `unavailable`  | 502 / 503 / 504 — the service is down or restarting    | yes               |
+| `rate_limited` | 429                                                    | yes, after a wait |
+| `server_error` | Any other 5xx                                          | yes               |
+| `rejected`     | Any 4xx other than 429 — a decision about this request | no                |
+| `unknown`      | Anything unclassifiable                                | yes, once         |
+
+`Reachable: no` means the service never produced a response, so there is no
+`Status:` field — the two most common outages (the host being unreachable and
+the request timing out) never reach the HTTP path at all.
+
+`Retryable: no` means repeating the identical call will fail the same way; the
+guidance then names the configuration to fix rather than a wait to sit out. When
+the service sends a `Retry-After` header, its value is echoed as `Retry-After:
+<n>s` and repeated in the guidance.
+
+Wallet creation is never partially applied: every outage above leaves no wallet
+behind, so a retry is safe.
+
+### What is withheld
+
+The service's error body is quoted only through its conventional message fields
+(`error`, `message`, `detail`, `reason`), bounded to 200 characters and passed
+through the same secret redaction as the startup diagnostics. A body with none
+of those fields is summarized by shape — `an error body with no message field
+(2 fields withheld)` — so an upstream stack trace or internal error code cannot
+reach the agent. Credentials embedded in `SPONSORED_ACCOUNT_URL` are stripped
+from the `Service:` field for the same reason.
+
 ## Relationship to the MCP error result
 
 Mapping decides the _text_. The CallTool handler still owns the _envelope_, and
@@ -95,3 +173,5 @@ appear in it.
 - [`mcp/src/errorMapping.test.ts`](../mcp/src/errorMapping.test.ts) — the pure mapper
 - [`mcp/src/toolErrors.test.ts`](../mcp/src/toolErrors.test.ts) — real tools emitting
   the mapped shape for network failure, 402, contract NotFound, and validation
+- [`mcp/src/sponsoredDiagnostics.test.ts`](../mcp/src/sponsoredDiagnostics.test.ts) —
+  sponsored-account outage classification, redaction, and `Retry-After` parsing
