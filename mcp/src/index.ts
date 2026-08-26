@@ -43,7 +43,7 @@ import {
   formatMainnetDiagnostics,
   mainnetAllowedFromEnv,
 } from "./mainnetGuardrails.js";
-import { createMetricsRecorder, measureTool, metricsEnabledFromEnv } from "./metrics.js";
+import { createMetricsRecorder, measureTool, metricsEnabledFromEnv, resolveToolDurationBudget } from "./metrics.js";
 import {
   createMockFetch,
   mockEnabledFromEnv,
@@ -168,7 +168,10 @@ const NETWORK: X402Network = normalizeX402Network(
 
 // Opt-in tool-level metrics (set MINDVAULT_METRICS=1). Disabled by default so
 // there is zero bookkeeping unless an operator turns it on.
-const metrics = createMetricsRecorder(metricsEnabledFromEnv(process.env));
+const metrics = createMetricsRecorder(
+  metricsEnabledFromEnv(process.env),
+  resolveToolDurationBudget(process.env)
+);
 
 // Opt-in audit logging (set MINDVAULT_AUDIT_LOG=1). Logs tool calls, network
 // requests, duration, status, and tx hashes with automatic secret redaction.
