@@ -460,3 +460,52 @@ fn attempt_anchor_still_reverts_for_a_malformed_resource_id() {
         Err(Ok(Error::InvalidResourceId))
     );
 }
+
+// ── Override flow ────────────────────────────────────────────────────────────
+
+#[test]
+fn override_purchase_receipt_anchor_updates_existing_anchor() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "ovrride1");
+    let buyer = Address::generate(&env);
+    
+    let original = String::from_str(&env, "originalhash");
+    client.anchor_purchase_receipt(&service, &id, &buyer, &original);
+    
+    let replacement = String::from_str(&env, "replacementhash");
+    client.override_purchase_receipt_anchor(&service, &id, &buyer, &replacement);
+    
+    let anchor = client.get_purchase_receipt(&id, &buyer);
+    assert_eq!(anchor.receipt_hash, replacement);
+    assert_eq!(anchor.buyer, buyer);
+}
+
+#[test]
+fn override_purchase_receipt_anchor_fails_if_not_found() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "ovrride2");
+    let buyer = Address::generate(&env);
+    
+    let hash = String::from_str(&env, "somehash");
+    assert_eq!(
+        client.try_override_purchase_receipt_anchor(&service, &id, &buyer, &hash),
+        Err(Ok(Error::NotFound))
+    );
+}
+
+#[test]
+fn override_purchase_receipt_anchor_reverts_for_non_verifier() {
+    let (env, creator, service, client) = setup_with_anchor_service();
+    let id = register_default(&env, &creator, &client, "ovrride3");
+    let buyer = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    
+    let original = String::from_str(&env, "originalhash");
+    client.anchor_purchase_receipt(&service, &id, &buyer, &original);
+    
+    let hash = String::from_str(&env, "newhash");
+    assert_eq!(
+        client.try_override_purchase_receipt_anchor(&stranger, &id, &buyer, &hash),
+        Err(Ok(Error::NotVerifier))
+    );
+}
