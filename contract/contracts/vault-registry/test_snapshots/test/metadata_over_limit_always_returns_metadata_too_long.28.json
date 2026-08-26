@@ -20,7 +20,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "rs148lbpyx"
+                  "string": "rav609x"
                 },
                 {
                   "i128": {
@@ -92,7 +92,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "rs148lbpyx"
+                      "string": "rav609x"
                     }
                   ]
                 }
@@ -139,7 +139,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "rs148lbpyx"
+                  "string": "rav609x"
                 }
               }
             },
@@ -158,7 +158,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "rs148lbpyx"
+                  "string": "rav609x"
                 }
               ]
             },
@@ -178,7 +178,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "rs148lbpyx"
+                      "string": "rav609x"
                     }
                   ]
                 },
@@ -232,7 +232,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "rs148lbpyx"
+                        "string": "rav609x"
                       }
                     },
                     {

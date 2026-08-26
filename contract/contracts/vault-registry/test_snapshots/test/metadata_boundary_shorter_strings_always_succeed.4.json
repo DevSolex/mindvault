@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "k57rf"
+                  "string": "uelgi0j91"
                 },
                 {
                   "i128": {
@@ -27,7 +27,7 @@
                   }
                 },
                 {
-                  "string": "ipfs://sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+                  "string": "ipfs://hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
                 },
                 {
                   "vec": []
@@ -49,10 +49,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "k57rf"
+                  "string": "uelgi0j91"
                 },
                 {
-                  "string": "https://sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+                  "string": "https://hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
                 }
               ]
             }
@@ -110,7 +110,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "k57rf"
+                      "string": "uelgi0j91"
                     }
                   ]
                 }
@@ -157,7 +157,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "k57rf"
+                  "string": "uelgi0j91"
                 }
               }
             },
@@ -176,7 +176,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "k57rf"
+                  "string": "uelgi0j91"
                 }
               ]
             },
@@ -196,7 +196,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "k57rf"
+                      "string": "uelgi0j91"
                     }
                   ]
                 },
@@ -250,7 +250,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "k57rf"
+                        "string": "uelgi0j91"
                       }
                     },
                     {
@@ -266,7 +266,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+                        "string": "https://hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
                       }
                     },
                     {
@@ -507,7 +507,7 @@
                 "symbol": "updmeta"
               },
               {
-                "string": "k57rf"
+                "string": "uelgi0j91"
               }
             ],
             "data": {
@@ -517,7 +517,7 @@
                     "symbol": "id"
                   },
                   "val": {
-                    "string": "k57rf"
+                    "string": "uelgi0j91"
                   }
                 },
                 {
@@ -525,7 +525,7 @@
                     "symbol": "new_metadata"
                   },
                   "val": {
-                    "string": "https://sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+                    "string": "https://hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
                   }
                 },
                 {
@@ -533,7 +533,7 @@
                     "symbol": "old_metadata"
                   },
                   "val": {
-                    "string": "ipfs://sssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss"
+                    "string": "ipfs://hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh"
                   }
                 }
               ]

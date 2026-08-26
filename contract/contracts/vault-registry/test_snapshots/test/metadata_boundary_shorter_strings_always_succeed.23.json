@@ -18,7 +18,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "a"
+                  "string": "rboio04c"
                 },
                 {
                   "i128": {
@@ -27,7 +27,7 @@
                   }
                 },
                 {
-                  "string": "ipfs://00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                  "string": "ipfs://JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ"
                 },
                 {
                   "vec": []
@@ -49,10 +49,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "a"
+                  "string": "rboio04c"
                 },
                 {
-                  "string": "https://00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                  "string": "https://JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ"
                 }
               ]
             }
@@ -110,7 +110,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "a"
+                      "string": "rboio04c"
                     }
                   ]
                 }
@@ -157,7 +157,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "a"
+                  "string": "rboio04c"
                 }
               }
             },
@@ -176,7 +176,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "a"
+                  "string": "rboio04c"
                 }
               ]
             },
@@ -196,7 +196,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "a"
+                      "string": "rboio04c"
                     }
                   ]
                 },
@@ -250,7 +250,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "a"
+                        "string": "rboio04c"
                       }
                     },
                     {
@@ -266,7 +266,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                        "string": "https://JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ"
                       }
                     },
                     {
@@ -507,7 +507,7 @@
                 "symbol": "updmeta"
               },
               {
-                "string": "a"
+                "string": "rboio04c"
               }
             ],
             "data": {
@@ -517,7 +517,7 @@
                     "symbol": "id"
                   },
                   "val": {
-                    "string": "a"
+                    "string": "rboio04c"
                   }
                 },
                 {
@@ -525,7 +525,7 @@
                     "symbol": "new_metadata"
                   },
                   "val": {
-                    "string": "https://00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                    "string": "https://JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ"
                   }
                 },
                 {
@@ -533,7 +533,7 @@
                     "symbol": "old_metadata"
                   },
                   "val": {
-                    "string": "ipfs://00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                    "string": "ipfs://JJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJJ"
                   }
                 }
               ]

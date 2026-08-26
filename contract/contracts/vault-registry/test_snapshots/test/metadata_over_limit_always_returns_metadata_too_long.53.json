@@ -20,7 +20,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "ob5x"
+                  "string": "ow940x"
                 },
                 {
                   "i128": {
@@ -92,7 +92,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "ob5x"
+                      "string": "ow940x"
                     }
                   ]
                 }
@@ -139,7 +139,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "ob5x"
+                  "string": "ow940x"
                 }
               }
             },
@@ -158,7 +158,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "ob5x"
+                  "string": "ow940x"
                 }
               ]
             },
@@ -178,7 +178,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "ob5x"
+                      "string": "ow940x"
                     }
                   ]
                 },
@@ -232,7 +232,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "ob5x"
+                        "string": "ow940x"
                       }
                     },
                     {

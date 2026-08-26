@@ -20,7 +20,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "kh74a9p11x"
+                  "string": "o46jv472k2x"
                 },
                 {
                   "i128": {
@@ -92,7 +92,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "kh74a9p11x"
+                      "string": "o46jv472k2x"
                     }
                   ]
                 }
@@ -139,7 +139,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "kh74a9p11x"
+                  "string": "o46jv472k2x"
                 }
               }
             },
@@ -158,7 +158,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "kh74a9p11x"
+                  "string": "o46jv472k2x"
                 }
               ]
             },
@@ -178,7 +178,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "kh74a9p11x"
+                      "string": "o46jv472k2x"
                     }
                   ]
                 },
@@ -232,7 +232,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "kh74a9p11x"
+                        "string": "o46jv472k2x"
                       }
                     },
                     {
