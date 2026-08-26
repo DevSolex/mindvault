@@ -27,3 +27,4 @@ include!("test/payments.rs");
 include!("test/moderation_pause.rs");
 include!("test/properties_events.rs");
 include!("test/purchase_receipts.rs");
+include!("test/storage_footprint.rs");

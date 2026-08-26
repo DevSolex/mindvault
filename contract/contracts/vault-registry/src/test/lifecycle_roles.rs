@@ -181,6 +181,98 @@ fn tombstoned_resource_is_not_discoverable_by_tag_but_stays_auditable() {
 }
 
 #[test]
+fn tombstone_removes_resource_from_creator_index() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let kept = register_default(&env, &creator, &client, "tombkeep");
+    let doomed = register_default(&env, &creator, &client, "tombgone");
+
+    assert_eq!(client.list_by_creator(&creator, &0u32, &20u32).len(), 2);
+
+    client.tombstone_resource(&doomed, &admin);
+
+    let listed = client.list_by_creator(&creator, &0u32, &20u32);
+    assert_eq!(
+        listed.len(),
+        1,
+        "tombstoned resources must not surface in list_by_creator"
+    );
+    assert_eq!(listed.get(0).unwrap().id, kept);
+}
+
+#[test]
+fn tombstone_decrements_creator_resource_count() {
+    let (env, creator, admin, client) = setup_with_admin();
+    register_default(&env, &creator, &client, "tombcnt1");
+    let doomed = register_default(&env, &creator, &client, "tombcnt2");
+    assert_eq!(client.creator_resource_count(&creator), 2);
+
+    client.tombstone_resource(&doomed, &admin);
+
+    assert_eq!(
+        client.creator_resource_count(&creator),
+        1,
+        "creator_resource_count must not count retired resources"
+    );
+}
+
+#[test]
+fn tombstone_leaves_global_catalog_index_intact() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "tombcat1");
+    let b = register_default(&env, &creator, &client, "tombcat2");
+
+    client.tombstone_resource(&a, &admin);
+
+    // `Count` is monotonic and `list` stays an audit view over every id ever
+    // registered; only the discovery indexes are pruned.
+    assert_eq!(client.count(), 2, "count() must stay monotonic");
+    let all = client.list(&0u32, &20u32);
+    assert_eq!(all.len(), 2);
+    assert_eq!(all.get(0).unwrap().id, a);
+    assert_eq!(all.get(1).unwrap().id, b);
+    assert!(client.exists(&a));
+}
+
+#[test]
+fn tombstone_cleans_the_current_owner_index_after_transfer() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "tombxfer");
+    let new_owner = Address::generate(&env);
+    client.transfer_ownership(&id, &new_owner);
+    assert_eq!(client.creator_resource_count(&new_owner), 1);
+    assert_eq!(client.creator_resource_count(&creator), 0);
+
+    client.tombstone_resource(&id, &admin);
+
+    assert_eq!(
+        client.list_by_creator(&new_owner, &0u32, &20u32).len(),
+        0,
+        "the index cleaned must be the current owner's, not the original creator's"
+    );
+    assert_eq!(client.creator_resource_count(&new_owner), 0);
+    assert_eq!(
+        client.creator_resource_count(&creator),
+        0,
+        "the previous owner's count must not go negative"
+    );
+}
+
+#[test]
+fn tombstone_index_cleanup_leaves_other_creators_untouched() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let other = Address::generate(&env);
+    let mine = register_default(&env, &creator, &client, "tombmine");
+    let theirs = register_default(&env, &other, &client, "tombtheir");
+
+    client.tombstone_resource(&mine, &admin);
+
+    assert_eq!(client.creator_resource_count(&other), 1);
+    let listed = client.list_by_creator(&other, &0u32, &20u32);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed.get(0).unwrap().id, theirs);
+}
+
+#[test]
 fn tombstoned_resource_blocks_creator_mutations_deterministically() {
     let (env, creator, admin, client) = setup_with_admin();
     let id = String::from_str(&env, "lifecyc6");
@@ -513,6 +605,58 @@ fn readme_methods_table_matches_method_schema() {
 }
 
 #[test]
+fn readme_error_codes_table_matches_error_schema() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("contract/README.md must be readable from the vault-registry crate");
+
+    let errors_section = readme
+        .split("### Error codes")
+        .nth(1)
+        .expect("contract/README.md must have an `### Error codes` section")
+        .split("### Events")
+        .next()
+        .expect("`### Error codes` section must be followed by `### Events`");
+
+    let documented: std::vec::Vec<(u32, &str)> = errors_section
+        .lines()
+        .filter_map(|line| {
+            let mut cells = line.trim().split('|').map(str::trim);
+            cells.next()?;
+            let code = cells.next()?.trim_matches('`').parse::<u32>().ok()?;
+            let name = cells.next()?.trim_matches('`');
+            Some((code, name))
+        })
+        .collect();
+
+    for (code, name, _desc) in ERROR_SCHEMA {
+        assert!(
+            documented.contains(&(*code, name)),
+            "ERROR_SCHEMA lists `{code}`/`{name}` but contract/README.md's Error \
+             codes table does not document it — update the table to match \
+             lib.rs::ERROR_SCHEMA"
+        );
+    }
+
+    for (code, name) in &documented {
+        assert!(
+            ERROR_SCHEMA
+                .iter()
+                .any(|(schema_code, schema_name, _)| schema_code == code && schema_name == name),
+            "contract/README.md documents error `{code}`/`{name}` but it is not in \
+             lib.rs::ERROR_SCHEMA — either the doc is stale or ERROR_SCHEMA is \
+             missing an entry"
+        );
+    }
+
+    assert_eq!(
+        documented.len(),
+        ERROR_SCHEMA.len(),
+        "contract/README.md's Error codes table row count must match \
+         ERROR_SCHEMA's length exactly (no duplicate or missing rows)"
+    );
+}
+
+#[test]
 fn freeze_metadata_sets_flag_and_emits_event() {
     let (env, creator, client) = setup();
     let id = register_default(&env, &creator, &client, "fres0");
@@ -650,4 +794,221 @@ fn repair_index_rerunning_current_list_is_a_safe_noop() {
     let page = client.list(&0u32, &10u32);
     assert_eq!(page.get(0).unwrap().id, a);
     assert_eq!(page.get(1).unwrap().id, b);
+}
+
+// ── Lifecycle transition property tests ──────────────────────────────────────
+//
+// The lifecycle state machine is documented as a table in `contract/README.md`
+// and implemented across five entry points (`set_listed`, `freeze_resource`,
+// `open_dispute`, `resolve_dispute`, `tombstone_resource`) that each enforce
+// their own slice of it. The example-based tests above cover individual
+// transitions; these properties drive random operation sequences against a
+// model of the table and assert the contract agrees on every step.
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum LifecycleOp {
+    Relist,
+    Delist,
+    Freeze,
+    OpenDispute,
+    Resolve(ResourceState),
+    Tombstone,
+}
+
+impl LifecycleOp {
+    fn from_byte(byte: u8) -> Self {
+        // Weighted so `Tombstone` stays rare: it is terminal, so a uniform mix
+        // would end most sequences after a couple of steps.
+        match byte % 16 {
+            0 | 1 => LifecycleOp::Relist,
+            2 | 3 => LifecycleOp::Delist,
+            4 | 5 => LifecycleOp::Freeze,
+            6..=8 => LifecycleOp::OpenDispute,
+            9 | 10 => LifecycleOp::Resolve(ResourceState::Listed),
+            11 | 12 => LifecycleOp::Resolve(ResourceState::Delisted),
+            13 | 14 => LifecycleOp::Resolve(ResourceState::Frozen),
+            _ => LifecycleOp::Tombstone,
+        }
+    }
+}
+
+fn model_transition(current: ResourceState, op: LifecycleOp) -> Option<ResourceState> {
+    use LifecycleOp::*;
+    use ResourceState::*;
+    match (current, op) {
+        (Tombstoned, _) => None,
+        (_, Tombstone) => Some(Tombstoned),
+        (Listed, Relist) => Some(Listed),
+        (Delisted, Delist) => Some(Delisted),
+        (Listed, Delist) => Some(Delisted),
+        (Delisted, Relist) => Some(Listed),
+        (Listed, Freeze) | (Delisted, Freeze) => Some(Frozen),
+        (Listed, OpenDispute) | (Delisted, OpenDispute) | (Frozen, OpenDispute) => Some(Disputed),
+        (Disputed, Resolve(target @ (Listed | Delisted | Frozen))) => Some(target),
+        _ => None,
+    }
+}
+
+fn apply_lifecycle_op(
+    client: &VaultRegistryClient<'_>,
+    id: &String,
+    admin: &Address,
+    op: LifecycleOp,
+) -> Option<ResourceState> {
+    let result = match op {
+        LifecycleOp::Relist => client.try_set_listed(id, &true),
+        LifecycleOp::Delist => client.try_set_listed(id, &false),
+        LifecycleOp::Freeze => client.try_freeze_resource(id),
+        LifecycleOp::OpenDispute => client.try_open_dispute(id, admin),
+        LifecycleOp::Resolve(target) => client.try_resolve_dispute(id, admin, &target),
+        LifecycleOp::Tombstone => client.try_tombstone_resource(id, admin),
+    };
+    match result {
+        Ok(Ok(())) => Some(client.get(id).state),
+        Err(Ok(Error::InvalidLifecycleTransition)) => None,
+        other => panic!("unexpected lifecycle result for {op:?}: {other:?}"),
+    }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(60))]
+
+    #[test]
+    fn test_lifecycle_transitions_follow_the_documented_table(
+        ops in prop::collection::vec(any::<u8>(), 1..24),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = register_default(&env, &creator, &client, "lifeprop");
+        let _ = (&env, &creator);
+
+        let mut expected = ResourceState::Listed;
+        for byte in ops {
+            let op = LifecycleOp::from_byte(byte);
+            let allowed = model_transition(expected, op);
+            let observed = apply_lifecycle_op(&client, &id, &admin, op);
+
+            match allowed {
+                Some(next) => {
+                    prop_assert_eq!(
+                        observed,
+                        Some(next),
+                        "{:?} from {:?} must be accepted and land in {:?}",
+                        op,
+                        expected,
+                        next
+                    );
+                    expected = next;
+                }
+                None => {
+                    prop_assert_eq!(
+                        observed,
+                        None,
+                        "{:?} from {:?} must be refused with InvalidLifecycleTransition",
+                        op,
+                        expected
+                    );
+                    prop_assert_eq!(
+                        client.get(&id).state,
+                        expected,
+                        "a refused transition must not change the state"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_lifecycle_keeps_listed_projection_and_views_consistent(
+        ops in prop::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = String::from_str(&env, "lifeproj");
+        client.register(
+            &creator,
+            &id,
+            &100i128,
+            &String::from_str(&env, "ipfs://lifeproj"),
+            &tags(&env, &["proj"]),
+        );
+
+        for byte in ops {
+            let _ = apply_lifecycle_op(&client, &id, &admin, LifecycleOp::from_byte(byte));
+
+            let resource = client.get(&id);
+            let is_listed = resource.state == ResourceState::Listed;
+            prop_assert_eq!(
+                resource.listed,
+                is_listed,
+                "listed must project state == Listed (state was {:?})",
+                resource.state
+            );
+            prop_assert_eq!(
+                client.list_listed(&0u32, &20u32).len(),
+                if is_listed { 1 } else { 0 },
+                "list_listed membership must follow the Listed state"
+            );
+
+            let tagged = client.list_by_tag(&String::from_str(&env, "proj"), &0u32, &20u32);
+            prop_assert_eq!(
+                tagged.len(),
+                if resource.state == ResourceState::Tombstoned { 0 } else { 1 },
+                "only tombstoning removes a resource from tag discovery"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lifecycle_gates_creator_mutations_by_state(
+        ops in prop::collection::vec(any::<u8>(), 0..12),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = register_default(&env, &creator, &client, "lifemut");
+
+        for byte in ops {
+            let _ = apply_lifecycle_op(&client, &id, &admin, LifecycleOp::from_byte(byte));
+        }
+
+        let state = client.get(&id).state;
+        let mutable = matches!(state, ResourceState::Listed | ResourceState::Delisted);
+        let result = client.try_set_price(&id, &4_242i128);
+
+        if mutable {
+            prop_assert!(result.is_ok(), "set_price must be allowed in {:?}", state);
+            prop_assert_eq!(client.get(&id).price, 4_242i128);
+        } else {
+            prop_assert_eq!(
+                result,
+                Err(Ok(Error::ResourceNotMutable)),
+                "set_price must be refused in {:?}",
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn test_tombstone_is_terminal_for_every_operation(
+        ops in prop::collection::vec(any::<u8>(), 1..16),
+    ) {
+        let (env, creator, admin, client) = setup_with_admin();
+        let id = register_default(&env, &creator, &client, "lifeterm");
+        let before = client.get(&id);
+        client.tombstone_resource(&id, &admin);
+        let _ = &env;
+
+        for byte in ops {
+            let op = LifecycleOp::from_byte(byte);
+            prop_assert_eq!(
+                apply_lifecycle_op(&client, &id, &admin, op),
+                None,
+                "{:?} must be refused once tombstoned",
+                op
+            );
+        }
+
+        let after = client.get(&id);
+        prop_assert_eq!(after.state, ResourceState::Tombstoned);
+        prop_assert_eq!(after.id, before.id);
+        prop_assert_eq!(after.creator, before.creator);
+        prop_assert_eq!(after.metadata, before.metadata);
+    }
 }

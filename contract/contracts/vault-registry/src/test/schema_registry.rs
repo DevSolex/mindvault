@@ -389,6 +389,13 @@ fn full_workflow_emits_exactly_the_documented_events() {
         &String::from_str(&env, "sha256anchor"),
     ); // -> "anchor"
     record(&env, &client, &mut observed);
+    assert!(!client.attempt_anchor_purchase_receipt(
+        &verifier,
+        &r0,
+        &buyer,
+        &String::from_str(&env, "sha256anchor2"),
+    )); // -> "anchrfail"
+    record(&env, &client, &mut observed);
     client.remove_verifier(&verifier); // -> "rmverif"
     record(&env, &client, &mut observed);
 

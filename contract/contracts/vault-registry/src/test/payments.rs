@@ -11,10 +11,9 @@ fn setup_with_settler<'a>() -> (Env, Address, Address, Address, VaultRegistryCli
 fn payment_receipt_ttl(
     env: &Env,
     contract: &soroban_sdk::Address,
-    resource_id: &String,
-    payer: &Address,
+    receipt_id: &String,
 ) -> u32 {
-    let key = DataKey::PaymentReceiptByResourcePayer(resource_id.clone(), payer.clone());
+    let key = DataKey::PaymentReceipt(receipt_id.clone());
     env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
 }
 
@@ -193,6 +192,39 @@ fn record_payment_overwrites_previous_receipt() {
 }
 
 #[test]
+fn record_payment_index_tracks_most_recent_receipt() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecix");
+    let payer = Address::generate(&env);
+
+    let first = String::from_str(&env, "rcptix1");
+    let second = String::from_str(&env, "rcptix2");
+    client.record_payment(
+        &settler,
+        &first,
+        &id,
+        &payer,
+        &500i128,
+        &String::from_str(&env, "first_tx"),
+    );
+    client.record_payment(
+        &settler,
+        &second,
+        &id,
+        &payer,
+        &750i128,
+        &String::from_str(&env, "second_tx"),
+    );
+
+    // Both receipts remain individually addressable, while the pair index points at the latest.
+    assert_eq!(client.get_payment(&first).amount, 500i128);
+    assert_eq!(client.get_payment(&second).amount, 750i128);
+    let latest = client.get_payment_receipt(&id, &payer);
+    assert_eq!(latest.receipt_id, second);
+    assert_eq!(latest.amount, 750i128);
+}
+
+#[test]
 fn record_payment_duplicate_receipt_id_fails() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr3");
@@ -275,6 +307,27 @@ fn non_settler_cannot_settle_payment() {
 }
 
 #[test]
+fn settle_payment_twice_fails() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrectw");
+    let receipt_id = String::from_str(&env, "rcpttw1");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &creator,
+        &100i128,
+        &String::from_str(&env, "0xtxtw"),
+    );
+    client.settle_payment(&settler, &receipt_id);
+    assert_eq!(client.get_payment(&receipt_id).state, PaymentState::Settled);
+
+    let res = client.try_settle_payment(&settler, &receipt_id);
+    assert_eq!(res, Err(Ok(Error::InvalidPaymentTransition)));
+}
+
+#[test]
 fn revoked_settler_cannot_record_payment() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr6");
@@ -299,7 +352,7 @@ fn get_payment_missing_fails() {
 }
 
 #[test]
-fn record_payment_zero_amount_fails() {
+fn record_payment_empty_tx_hash_fails() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr7");
     let payer = Address::generate(&env);
@@ -360,6 +413,22 @@ fn record_payment_rejects_zero_amount() {
         &id,
         &payer,
         &0i128,
+        &String::from_str(&env, "txhash"),
+    );
+    assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
+}
+
+#[test]
+fn record_payment_rejects_negative_amount() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrneg");
+    let payer = Address::generate(&env);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptneg"),
+        &id,
+        &payer,
+        &-1i128,
         &String::from_str(&env, "txhash"),
     );
     assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
@@ -477,7 +546,7 @@ fn record_payment_sets_ttl_on_write() {
     );
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &String::from_str(&env, "rcptttlw")),
         TTL_BUMP_AMOUNT,
         "record_payment must set TTL to BUMP_AMOUNT"
     );
@@ -504,7 +573,7 @@ fn get_payment_receipt_bumps_ttl_on_read() {
         .set_sequence_number(env.ledger().sequence() + decay);
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &String::from_str(&env, "rcptttlr")),
         TTL_BUMP_AMOUNT - decay,
         "TTL should have decayed before the read"
     );
@@ -512,7 +581,7 @@ fn get_payment_receipt_bumps_ttl_on_read() {
     client.get_payment_receipt(&id, &payer);
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &String::from_str(&env, "rcptttlr")),
         TTL_BUMP_AMOUNT,
         "get_payment_receipt must bump TTL back to BUMP_AMOUNT"
     );

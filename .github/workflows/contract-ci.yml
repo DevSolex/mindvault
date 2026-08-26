@@ -74,13 +74,15 @@ jobs:
         working-directory: contract
         run: |
           WASM_FILE="target/wasm32v1-none/release/vault_registry.wasm"
-          # 64 KB. Raised from 36 KB: the 36 KB figure was set against a
-          # snapshot that did not yet include registry_info, the verifier role,
-          # the on-chain verification mirror, metadata freeze, index repair,
-          # resource lifecycle/dispute queries, receipt settlement, and pause
-          # controls — those merged together and the optimized build is now
-          # roughly 62 KB on CI.
-          MAX_SIZE=65536
+          # 96 KB. Raised from 36 KB. The 36 KB figure was set against a
+          # snapshot from before the lifecycle state machine, moderator role
+          # and dispute flags, fee config, tag index and its repair, network
+          # guard, payment receipts and the settler role, purchase receipt
+          # anchoring, and the emergency pause all merged. It could not be
+          # re-measured while the crate was failing to compile, so it stood
+          # unenforced; against the repaired build the optimized WASM is
+          # ~82 KB.
+          MAX_SIZE=98304
           SIZE=$(stat -c%s "$WASM_FILE")
           echo "WASM Size: $SIZE bytes"
           if [ "$SIZE" -gt "$MAX_SIZE" ]; then

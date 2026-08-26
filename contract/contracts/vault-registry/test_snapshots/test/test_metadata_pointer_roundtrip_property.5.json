@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "t12p5t3601y6kun"
+                  "string": "z3537wou45x64gu9a97fsdw"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 562064365519
+                    "lo": 783698242016
                   }
                 },
                 {
-                  "string": "ipfs://L\\\\d\\\\g\\\\6\\\\3__-9v\\\\k3nw_:XdCmQ:4p.\\\\W.m\\\\Z..r0O8:_Lt\\\\7n\\\\g_9uQ./DXX\\\\\\\\U._W9p1.O84HgD\\\\HWT\\\\PYg_N\\\\FT0___V/\\\\fJB\\\\G3_x6w\\\\9__/F7z3_wIk8hs\\\\t/t8XG\\\\9_f\\\\\\\\w\\\\U2\\\\K\\\\vuk_Y\\\\PMt4E\\\\1\\\\q_W87yt\\\\__4zuCa-MQ\\\\_y:8:\\\\mS\\\\g\\\\z_h\\\\U\\\\BZV\\\\_z\\\\z80s0e5/.QgwT4WAQMJ_-R_ij7UYnKaU:jhe2:bT"
+                  "string": "ipfs://9j_zdITJ\\\\.Wb_\\\\lQ:/OX\\\\_88\\\\\\\\CI4\\\\\\\\C4\\\\rH\\\\O\\\\bKQ9_J_\\\\0Ssr904_S:T\\\\9s0_:oi\\\\\\\\k\\\\_yr_u0sTCwdPCej_pOgpO\\\\oks_S\\\\\\\\b.o9_3N__h_CDIB\\\\\\\\7_Xh\\\\05x__tm_e_.dkn6B\\\\\\\\\\\\\\\\Sor0\\\\\\\\\\\\FT\\\\A:_2vM\\\\T\\\\9DQ_2b_\\\\._ps_zq/m/\\\\FEjdL/8\\\\4\\\\\\\\we.3.X:\\\\.v\\\\\\\\XmfM7oLs_P\\\\hlt_w\\\\\\\\rywy26_S:_\\\\L"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "t12p5t3601y6kun"
+                  "string": "z3537wou45x64gu9a97fsdw"
                 },
                 {
-                  "string": "https:///hu\\\\Z/Y\\\\_\\\\\\\\.pb_\\\\hX_\\\\6m\\\\N\\\\zRUqNd__\\\\7fw__pBo8S-7_0.\\\\/_C\\\\_Dg6:_S-.wa_1D/CUIIQ_2GG_Qys\\\\__9_.BT./3/\\\\Se__yX0D/yq\\\\_vSQ\\\\_.\\\\3c4\\\\Ti\\\\_odb/V_\\\\5\\\\qQ\\\\MHLP_\\\\h\\\\T15aea.y\\\\WIYF5X/8/N4_WB_M\\\\o\\\\_w_eymD_\\\\Z\\\\zu_:l\\\\\\\\dC\\\\J\\\\r\\\\7G9U_l\\\\Lu-e\\\\\\\\2hbB2Zwsi1z_jUU\\\\n_gA\\\\loMIJ\\\\\\\\h/Io0\\\\:Y\\\\.T\\\\2Asl:\\\\:\\\\.h\\\\_.2_\\\\\\\\_\\\\H\\\\-_6_JGv\\\\Jt5a_3:ec2_\\\\Jw.\\\\y1XfWD3_/_\\\\6\\\\:_AM-"
+                  "string": "https://_DH0\\\\QBD_55tON_K\\\\k6t_:\\\\\\\\PGYHa_7:gp0\\\\\\\\/_8tN\\\\_4:N\\\\e\\\\wx\\\\D\\\\\\\\\\\\:_\\\\p_rZ_\\\\Yh5G3tC6.C\\\\\\\\P.-_Af:lvJl3A_bT\\\\BJ/\\\\\\\\R10__y_zT_u9._k\\\\\\\\EznVRm/\\\\6_\\\\\\\\S267:56V4_tqI9dFumgLbLPn_wlS0:\\\\38t\\\\u_Q_2T/ZPx01T/i_E__o33\\\\_\\\\l_PlA:2S7CA0q_\\\\/L\\\\4RY\\\\js_hNZmvc0oK\\\\x:\\\\9_b:/s__Z1A0K0\\\\MQep9\\\\Ih_Wu0LaM8A_\\\\0\\\\os4___\\\\sxQ:M\\\\l__6\\\\F-Nr\\\\sGV:D/2_Z-_vRANCmx\\\\AfP\\\\1MVzd1\\\\LV__2hb_uU_J.J/__RD_1/D.\\\\_\\\\m__1bL_/_"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "t12p5t3601y6kun"
+                  "string": "z3537wou45x64gu9a97fsdw"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 717379548766
+                    "lo": 944322180551
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "t12p5t3601y6kun"
+                  "string": "z3537wou45x64gu9a97fsdw"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "t12p5t3601y6kun"
+                      "string": "z3537wou45x64gu9a97fsdw"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "t12p5t3601y6kun"
+                  "string": "z3537wou45x64gu9a97fsdw"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "t12p5t3601y6kun"
+                  "string": "z3537wou45x64gu9a97fsdw"
                 }
               ]
             },
@@ -247,13 +247,27 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "t12p5t3601y6kun"
+                      "string": "z3537wou45x64gu9a97fsdw"
                     }
                   ]
                 },
                 "durability": "persistent",
                 "val": {
                   "map": [
+                    {
+                      "key": {
+                        "symbol": "content_hash"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
                     {
                       "key": {
                         "symbol": "creator"
@@ -287,7 +301,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "t12p5t3601y6kun"
+                        "string": "z3537wou45x64gu9a97fsdw"
                       }
                     },
                     {
@@ -295,7 +309,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": false
+                        "bool": true
                       }
                     },
                     {
@@ -303,7 +317,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https:///hu\\\\Z/Y\\\\_\\\\\\\\.pb_\\\\hX_\\\\6m\\\\N\\\\zRUqNd__\\\\7fw__pBo8S-7_0.\\\\/_C\\\\_Dg6:_S-.wa_1D/CUIIQ_2GG_Qys\\\\__9_.BT./3/\\\\Se__yX0D/yq\\\\_vSQ\\\\_.\\\\3c4\\\\Ti\\\\_odb/V_\\\\5\\\\qQ\\\\MHLP_\\\\h\\\\T15aea.y\\\\WIYF5X/8/N4_WB_M\\\\o\\\\_w_eymD_\\\\Z\\\\zu_:l\\\\\\\\dC\\\\J\\\\r\\\\7G9U_l\\\\Lu-e\\\\\\\\2hbB2Zwsi1z_jUU\\\\n_gA\\\\loMIJ\\\\\\\\h/Io0\\\\:Y\\\\.T\\\\2Asl:\\\\:\\\\.h\\\\_.2_\\\\\\\\_\\\\H\\\\-_6_JGv\\\\Jt5a_3:ec2_\\\\Jw.\\\\y1XfWD3_/_\\\\6\\\\:_AM-"
+                        "string": "https://_DH0\\\\QBD_55tON_K\\\\k6t_:\\\\\\\\PGYHa_7:gp0\\\\\\\\/_8tN\\\\_4:N\\\\e\\\\wx\\\\D\\\\\\\\\\\\:_\\\\p_rZ_\\\\Yh5G3tC6.C\\\\\\\\P.-_Af:lvJl3A_bT\\\\BJ/\\\\\\\\R10__y_zT_u9._k\\\\\\\\EznVRm/\\\\6_\\\\\\\\S267:56V4_tqI9dFumgLbLPn_wlS0:\\\\38t\\\\u_Q_2T/ZPx01T/i_E__o33\\\\_\\\\l_PlA:2S7CA0q_\\\\/L\\\\4RY\\\\js_hNZmvc0oK\\\\x:\\\\9_b:/s__Z1A0K0\\\\MQep9\\\\Ih_Wu0LaM8A_\\\\0\\\\os4___\\\\sxQ:M\\\\l__6\\\\F-Nr\\\\sGV:D/2_Z-_vRANCmx\\\\AfP\\\\1MVzd1\\\\LV__2hb_uU_J.J/__RD_1/D.\\\\_\\\\m__1bL_/_"
                       }
                     },
                     {
@@ -313,8 +327,28 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 717379548766
+                          "lo": 944322180551
                         }
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "schema_version"
+                      },
+                      "val": {
+                        "u32": 5
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "state"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Listed"
+                          }
+                        ]
                       }
                     },
                     {
@@ -343,6 +377,14 @@
                             "symbol": "Pending"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 4
                       }
                     }
                   ]
