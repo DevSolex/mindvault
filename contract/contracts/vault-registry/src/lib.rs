@@ -2808,8 +2808,15 @@ impl VaultRegistry {
     }
 }
 
+// The TTL policy constants are private (they are policy, not API), so the tests
+// reach them through these aliases. See `contracts/vault-registry/README.md`
+// ("Storage TTL threshold constants") for what each one means.
+#[cfg(test)]
+pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;
 #[cfg(test)]
 pub(crate) const TTL_BUMP_AMOUNT: u32 = BUMP_AMOUNT;
+#[cfg(test)]
+pub(crate) const TTL_LIFETIME_THRESHOLD: u32 = LIFETIME_THRESHOLD;
 
 #[cfg(test)]
 pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;

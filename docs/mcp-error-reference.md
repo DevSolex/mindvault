@@ -111,6 +111,54 @@ a `message` explaining the range is empty, and `resources: []` (not an MCP error
 }
 ```
 
+## Sponsored-account outages
+
+`mindvault_setup_wallet` depends on a single external service — the
+sponsored-account service that mints and funds the Stellar account — so an
+outage there blocks an agent at its first call. That failure carries an extra
+diagnostics line between the summary and `Next:`:
+
+```
+mindvault_setup_wallet failed to create wallet: service temporarily unavailable
+Service: https://stellar-sponsored-agent-account.onrender.com · Endpoint: POST /create · Status: 503 · Issue: unavailable · Reachable: yes · Retryable: yes
+Source: sponsored-account service · Category: server · HTTP 503
+Next: The account sponsorship service is unavailable; it may be restarting. Wait for it to come back and retry — no wallet was created, so retrying is safe.
+```
+
+`Issue` is the field to branch on:
+
+| Issue          | When                                                   | Retryable         |
+| -------------- | ------------------------------------------------------ | ----------------- |
+| `unreachable`  | DNS failure, refused connection — nothing answered     | yes               |
+| `timeout`      | Connected, but no response within the budget           | yes               |
+| `unavailable`  | 502 / 503 / 504 — the service is down or restarting    | yes               |
+| `rate_limited` | 429                                                    | yes, after a wait |
+| `server_error` | Any other 5xx                                          | yes               |
+| `rejected`     | Any 4xx other than 429 — a decision about this request | no                |
+| `unknown`      | Anything unclassifiable                                | yes, once         |
+
+`Reachable: no` means the service never produced a response, so there is no
+`Status:` field — the two most common outages (the host being unreachable and
+the request timing out) never reach the HTTP path at all.
+
+`Retryable: no` means repeating the identical call will fail the same way; the
+guidance then names the configuration to fix rather than a wait to sit out. When
+the service sends a `Retry-After` header, its value is echoed as `Retry-After:
+<n>s` and repeated in the guidance.
+
+Wallet creation is never partially applied: every outage above leaves no wallet
+behind, so a retry is safe.
+
+### What is withheld
+
+The service's error body is quoted only through its conventional message fields
+(`error`, `message`, `detail`, `reason`), bounded to 200 characters and passed
+through the same secret redaction as the startup diagnostics. A body with none
+of those fields is summarized by shape — `an error body with no message field
+(2 fields withheld)` — so an upstream stack trace or internal error code cannot
+reach the agent. Credentials embedded in `SPONSORED_ACCOUNT_URL` are stripped
+from the `Service:` field for the same reason.
+
 ## Relationship to the MCP error result
 
 Mapping decides the _text_. The CallTool handler still owns the _envelope_, and
@@ -125,3 +173,5 @@ appear in it.
 - [`mcp/src/errorMapping.test.ts`](../mcp/src/errorMapping.test.ts) — the pure mapper
 - [`mcp/src/toolErrors.test.ts`](../mcp/src/toolErrors.test.ts) — real tools emitting
   the mapped shape for network failure, 402, contract NotFound, and validation
+- [`mcp/src/sponsoredDiagnostics.test.ts`](../mcp/src/sponsoredDiagnostics.test.ts) —
+  sponsored-account outage classification, redaction, and `Retry-After` parsing

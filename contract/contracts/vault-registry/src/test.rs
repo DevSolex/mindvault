@@ -7,7 +7,7 @@ use soroban_sdk::{
     testutils::{
         storage::Persistent as _, Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke,
     },
-    Address, BytesN, Env, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Vec,
+    Address, BytesN, Env, FromVal, IntoVal, String, Symbol, TryFromVal, TryIntoVal, Val, Vec,
 };
 
 fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
@@ -7040,6 +7040,438 @@ fn anchor_purchase_receipt_duplicate_guard_is_per_buyer() {
     );
 }
 
+// ─── Storage key migration (#629) ────────────────────────────────────────────
+//
+// Every entry this contract owns is addressed by a `DataKey`. Soroban encodes a
+// `#[contracttype]` enum as a vec whose first element is a `Symbol` of the
+// *variant name* — the name, not the declaration order — so the storage address
+// of every existing entry is a function of the spelling of these variants.
+//
+// That makes two otherwise-invisible edits catastrophic on an upgrade:
+//
+//   * Renaming a variant re-points the contract at an address nothing was ever
+//     written to. The old entries stay on the ledger, fully paid for, and
+//     become unreachable — reads return NotFound and writes silently start a
+//     parallel set of entries.
+//   * Adding or removing an argument changes the key's arity, with the same
+//     effect for that variant.
+//
+// Neither shows up as a compile error, and neither is caught by a behavioural
+// test that writes and reads within a single contract version. These tests pin
+// the wire shape of every key so that an upgrade which would strand live state
+// fails here first. Reordering variants and appending new ones stay allowed —
+// both are safe, because nothing about an existing key changes.
+
+/// Decompose a storage key into the vec Soroban encodes it as.
+fn storage_key_parts(env: &Env, key: &DataKey) -> Vec<Val> {
+    let val: Val = key.into_val(env);
+    Vec::try_from_val(env, &val).expect("a #[contracttype] enum key encodes as a vec")
+}
+
+/// The variant name a storage key is addressed by on the ledger.
+fn storage_key_variant(env: &Env, key: &DataKey) -> Symbol {
+    let parts = storage_key_parts(env, key);
+    Symbol::try_from_val(env, &parts.get(0).expect("key has a discriminant"))
+        .expect("key discriminant is a symbol")
+}
+
+/// Every `DataKey` variant, with the name and arity it must keep across
+/// upgrades. Adding a variant means adding a row here — the exhaustive match in
+/// `storage_key_migration_covers_every_variant` will not compile until you do.
+fn storage_key_wire_contract(env: &Env) -> [(DataKey, &'static str, u32); 18] {
+    let id = String::from_str(env, "migkey");
+    let who = Address::generate(env);
+    [
+        (DataKey::Resource(id.clone()), "Resource", 2),
+        (DataKey::Count, "Count", 1),
+        (DataKey::Index(0), "Index", 2),
+        (DataKey::Admin, "Admin", 1),
+        (DataKey::PendingAdmin, "PendingAdmin", 1),
+        (DataKey::CreatorTerms(who.clone()), "CreatorTerms", 2),
+        (
+            DataKey::CreatorResources(who.clone()),
+            "CreatorResources",
+            2,
+        ),
+        (DataKey::CreatorCount(who.clone()), "CreatorCount", 2),
+        (DataKey::PendingTransfer(id.clone()), "PendingTransfer", 2),
+        (DataKey::Verifier(who.clone()), "Verifier", 2),
+        (DataKey::NetworkId, "NetworkId", 1),
+        (
+            DataKey::PaymentReceipt(id.clone(), who.clone()),
+            "PaymentReceipt",
+            3,
+        ),
+        (
+            DataKey::PurchaseReceipt(id.clone(), who.clone()),
+            "PurchaseReceipt",
+            3,
+        ),
+        (DataKey::TagIndex(id.clone()), "TagIndex", 2),
+        (DataKey::FeeConfig, "FeeConfig", 1),
+        (DataKey::Moderator(who.clone()), "Moderator", 2),
+        (DataKey::DisputeFlag(id.clone()), "DisputeFlag", 2),
+        (DataKey::FlagReasonHash(id.clone()), "FlagReasonHash", 2),
+    ]
+}
+
+#[test]
+fn storage_key_variant_names_are_stable() {
+    let env = Env::default();
+    for (key, name, _) in storage_key_wire_contract(&env).iter() {
+        assert_eq!(
+            storage_key_variant(&env, key),
+            Symbol::new(&env, name),
+            "DataKey::{name} is addressed on-chain by its variant name. Renaming it \
+             strands every entry already written under the old name — the data stays \
+             on the ledger but nothing looks for it. If the rename is intentional, \
+             ship a migration that rewrites the affected entries before changing this."
+        );
+    }
+}
+
+#[test]
+fn storage_key_arity_is_stable() {
+    let env = Env::default();
+    for (key, name, arity) in storage_key_wire_contract(&env).iter() {
+        assert_eq!(
+            storage_key_parts(&env, key).len(),
+            *arity,
+            "DataKey::{name} must keep {arity} encoded element(s) (the discriminant \
+             plus its arguments). Adding or removing an argument re-points the \
+             variant at a different address and strands its existing entries."
+        );
+    }
+}
+
+/// Compile-time tripwire: a new `DataKey` variant fails to match here, which
+/// forces whoever adds it to also add it to `storage_key_wire_contract` and to
+/// think about what the new key means for state already on-chain.
+#[test]
+fn storage_key_migration_covers_every_variant() {
+    let env = Env::default();
+    let contract = storage_key_wire_contract(&env);
+    assert_eq!(
+        contract.len(),
+        18,
+        "storage_key_wire_contract must list every DataKey variant"
+    );
+
+    for (key, name, _) in contract.iter() {
+        let matched = match key {
+            DataKey::Resource(_) => "Resource",
+            DataKey::Count => "Count",
+            DataKey::Index(_) => "Index",
+            DataKey::Admin => "Admin",
+            DataKey::PendingAdmin => "PendingAdmin",
+            DataKey::CreatorTerms(_) => "CreatorTerms",
+            DataKey::CreatorResources(_) => "CreatorResources",
+            DataKey::CreatorCount(_) => "CreatorCount",
+            DataKey::PendingTransfer(_) => "PendingTransfer",
+            DataKey::Verifier(_) => "Verifier",
+            DataKey::NetworkId => "NetworkId",
+            DataKey::PaymentReceipt(_, _) => "PaymentReceipt",
+            DataKey::PurchaseReceipt(_, _) => "PurchaseReceipt",
+            DataKey::TagIndex(_) => "TagIndex",
+            DataKey::FeeConfig => "FeeConfig",
+            DataKey::Moderator(_) => "Moderator",
+            DataKey::DisputeFlag(_) => "DisputeFlag",
+            DataKey::FlagReasonHash(_) => "FlagReasonHash",
+        };
+        assert_eq!(
+            matched, *name,
+            "storage_key_wire_contract lists {name} against the wrong variant"
+        );
+    }
+}
+
+#[test]
+fn same_string_addresses_a_different_entry_per_key_variant() {
+    let (env, _creator, client) = setup();
+    let shared = String::from_str(&env, "collide");
+
+    // Five variants take a bare String. If any two encoded to the same address,
+    // one would overwrite another and a resource id could clobber a tag index.
+    env.as_contract(&client.address, || {
+        let keys = [
+            DataKey::Resource(shared.clone()),
+            DataKey::PendingTransfer(shared.clone()),
+            DataKey::TagIndex(shared.clone()),
+            DataKey::DisputeFlag(shared.clone()),
+            DataKey::FlagReasonHash(shared.clone()),
+        ];
+        for (marker, key) in keys.iter().enumerate() {
+            env.storage().persistent().set(key, &(marker as u32));
+        }
+        for (marker, key) in keys.iter().enumerate() {
+            assert_eq!(
+                env.storage().persistent().get::<DataKey, u32>(key),
+                Some(marker as u32),
+                "key variant {marker} was overwritten by another variant carrying \
+                 the same string — the variants share a storage address"
+            );
+        }
+    });
+}
+
+#[test]
+fn address_keyed_variants_do_not_collide_for_one_address() {
+    let (env, _creator, client) = setup();
+    let who = Address::generate(&env);
+
+    env.as_contract(&client.address, || {
+        let keys = [
+            DataKey::CreatorTerms(who.clone()),
+            DataKey::CreatorResources(who.clone()),
+            DataKey::CreatorCount(who.clone()),
+            DataKey::Verifier(who.clone()),
+            DataKey::Moderator(who.clone()),
+        ];
+        for (marker, key) in keys.iter().enumerate() {
+            env.storage().persistent().set(key, &(marker as u32));
+        }
+        for (marker, key) in keys.iter().enumerate() {
+            assert_eq!(
+                env.storage().persistent().get::<DataKey, u32>(key),
+                Some(marker as u32),
+                "address-keyed variant {marker} collided with another variant for \
+                 the same address"
+            );
+        }
+    });
+}
+
+#[test]
+fn receipt_keys_are_scoped_to_both_resource_and_counterparty() {
+    let (env, _creator, client) = setup();
+    let res_a = String::from_str(&env, "resa");
+    let res_b = String::from_str(&env, "resb");
+    let party_a = Address::generate(&env);
+    let party_b = Address::generate(&env);
+
+    // A two-argument key must vary in *both* arguments; a key that ignored the
+    // payer would let one buyer's receipt overwrite another's.
+    env.as_contract(&client.address, || {
+        let keys = [
+            DataKey::PaymentReceipt(res_a.clone(), party_a.clone()),
+            DataKey::PaymentReceipt(res_a.clone(), party_b.clone()),
+            DataKey::PaymentReceipt(res_b.clone(), party_a.clone()),
+            DataKey::PurchaseReceipt(res_a.clone(), party_a.clone()),
+            DataKey::PurchaseReceipt(res_b.clone(), party_b.clone()),
+        ];
+        for (marker, key) in keys.iter().enumerate() {
+            env.storage().persistent().set(key, &(marker as u32));
+        }
+        for (marker, key) in keys.iter().enumerate() {
+            assert_eq!(
+                env.storage().persistent().get::<DataKey, u32>(key),
+                Some(marker as u32),
+                "receipt key {marker} collided — receipts must be scoped to both \
+                 the resource and the counterparty"
+            );
+        }
+    });
+}
+
+#[test]
+fn indexed_keys_stay_distinct_per_index() {
+    let (env, _creator, client) = setup();
+
+    env.as_contract(&client.address, || {
+        for slot in 0u32..5 {
+            env.storage().persistent().set(&DataKey::Index(slot), &slot);
+        }
+        for slot in 0u32..5 {
+            assert_eq!(
+                env.storage()
+                    .persistent()
+                    .get::<DataKey, u32>(&DataKey::Index(slot)),
+                Some(slot),
+                "Index({slot}) collided with another slot"
+            );
+        }
+    });
+}
+
+#[test]
+fn registered_state_survives_a_redeploy_at_the_same_address() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "upgradesafe");
+    let metadata = String::from_str(&env, "ipfs://QmUpgrade");
+    client.register(
+        &creator,
+        &id,
+        &1_000_000i128,
+        &metadata,
+        &tags(&env, &["a"]),
+    );
+
+    // Redeploy the same contract at the same address, as an upgrade does.
+    env.register_at(&client.address, VaultRegistry, ());
+    let upgraded = VaultRegistryClient::new(&env, &client.address);
+
+    // Every read path must still resolve the entries written by the old build.
+    assert_eq!(upgraded.count(), 1, "counter entry lost across redeploy");
+    assert!(upgraded.exists(&id), "resource entry lost across redeploy");
+
+    let resource = upgraded.get(&id);
+    assert_eq!(resource.id, id);
+    assert_eq!(resource.creator, creator);
+    assert_eq!(resource.price, 1_000_000i128);
+    assert_eq!(resource.metadata, metadata);
+    assert_eq!(
+        upgraded.list_by_creator(&creator, &0, &10).len(),
+        1,
+        "creator index lost across redeploy"
+    );
+    assert_eq!(
+        upgraded
+            .list_by_tag(&String::from_str(&env, "a"), &0, &10)
+            .len(),
+        1,
+        "tag index lost across redeploy"
+    );
+}
+
+#[test]
+fn an_entry_written_under_a_datakey_is_the_one_the_contract_reads() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "handwritten");
+    client.register(
+        &creator,
+        &id,
+        &1_000_000i128,
+        &String::from_str(&env, "ipfs://QmOriginal"),
+        &empty_tags(&env),
+    );
+
+    // A migration tool works on `DataKey::Resource(id)` from outside the
+    // contract's own methods. If the key it computes were not the key `get`
+    // reads, a migration would appear to succeed and change nothing.
+    let mut migrated = client.get(&id);
+    let new_metadata = String::from_str(&env, "ipfs://QmMigrated");
+    migrated.metadata = new_metadata.clone();
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .set(&DataKey::Resource(id.clone()), &migrated);
+    });
+
+    assert_eq!(
+        client.get(&id).metadata,
+        new_metadata,
+        "the contract reads a different address than DataKey::Resource(id) computes"
+    );
+}
+// ─── Documentation drift guards (#643, #640) ─────────────────────────────────
+
+/// The crate's own README, which documents the TTL policy and the version
+/// compatibility rules that the constants below define.
+fn vault_registry_readme() -> std::string::String {
+    std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("contracts/vault-registry/README.md must be readable from the crate")
+}
+
+/// Pull the section between one `## ` heading and the next.
+fn readme_section<'a>(readme: &'a str, heading: &str) -> &'a str {
+    let body = readme
+        .split(heading)
+        .nth(1)
+        .unwrap_or_else(|| panic!("README must have a `{heading}` section"));
+    body.split("\n## ").next().unwrap_or(body)
+}
+
+#[test]
+fn readme_documents_ttl_threshold_constants() {
+    let readme = vault_registry_readme();
+    let section = readme_section(&readme, "## Storage TTL threshold constants");
+
+    // Each constant must appear in the table with its real value, so the doc
+    // cannot drift the way the constants tables in contract/README.md did.
+    for (name, value) in [
+        ("DAY_IN_LEDGERS", TTL_DAY_IN_LEDGERS),
+        ("BUMP_AMOUNT", TTL_BUMP_AMOUNT),
+        ("LIFETIME_THRESHOLD", TTL_LIFETIME_THRESHOLD),
+    ] {
+        assert!(
+            section.contains(&format!("`{name}`")),
+            "the TTL section must document `{name}`"
+        );
+        let formatted = format!("`{}`", group_digits(value));
+        assert!(
+            section.contains(&formatted),
+            "the TTL section documents `{name}` but not its current value {formatted} — \
+             update contracts/vault-registry/README.md to match src/lib.rs"
+        );
+    }
+}
+
+/// Render a number the way the README's tables do: `518_400`.
+fn group_digits(value: u32) -> std::string::String {
+    let digits = value.to_string();
+    let mut out = std::string::String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push('_');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+#[test]
+fn ttl_threshold_leaves_exactly_one_day_of_slack() {
+    // The README explains the no-op window in terms of this identity; if the
+    // constants stop satisfying it, the explanation is wrong.
+    assert_eq!(
+        TTL_BUMP_AMOUNT - TTL_LIFETIME_THRESHOLD,
+        TTL_DAY_IN_LEDGERS,
+        "BUMP_AMOUNT and LIFETIME_THRESHOLD must differ by exactly one day"
+    );
+    assert!(
+        TTL_LIFETIME_THRESHOLD < TTL_BUMP_AMOUNT,
+        "LIFETIME_THRESHOLD must stay below BUMP_AMOUNT, or every read would pay rent"
+    );
+}
+
+#[test]
+fn readme_version_compatibility_documents_current_schema_version() {
+    let readme = vault_registry_readme();
+    let section = readme_section(&readme, "## Contract version compatibility");
+
+    assert!(
+        section.contains("`RESOURCE_SCHEMA_VERSION`"),
+        "the version compatibility section must name RESOURCE_SCHEMA_VERSION"
+    );
+    assert!(
+        section.contains(&format!(
+            "\"resource_schema_version\": {RESOURCE_SCHEMA_VERSION}"
+        )),
+        "the documented contract_version output must show the current \
+         resource_schema_version ({RESOURCE_SCHEMA_VERSION}) — update \
+         contracts/vault-registry/README.md to match src/lib.rs"
+    );
+    assert!(
+        section.contains(&format!("| {RESOURCE_SCHEMA_VERSION} ")),
+        "the schema history table must have a row for the current version \
+         ({RESOURCE_SCHEMA_VERSION})"
+    );
+}
+
+#[test]
+fn readme_version_compatibility_names_the_breaking_changes() {
+    let readme = vault_registry_readme();
+    let section = readme_section(&readme, "## Contract version compatibility");
+
+    // The two upgrade hazards the storage-key migration tests above defend
+    // against must both be written down, or the tests read as arbitrary.
+    assert!(
+        section.contains("DataKey"),
+        "the compatibility section must explain what renaming a DataKey variant costs"
+    );
+    assert!(
+        section.contains("crate_version") && section.contains("resource_schema_version"),
+        "the compatibility section must distinguish the two reported versions"
 // ── Reporting anchor failures as events ──────────────────────────────────────
 //
 // `anchor_purchase_receipt` reverts on a rejected anchor, and a Soroban error
