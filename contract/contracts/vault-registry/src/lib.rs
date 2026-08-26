@@ -34,6 +34,11 @@ const MAX_TAGS: u32 = 8;
 /// Maximum price in USDC stroops (6 decimals). Represents 1 trillion USDC.
 pub const MAX_PRICE: i128 = 1_000_000_000_000_000_000;
 const MAX_TAG_LEN: u32 = 32;
+/// Maximum byte length of a resource id (1–`MAX_RESOURCE_ID_LEN` ASCII
+/// lowercase letters/digits). Ids that exceed this are rejected with
+/// `InvalidResourceId`. The cuid2 generator always produces ids within this
+/// bound.
+pub const MAX_RESOURCE_ID_LEN: u32 = 24;
 /// Maximum number of items returned per page by `list`, `list_page`,
 /// `list_listed`, and `list_by_creator`. Centralised here so the cap is
 /// easy to find, document, and change in a single place instead of
@@ -2267,7 +2272,7 @@ impl VaultRegistry {
         Self::validate_bounded_string(
             id,
             1,
-            24,
+            MAX_RESOURCE_ID_LEN,
             Error::InvalidResourceId,
             Error::InvalidResourceId,
         )?;

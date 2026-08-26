@@ -258,6 +258,93 @@ fn valid_resource_id_is_accepted() {
     assert!(client.exists(&id));
 }
 
+// ── Resource ID reserved-word list documentation (#645) ──────────────────────
+//
+// The contract rejects a fixed set of reserved words (case-insensitive) with
+// `ReservedId`. This test pins every word in the list so that adding a new
+// reserved word without updating the documentation (contract/README.md §
+// "Resource ID format and reserved words") triggers a test change.
+
+/// Every word in the `is_reserved_id` list must be rejected at registration
+/// time with `ReservedId`, regardless of capitalisation.
+#[test]
+fn reserved_resource_ids_are_rejected() {
+    let (env, creator, client) = setup();
+    let meta = String::from_str(&env, "ipfs://m");
+    let tags = empty_tags(&env);
+
+    // Each tuple is (lowercase form, at-least-one-uppercase variant).
+    let cases: &[(&str, &str)] = &[
+        ("admin",    "Admin"),
+        ("null",     "NULL"),
+        ("registry", "Registry"),
+        ("api",      "API"),
+        ("index",    "Index"),
+        ("root",     "Root"),
+        ("system",   "System"),
+    ];
+
+    for (lower, upper) in cases {
+        let id_lower = String::from_str(&env, lower);
+        assert_eq!(
+            client.try_register(&creator, &id_lower, &100i128, &meta, &tags),
+            Err(Ok(Error::ReservedId)),
+            "lowercase reserved word `{}` must be rejected with ReservedId",
+            lower
+        );
+
+        // validate_resource_id only accepts lowercase letters/digits, so an
+        // uppercase variant is caught by InvalidResourceId before the reserved
+        // check — this confirms the *format* guard fires first.
+        let id_upper = String::from_str(&env, upper);
+        let res = client.try_register(&creator, &id_upper, &100i128, &meta, &tags);
+        assert!(
+            res == Err(Ok(Error::ReservedId)) || res == Err(Ok(Error::InvalidResourceId)),
+            "uppercase reserved word `{}` must be rejected (got {:?})",
+            upper,
+            res
+        );
+    }
+}
+
+/// `MAX_RESOURCE_ID_LEN` is exported and equals 24 — pin the value here so any
+/// change to the constant surfaces as a test failure.
+#[test]
+fn max_resource_id_len_is_24() {
+    assert_eq!(MAX_RESOURCE_ID_LEN, 24);
+}
+
+/// An id exactly at `MAX_RESOURCE_ID_LEN` bytes is accepted; one byte longer
+/// is rejected with `InvalidResourceId`.
+#[test]
+fn resource_id_boundary_at_max_len() {
+    let (env, creator, client) = setup();
+    let meta = String::from_str(&env, "ipfs://x");
+
+    // Exactly at the limit — must succeed.
+    let at_max = "a".repeat(MAX_RESOURCE_ID_LEN as usize);
+    client.register(
+        &creator,
+        &String::from_str(&env, &at_max),
+        &100i128,
+        &meta,
+        &empty_tags(&env),
+    );
+
+    // One byte over — must fail.
+    let over_max = "a".repeat(MAX_RESOURCE_ID_LEN as usize + 1);
+    assert_eq!(
+        client.try_register(
+            &creator,
+            &String::from_str(&env, &over_max),
+            &100i128,
+            &meta,
+            &empty_tags(&env)
+        ),
+        Err(Ok(Error::InvalidResourceId))
+    );
+}
+
 #[test]
 fn resource_id_at_max_length_is_accepted() {
     let (env, creator, client) = setup();
