@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "g5gn5lr5rr5"
+                  "string": "749aoaknt1sb4gxt"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 94161539244
+                    "lo": 101120328803
                   }
                 },
                 {
-                  "string": "ipfs://_O:_/IsV"
+                  "string": "ipfs://\\\\\\\\-9t1/_\\\\-_.9\\\\h7p/\\\\JY4\\\\6\\\\C_IJ0Q_U:_oN_-pKdV\\\\k::/\\\\3WbC_I_\\\\\\\\C\\\\S:_E\\\\2BE/AK.:-8G/CDma\\\\z\\\\3g09.D5nqBl_\\\\\\\\.04_a\\\\\\\\c\\\\FrOOE85C/T._3OT7VDh\\\\-l.L__CZn_v//TJ23EpcZ/HZu8k\\\\0\\\\x6Ye:D\\\\D_DMd5\\\\fpquB:\\\\v\\\\.\\\\\\\\xH\\\\\\\\\\\\\\\\xY/uC/0//5m_bC_:N\\\\e:o88e/6k8.Z3/_\\\\_I2ZQN6:_\\\\_ze5_6V.:.\\\\S4\\\\wKm_\\\\n_B35_-0\\\\\\\\\\\\f\\\\_-hE\\\\y\\\\:c\\\\_E\\\\aJn_3XM.g_6\\\\m4zZGn_bbvM_9/_\\\\U_j/_H_\\\\k6/\\\\_x__Z\\\\mstR\\\\yP._ms\\\\\\\\8G\\\\\\\\C_TFG\\\\RlpSC\\\\:6\\\\\\\\:/6T\\\\vaWxZa.2Qe\\\\_\\\\_E_:3xG2:__Z:\\\\A\\\\w9_/2us\\\\LSzdzV7O7I____\\\\7_\\\\Z4oL_wS.._Jw3_e_O_SmcNyW7gN\\\\\\\\\\\\Idn7w\\\\mHNB:Cbics:g_\\\\RB/V_"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "g5gn5lr5rr5"
+                  "string": "749aoaknt1sb4gxt"
                 },
                 {
-                  "string": "https://\\\\\\\\S\\\\:fg_S_l\\\\_l_1_r_\\\\gxf_j_.:.39s/9Qw\\\\_.\\\\pNU\\\\_HqMQ_\\\\H_/:__\\\\G\\\\fC_uUn_.KAP\\\\vDI4T\\\\p.G:W\\\\9\\\\_6nr5z:SSBI_HPv_v\\\\UD2rGTZ0:_7:l\\\\_"
+                  "string": "https://_VS_R17YWb_k0_s2eK4nvhXD:h5_k\\\\/X0/z\\\\.L/w_7:_"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "g5gn5lr5rr5"
+                  "string": "749aoaknt1sb4gxt"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 236004719890
+                    "lo": 310689926663
                   }
                 }
               ]
@@ -99,10 +99,10 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "g5gn5lr5rr5"
+                  "string": "749aoaknt1sb4gxt"
                 },
                 {
-                  "bool": false
+                  "bool": true
                 }
               ]
             }
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "g5gn5lr5rr5"
+                      "string": "749aoaknt1sb4gxt"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "g5gn5lr5rr5"
+                  "string": "749aoaknt1sb4gxt"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "g5gn5lr5rr5"
+                  "string": "749aoaknt1sb4gxt"
                 }
               ]
             },
@@ -247,13 +247,27 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "g5gn5lr5rr5"
+                      "string": "749aoaknt1sb4gxt"
                     }
                   ]
                 },
                 "durability": "persistent",
                 "val": {
                   "map": [
+                    {
+                      "key": {
+                        "symbol": "content_hash"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
                     {
                       "key": {
                         "symbol": "creator"
@@ -287,7 +301,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "g5gn5lr5rr5"
+                        "string": "749aoaknt1sb4gxt"
                       }
                     },
                     {
@@ -295,7 +309,7 @@
                         "symbol": "listed"
                       },
                       "val": {
-                        "bool": false
+                        "bool": true
                       }
                     },
                     {
@@ -303,7 +317,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://\\\\\\\\S\\\\:fg_S_l\\\\_l_1_r_\\\\gxf_j_.:.39s/9Qw\\\\_.\\\\pNU\\\\_HqMQ_\\\\H_/:__\\\\G\\\\fC_uUn_.KAP\\\\vDI4T\\\\p.G:W\\\\9\\\\_6nr5z:SSBI_HPv_v\\\\UD2rGTZ0:_7:l\\\\_"
+                        "string": "https://_VS_R17YWb_k0_s2eK4nvhXD:h5_k\\\\/X0/z\\\\.L/w_7:_"
                       }
                     },
                     {
@@ -313,8 +327,28 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 236004719890
+                          "lo": 310689926663
                         }
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "schema_version"
+                      },
+                      "val": {
+                        "u32": 5
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "state"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Listed"
+                          }
+                        ]
                       }
                     },
                     {
@@ -343,6 +377,14 @@
                             "symbol": "Pending"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 4
                       }
                     }
                   ]

@@ -56,7 +56,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "payr8"
+                  "string": "payr7"
                 },
                 {
                   "i128": {
@@ -127,7 +127,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "payr8"
+                      "string": "payr7"
                     }
                   ]
                 }
@@ -174,7 +174,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "payr8"
+                  "string": "payr7"
                 }
               }
             },
@@ -193,7 +193,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "payr8"
+                  "string": "payr7"
                 }
               ]
             },
@@ -213,7 +213,7 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "payr8"
+                      "string": "payr7"
                     }
                   ]
                 },
@@ -222,10 +222,36 @@
                   "map": [
                     {
                       "key": {
+                        "symbol": "content_hash"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "creator"
                       },
                       "val": {
                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_flag"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "NoFlag"
+                          }
+                        ]
                       }
                     },
                     {
@@ -241,7 +267,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "payr8"
+                        "string": "payr7"
                       }
                     },
                     {
@@ -273,6 +299,26 @@
                     },
                     {
                       "key": {
+                        "symbol": "schema_version"
+                      },
+                      "val": {
+                        "u32": 5
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "state"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Listed"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "tags"
                       },
                       "val": {
@@ -297,6 +343,14 @@
                             "symbol": "Pending"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 1
                       }
                     }
                   ]

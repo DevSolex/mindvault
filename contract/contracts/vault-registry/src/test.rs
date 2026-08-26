@@ -15,6 +15,12 @@ fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String)
     env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
 }
 
+/// Live TTL of the persistent entry holding the payment receipt `receipt_id`.
+fn payment_receipt_ttl(env: &Env, contract: &soroban_sdk::Address, receipt_id: &String) -> u32 {
+    let key = DataKey::PaymentReceipt(receipt_id.clone());
+    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+}
+
 fn setup<'a>() -> (Env, Address, VaultRegistryClient<'a>) {
     let env = Env::default();
     env.mock_all_auths();
@@ -96,7 +102,7 @@ fn register_event_contains_full_resource_payload() {
         if t0 != Symbol::new(&env, "register") {
             continue;
         }
-        let resource: RegisterEvent =
+        let event: RegisterEvent =
             <RegisterEvent as TryFromVal<Env, Val>>::try_from_val(&env, &data)
                 .ok()
                 .unwrap();
@@ -1575,8 +1581,8 @@ fn bootstrap_emits_setadmin_not_nomadmin() {
     let all = env.events().all();
     let (_contract, topics, _data) = all.get_unchecked(0);
     // First topic is the event symbol.
-    let topic0: soroban_sdk::Symbol = topics.get_unchecked(0).try_into().unwrap();
-    assert_eq!(topic0.to_buffer(), *b"setadmin");
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get_unchecked(0)).unwrap();
+    assert_eq!(topic0, symbol_short!("setadmin"));
 }
 
 #[test]
@@ -2668,6 +2674,22 @@ fn register_rejects_duplicate_normalized_tags_with_case_variants() {
     let id = String::from_str(&env, "tagdup");
     let metadata = String::from_str(&env, "ipfs://m");
 
+    // "ML" and "ml" normalize to the same tag and must be rejected outright.
+    assert_eq!(
+        client.try_register(
+            &creator,
+            &id,
+            &100i128,
+            &metadata,
+            &tags(&env, &["ML", "ml"])
+        ),
+        Err(Ok(Error::InvalidTag))
+    );
+    assert!(!client.exists(&id), "rejected register must not persist");
+
+    // A single spelling registers and lands in the index exactly once.
+    client.register(&creator, &id, &100i128, &metadata, &tags(&env, &["ML"]));
+
     let result = client.list_by_tag(&String::from_str(&env, "ml"), &0u32, &20u32);
     assert_eq!(
         result.len(),
@@ -3441,13 +3463,29 @@ fn full_workflow_emits_exactly_the_documented_events() {
     client.repair_tag_index(&Vec::from_array(&env, [r0.clone(), r1.clone(), r2.clone()])); // -> "retagidx"
     record(&env, &client, &mut observed);
 
+    let settler = Address::generate(&env);
+    client.add_settler(&settler); // -> "addsettlr"
+    record(&env, &client, &mut observed);
+
     let payer = Address::generate(&env);
+    let workflow_receipt = String::from_str(&env, "wfrcpt1");
     client.record_payment(
+        &settler,
+        &workflow_receipt,
         &r0,
         &payer,
-        &String::from_str(&env, "txhash123"),
         &1_000_000i128,
-    ); // -> "payrec"
+        &String::from_str(&env, "txhash123"),
+    ); // -> "payment"
+    record(&env, &client, &mut observed);
+    client.settle_payment(&settler, &workflow_receipt); // -> "settle"
+    record(&env, &client, &mut observed);
+    client.remove_settler(&settler); // -> "rmsettlr"
+    record(&env, &client, &mut observed);
+
+    client.set_paused(&admin2, &true); // -> "pause"
+    record(&env, &client, &mut observed);
+    client.set_paused(&admin2, &false);
     record(&env, &client, &mut observed);
 
     // Moderator role and dispute flagging (#389).
@@ -3824,6 +3862,111 @@ fn verification_status_on_missing_resource_fails() {
 }
 
 // ─── Metadata freeze (#438) ────────────────────────────────────────────────
+
+/// `METHOD_SCHEMA` in lib.rs is the single source of truth for the contract's
+/// exported API surface. `contract/README.md`'s Methods table must document
+/// exactly those entries — no stale rows, no undocumented methods.
+#[test]
+fn readme_methods_table_matches_method_schema() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("contract/README.md must be readable from the vault-registry crate");
+
+    let methods_section = readme
+        .split("### Methods")
+        .nth(1)
+        .expect("contract/README.md must have a `### Methods` section")
+        .split("### Roles")
+        .next()
+        .expect("`### Methods` section must be followed by `### Roles`");
+
+    let documented: std::vec::Vec<&str> = methods_section
+        .lines()
+        .filter_map(|line| {
+            let rest = line.trim().strip_prefix("| `")?;
+            let end = rest.find(|c| c == '(' || c == '`')?;
+            Some(&rest[..end])
+        })
+        .collect();
+
+    for (name, _auth) in METHOD_SCHEMA {
+        assert!(
+            documented.contains(name),
+            "METHOD_SCHEMA lists `{name}` but contract/README.md's Methods table \
+             does not document it — update the table to match lib.rs::METHOD_SCHEMA"
+        );
+    }
+
+    for name in &documented {
+        assert!(
+            METHOD_SCHEMA.iter().any(|(method, _)| method == name),
+            "contract/README.md documents method `{name}` but it is not in \
+             lib.rs::METHOD_SCHEMA — either the doc is stale or METHOD_SCHEMA is \
+             missing an entry"
+        );
+    }
+
+    assert_eq!(
+        documented.len(),
+        METHOD_SCHEMA.len(),
+        "contract/README.md's Methods table row count must match METHOD_SCHEMA's \
+         length exactly (no duplicate or missing rows)"
+    );
+}
+
+/// `ERROR_SCHEMA` in lib.rs is the single source of truth for error codes.
+/// `contract/README.md`'s Error codes table must document exactly those codes,
+/// with matching discriminants and names.
+#[test]
+fn readme_error_codes_table_matches_error_schema() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md"))
+        .expect("contract/README.md must be readable from the vault-registry crate");
+
+    let errors_section = readme
+        .split("### Error codes")
+        .nth(1)
+        .expect("contract/README.md must have an `### Error codes` section")
+        .split("### Events")
+        .next()
+        .expect("`### Error codes` section must be followed by `### Events`");
+
+    let documented: std::vec::Vec<(u32, &str)> = errors_section
+        .lines()
+        .filter_map(|line| {
+            let mut cells = line.trim().split('|').map(str::trim);
+            cells.next()?; // leading empty cell
+            let code = cells.next()?.trim_matches('`').parse::<u32>().ok()?;
+            let name = cells.next()?.trim_matches('`');
+            Some((code, name))
+        })
+        .collect();
+
+    for (code, name, _desc) in ERROR_SCHEMA {
+        assert!(
+            documented.contains(&(*code, name)),
+            "ERROR_SCHEMA lists `{code}`/`{name}` but contract/README.md's Error \
+             codes table does not document it — update the table to match \
+             lib.rs::ERROR_SCHEMA"
+        );
+    }
+
+    for (code, name) in &documented {
+        assert!(
+            ERROR_SCHEMA
+                .iter()
+                .any(|(schema_code, schema_name, _)| schema_code == code && schema_name == name),
+            "contract/README.md documents error `{code}`/`{name}` but it is not in \
+             lib.rs::ERROR_SCHEMA — either the doc is stale or ERROR_SCHEMA is \
+             missing an entry"
+        );
+    }
+
+    assert_eq!(
+        documented.len(),
+        ERROR_SCHEMA.len(),
+        "contract/README.md's Error codes table row count must match \
+         ERROR_SCHEMA's length exactly (no duplicate or missing rows)"
+    );
+}
 
 #[test]
 fn event_schema_matches_documented_readme_table() {
@@ -4456,10 +4599,7 @@ fn contract_version_crate_version_is_valid_semver() {
     v.crate_version.copy_into_slice(&mut buf);
     let version_str = alloc::str::from_utf8(&buf).expect("crate_version must be valid UTF-8");
 
-    assert!(
-        !version_str.is_empty(),
-        "crate_version must not be empty"
-    );
+    assert!(!version_str.is_empty(), "crate_version must not be empty");
 
     // Must contain at least two dots (MAJOR.MINOR.PATCH).
     let dot_count = version_str.chars().filter(|&c| c == '.').count();
@@ -4471,20 +4611,18 @@ fn contract_version_crate_version_is_valid_semver() {
 
     // Every segment must be a non-empty string of ASCII digits or digits+pre-release.
     let parts: alloc::vec::Vec<&str> = version_str.splitn(3, '.').collect();
-    assert_eq!(parts.len(), 3, "crate_version must have exactly 3 dot-separated parts");
+    assert_eq!(
+        parts.len(),
+        3,
+        "crate_version must have exactly 3 dot-separated parts"
+    );
     assert!(
         parts[0].chars().all(|c| c.is_ascii_digit()),
         "MAJOR segment '{}' must be numeric",
         parts[0]
     );
-    assert!(
-        !parts[0].is_empty(),
-        "MAJOR segment must not be empty"
-    );
-    assert!(
-        !parts[1].is_empty(),
-        "MINOR segment must not be empty"
-    );
+    assert!(!parts[0].is_empty(), "MAJOR segment must not be empty");
+    assert!(!parts[1].is_empty(), "MINOR segment must not be empty");
 }
 
 /// `registry_info()` must return the stable registry name that clients use
@@ -4546,9 +4684,15 @@ fn exists_many_mixed_present_and_absent() {
 
     let result = client.exists_many(&ids);
     assert_eq!(result.len(), 3);
-    assert!(result.get(0).unwrap(),  "id_a is registered — should be true");
+    assert!(
+        result.get(0).unwrap(),
+        "id_a is registered — should be true"
+    );
     assert!(!result.get(1).unwrap(), "id_b is absent — should be false");
-    assert!(result.get(2).unwrap(),  "id_c is registered — should be true");
+    assert!(
+        result.get(2).unwrap(),
+        "id_c is registered — should be true"
+    );
 }
 
 /// `exists_many` returns all-true when every id is registered.
@@ -4575,7 +4719,10 @@ fn exists_many_all_present() {
     let result = client.exists_many(&ids);
     assert_eq!(result.len(), 3);
     for i in 0..3u32 {
-        assert!(result.get(i).unwrap(), "all ids are registered — should be true");
+        assert!(
+            result.get(i).unwrap(),
+            "all ids are registered — should be true"
+        );
     }
 }
 
@@ -4591,8 +4738,14 @@ fn exists_many_invalid_id_format_treated_as_absent() {
 
     let result = client.exists_many(&ids);
     assert_eq!(result.len(), 2);
-    assert!(!result.get(0).unwrap(), "invalid-format id treated as absent");
-    assert!(!result.get(1).unwrap(), "valid-format but unregistered id is absent");
+    assert!(
+        !result.get(0).unwrap(),
+        "invalid-format id treated as absent"
+    );
+    assert!(
+        !result.get(1).unwrap(),
+        "valid-format but unregistered id is absent"
+    );
 }
 
 /// `exists_many` bumps TTL for each id that resolves to a registered resource.
@@ -4739,8 +4892,7 @@ fn registry_info_resource_schema_version_is_nonzero() {
         "resource_schema_version must be > 0 (it tracks breaking Resource schema changes)"
     );
     assert_eq!(
-        info.resource_schema_version,
-        RESOURCE_SCHEMA_VERSION,
+        info.resource_schema_version, RESOURCE_SCHEMA_VERSION,
         "registry_info().resource_schema_version must equal the RESOURCE_SCHEMA_VERSION constant"
     );
 }
@@ -4907,48 +5059,83 @@ fn anchor_purchase_receipt_requires_verifier_role() {
     );
 }
 
-/// record_payment stamps ledger from the ledger sequence at call time.
+/// record_payment stamps `recorded_at` from the ledger sequence at call time.
 #[test]
 fn record_payment_stamps_ledger_sequence() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payreclgr");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payreclgr");
 
     env.ledger().set_sequence_number(777);
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "txhash777"), &100i128);
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcptlgr"),
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "txhash777"),
+    );
 
     let receipt = client.get_payment_receipt(&id, &payer);
     assert_eq!(
-        receipt.ledger, 777,
-        "ledger must reflect env sequence at record time"
+        receipt.recorded_at, 777,
+        "recorded_at must reflect env sequence at record time"
     );
 }
 
-/// Recording a second payment for the same (resource_id, payer) pair
-/// overwrites the first — the stored value always reflects the most recent.
+/// Receipts are immutable and keyed by `receipt_id`, but the
+/// `(resource_id, payer)` index always resolves to the most recent one.
 #[test]
-fn record_payment_overwrites_previous_receipt() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecow");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
-
+fn record_payment_index_tracks_most_recent_receipt() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecow");
     let payer = Address::generate(&env);
 
-    client.record_payment(&id, &payer, &String::from_str(&env, "first_tx"), &500i128);
-    client.record_payment(&id, &payer, &String::from_str(&env, "second_tx"), &750i128);
+    let first = String::from_str(&env, "rcptow1");
+    let second = String::from_str(&env, "rcptow2");
+    client.record_payment(
+        &settler,
+        &first,
+        &id,
+        &payer,
+        &500i128,
+        &String::from_str(&env, "first_tx"),
+    );
+    client.record_payment(
+        &settler,
+        &second,
+        &id,
+        &payer,
+        &750i128,
+        &String::from_str(&env, "second_tx"),
+    );
+
+    // Both receipts remain individually addressable...
+    assert_eq!(client.get_payment(&first).amount, 500i128);
+    assert_eq!(client.get_payment(&second).amount, 750i128);
+    // ...but the pair index points at the latest.
+    let latest = client.get_payment_receipt(&id, &payer);
+    assert_eq!(latest.receipt_id, second);
+    assert_eq!(latest.amount, 750i128);
+}
+
+/// A receipt can only leave `Escrowed` once — settling twice fails.
+#[test]
+fn settle_payment_twice_fails() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrectw");
+    let receipt_id = String::from_str(&env, "rcpttw1");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &creator,
+        &100i128,
+        &String::from_str(&env, "0xtxtw"),
+    );
+    client.settle_payment(&settler, &receipt_id);
+    assert_eq!(client.get_payment(&receipt_id).state, PaymentState::Settled);
 
     let res = client.try_settle_payment(&settler, &receipt_id);
     assert_eq!(res, Err(Ok(Error::InvalidPaymentTransition)));
@@ -4986,7 +5173,29 @@ fn record_payment_nonexistent_resource_fails() {
     let missing = String::from_str(&env, "nosuchresource");
     let payer = Address::generate(&env);
 
-    client.record_payment(&id, &payer, &tx_hash, &amount);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptmiss"),
+        &missing,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "0xtxmiss"),
+    );
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+/// record_payment emits a `payment` event keyed by receipt id, carrying the
+/// full receipt so indexers never need a follow-up storage read.
+#[test]
+fn record_payment_emits_payment_event() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecev");
+    let payer = Address::generate(&env);
+    let receipt_id = String::from_str(&env, "rcptev1");
+    let tx_hash = String::from_str(&env, "0xtxev");
+    let amount = 4_200i128;
+
+    client.record_payment(&settler, &receipt_id, &id, &payer, &amount, &tx_hash);
 
     // env.events().all() reflects the most recent invocation
     let all = env.events().all();
@@ -4996,20 +5205,22 @@ fn record_payment_nonexistent_resource_fails() {
     assert_eq!(
         topics.len(),
         2,
-        "payrec topics should be (symbol, resource_id)"
+        "payment topics should be (symbol, receipt_id)"
     );
 
     let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-    assert_eq!(sym, symbol_short!("payrec"));
+    assert_eq!(sym, symbol_short!("payment"));
 
     let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
-    assert_eq!(topic_id, id);
+    assert_eq!(topic_id, receipt_id);
 
     let receipt: PaymentReceipt = PaymentReceipt::try_from_val(&env, &data).unwrap();
+    assert_eq!(receipt.receipt_id, receipt_id);
     assert_eq!(receipt.resource_id, id);
     assert_eq!(receipt.payer, payer);
     assert_eq!(receipt.tx_hash, tx_hash);
     assert_eq!(receipt.amount, amount);
+    assert_eq!(receipt.state, PaymentState::Escrowed);
 }
 
 #[test]
@@ -5048,7 +5259,10 @@ fn non_settler_cannot_settle_payment() {
     let res = client.try_settle_payment(&stranger, &receipt_id);
     assert_eq!(res, Err(Ok(Error::NotSettler)));
     // Receipt state must not have changed.
-    assert_eq!(client.get_payment(&receipt_id).state, PaymentState::Escrowed);
+    assert_eq!(
+        client.get_payment(&receipt_id).state,
+        PaymentState::Escrowed
+    );
 }
 
 #[test]
@@ -5076,11 +5290,18 @@ fn get_payment_missing_fails() {
 }
 
 #[test]
-fn record_payment_zero_amount_fails() {
+fn record_payment_empty_tx_hash_fails() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr7");
     let payer = Address::generate(&env);
-    let res = client.try_record_payment(&id, &payer, &String::from_str(&env, ""), &100i128);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptnotx"),
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, ""),
+    );
     assert_eq!(res, Err(Ok(Error::InvalidTxHash)));
 }
 
@@ -5103,55 +5324,52 @@ fn record_payment_empty_receipt_id_fails() {
 /// record_payment accepts a tx_hash exactly at MAX_TX_HASH_LEN.
 #[test]
 fn record_payment_accepts_tx_hash_at_max_length() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecmaxh");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecmaxh");
     let payer = Address::generate(&env);
     let max_hash = String::from_str(&env, &"a".repeat(MAX_TX_HASH_LEN as usize));
-    client.record_payment(&id, &payer, &max_hash, &100i128);
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcptmaxh"),
+        &id,
+        &payer,
+        &100i128,
+        &max_hash,
+    );
     assert_eq!(client.get_payment_receipt(&id, &payer).tx_hash, max_hash);
 }
 
 /// record_payment errors InvalidPaymentAmount when amount is zero.
 #[test]
 fn record_payment_rejects_zero_amount() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecbadamt1");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecbadamt1");
     let payer = Address::generate(&env);
-    let res = client.try_record_payment(&id, &payer, &String::from_str(&env, "txhash"), &0i128);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptzero"),
+        &id,
+        &payer,
+        &0i128,
+        &String::from_str(&env, "txhash"),
+    );
     assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
 }
 
+/// record_payment errors InvalidPaymentAmount when amount is negative.
 #[test]
-fn record_payment_emits_payment_event() {
+fn record_payment_rejects_negative_amount() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payr10");
-    let receipt_id = String::from_str(&env, "rcptevt1");
-    let tx_hash = String::from_str(&env, "0xtxevt1");
-
-    client.record_payment(
-        &settler,
-        &receipt_id,
-        &id,
-        &creator,
-        &2_000_000i128,
-        &tx_hash,
-    );
     let payer = Address::generate(&env);
-    let res = client.try_record_payment(&id, &payer, &String::from_str(&env, "txhash"), &-1i128);
+    let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptneg"),
+        &id,
+        &payer,
+        &-1i128,
+        &String::from_str(&env, "txhash"),
+    );
     assert_eq!(res, Err(Ok(Error::InvalidPaymentAmount)));
 }
 
@@ -5173,10 +5391,9 @@ fn settle_payment_emits_settle_event() {
 
     let all = env.events().all();
     let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol =
-        <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
-            .ok()
-            .unwrap();
+    let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+        .ok()
+        .unwrap();
     assert_eq!(t0, Symbol::new(&env, "settle"));
 
     let decoded: PaymentReceipt =
@@ -5189,19 +5406,19 @@ fn settle_payment_emits_settle_event() {
 /// Failed record_payment calls leave no receipt behind.
 #[test]
 fn failed_record_payment_does_not_store_receipt() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecfailstore");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecfailstore");
     let payer = Address::generate(&env);
 
     // Attempt with zero amount — should fail
-    let _ = client.try_record_payment(&id, &payer, &String::from_str(&env, "txhash"), &0i128);
+    let _ = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptfail"),
+        &id,
+        &payer,
+        &0i128,
+        &String::from_str(&env, "txhash"),
+    );
 
     // No receipt should be stored
     assert_eq!(
@@ -5214,20 +5431,21 @@ fn failed_record_payment_does_not_store_receipt() {
 /// record_payment bumps the receipt entry's TTL on write.
 #[test]
 fn record_payment_sets_ttl_on_write() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecttlw");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecttlw");
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+    let receipt_id = String::from_str(&env, "rcptttlw");
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "tx"),
+    );
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
         TTL_BUMP_AMOUNT,
         "record_payment must set TTL to BUMP_AMOUNT"
     );
@@ -5236,17 +5454,18 @@ fn record_payment_sets_ttl_on_write() {
 /// get_payment_receipt bumps the receipt entry's TTL on a successful read.
 #[test]
 fn get_payment_receipt_bumps_ttl_on_read() {
-    let (env, creator, client) = setup();
-    let id = String::from_str(&env, "payrecttlr");
-    client.register(
-        &creator,
-        &id,
-        &100i128,
-        &String::from_str(&env, "ipfs://m"),
-        &empty_tags(&env),
-    );
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecttlr");
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "tx"), &100i128);
+    let receipt_id = String::from_str(&env, "rcptttlr");
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "tx"),
+    );
 
     // Decay past LIFETIME_THRESHOLD so extend_ttl fires.
     let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
@@ -5254,7 +5473,7 @@ fn get_payment_receipt_bumps_ttl_on_read() {
         .set_sequence_number(env.ledger().sequence() + decay);
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
         TTL_BUMP_AMOUNT - decay,
         "TTL should have decayed before the read"
     );
@@ -5262,7 +5481,7 @@ fn get_payment_receipt_bumps_ttl_on_read() {
     client.get_payment_receipt(&id, &payer);
 
     assert_eq!(
-        payment_receipt_ttl(&env, &client.address, &id, &payer),
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
         TTL_BUMP_AMOUNT,
         "get_payment_receipt must bump TTL back to BUMP_AMOUNT"
     );
@@ -5352,14 +5571,12 @@ fn set_paused_emits_pause_event() {
     let all = env.events().all();
     // The last event is from set_paused (setadmin is first from setup_with_admin).
     let (_cid, topics, data) = all.get_unchecked(all.len() - 1);
-    let t0: Symbol =
-        <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
-            .ok()
-            .unwrap();
+    let t0: Symbol = <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &topics.get(0).unwrap())
+        .ok()
+        .unwrap();
     assert_eq!(t0, Symbol::new(&env, "pause"));
-    let (paused, emitted_admin): (bool, Address) =
-        <(bool, Address)>::try_from_val(&env, &data)
-            .expect("pause event data must be (bool, Address)");
+    let (paused, emitted_admin): (bool, Address) = <(bool, Address)>::try_from_val(&env, &data)
+        .expect("pause event data must be (bool, Address)");
     assert!(paused);
     assert_eq!(emitted_admin, admin);
 }
@@ -5380,14 +5597,14 @@ fn set_paused_noop_still_emits_event() {
         let (_, topics, _) = all.get(i).unwrap();
         topics
             .get(0)
-            .and_then(|v| {
-                <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &v)
-                    .ok()
-            })
+            .and_then(|v| <Symbol as TryFromVal<Env, Val>>::try_from_val(&env, &v).ok())
             .map(|sym: Symbol| sym == Symbol::new(&env, "pause"))
             .unwrap_or(false)
     });
-    assert!(found, "set_paused must emit a 'pause' event even on a no-op state transition");
+    assert!(
+        found,
+        "set_paused must emit a 'pause' event even on a no-op state transition"
+    );
 }
 
 // ── flag_resource ─────────────────────────────────────────────────────────
@@ -5455,10 +5672,7 @@ fn flag_resource_replaces_existing_flag() {
     );
 
     client.flag_resource(&id, &moderator, &FlagReason::Malicious);
-    assert_eq!(
-        client.get(&id).metadata,
-        String::from_str(&env, "ipfs://m"),
-    );
+    assert_eq!(client.get(&id).metadata, String::from_str(&env, "ipfs://m"),);
 }
 
 #[test]
@@ -5551,8 +5765,7 @@ fn pause_blocks_set_verification_status() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
     client.set_paused(&admin, &true);
-    let res =
-        client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
     assert_eq!(res, Err(Ok(Error::ContractPaused)));
     assert_eq!(client.get(&id).verified, VerificationStatus::Pending);
 }
@@ -5721,11 +5934,8 @@ fn set_flag_reason_hash_non_moderator_is_unauthorized() {
     let id = register_default(&env, &creator, &client, "reasonhash3");
     let not_moderator = Address::generate(&env);
 
-    let res = client.try_set_flag_reason_hash(
-        &id,
-        &not_moderator,
-        &String::from_str(&env, "sha256:x"),
-    );
+    let res =
+        client.try_set_flag_reason_hash(&id, &not_moderator, &String::from_str(&env, "sha256:x"));
     assert_eq!(res, Err(Ok(Error::Unauthorized)));
 }
 
@@ -5785,15 +5995,17 @@ fn index_storage_ttl(env: &Env, contract: &soroban_sdk::Address, index: u32) -> 
 
 #[test]
 fn pause_blocks_record_payment() {
-    let (env, creator, admin, client) = setup_with_admin();
+    let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "pausedpayrec");
     let payer = Address::generate(&env);
-    client.set_paused(&admin, &true);
+    client.set_paused(&_admin, &true);
     let res = client.try_record_payment(
+        &settler,
+        &String::from_str(&env, "rcptpaused"),
         &id,
         &payer,
-        &String::from_str(&env, "txhash"),
         &1_000_000i128,
+        &String::from_str(&env, "txhash"),
     );
     assert_eq!(res, Err(Ok(Error::ContractPaused)));
 }
@@ -5802,13 +6014,20 @@ fn pause_blocks_record_payment() {
 
 #[test]
 fn pause_allows_read_only_methods() {
-    let (env, creator, admin, client) = setup_with_admin();
+    let (env, creator, admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "pausedread");
 
     // Record a payment receipt and terms hash while unpaused so we have
     // something to read back.
     let payer = Address::generate(&env);
-    client.record_payment(&id, &payer, &String::from_str(&env, "txhash"), &100i128);
+    client.record_payment(
+        &settler,
+        &String::from_str(&env, "rcptread"),
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "txhash"),
+    );
     client.set_terms_hash(&creator, &String::from_str(&env, "termshash"));
 
     client.set_paused(&admin, &true);
@@ -5982,7 +6201,9 @@ proptest! {
         }
 
         if include_duplicate && tag_count >= 2 {
+            // Two tags normalizing to the same value are rejected outright.
             tags_vec.set(1, tags_vec.get(0).unwrap());
+            is_valid = false;
         }
 
         let result = client.try_register(&creator, &id, &100i128, &meta, &tags_vec);
@@ -6412,18 +6633,8 @@ fn anchor_purchase_receipt_duplicate_guard_is_per_buyer() {
     );
 
     // Anchor both buyers.
-    client.anchor_purchase_receipt(
-        &service,
-        &id,
-        &buyer_a,
-        &String::from_str(&env, "hashofa"),
-    );
-    client.anchor_purchase_receipt(
-        &service,
-        &id,
-        &buyer_b,
-        &String::from_str(&env, "hashofb"),
-    );
+    client.anchor_purchase_receipt(&service, &id, &buyer_a, &String::from_str(&env, "hashofa"));
+    client.anchor_purchase_receipt(&service, &id, &buyer_b, &String::from_str(&env, "hashofb"));
 
     // Re-anchoring buyer A still errors — buyer B's anchor is irrelevant.
     assert_eq!(

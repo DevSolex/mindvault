@@ -18,16 +18,16 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "9h7jm8ltirh7723tk02234qy"
+                  "string": "52784irn9n1n94iq461"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 741875348157
+                    "lo": 275390968349
                   }
                 },
                 {
-                  "string": "ipfs://thlh_Ti7qSLM/\\\\:R24IB__K_\\\\d90bW\\\\v4S4IS1F_THQ\\\\-_bZN_KOP91EczBZ/\\\\y5M\\\\2_88/TxUr1\\\\4xb\\\\N\\\\:\\\\30kE\\\\dEQu.\\\\Pm/\\\\aF/6\\\\K_3_I1\\\\LzVCIPV__:_K\\\\_.\\\\8y0j__3I\\\\\\\\9\\\\2X-0.ay__oQs_nV_0h:hM\\\\J\\\\Gb0RK_\\\\4\\\\X3JWs_R:\\\\l\\\\\\\\Q\\\\_:C/kj\\\\/bgTFih:._u_.qeF\\\\_LNAU:\\\\\\\\:C\\\\D__\\\\3_rp\\\\.lh_A:Q6807E_X6_\\\\//K6LO-n/S8:v_\\\\\\\\D-\\\\:bT\\\\6\\\\zEU4I.bm/qd._\\\\4_\\\\\\\\EB_iz:P7CJd_"
+                  "string": "ipfs://zSy_7\\\\Ap_._1/02:\\\\_J\\\\\\\\_F_o6\\\\H._cW7oNw9_n\\\\7E7__:_i\\\\\\\\\\\\-y2___"
                 },
                 {
                   "vec": []
@@ -50,10 +50,10 @@
               "function_name": "update_metadata",
               "args": [
                 {
-                  "string": "9h7jm8ltirh7723tk02234qy"
+                  "string": "52784irn9n1n94iq461"
                 },
                 {
-                  "string": "https://D1\\\\1YNLsqtkvSA__iB9\\\\Lq_\\\\Bq7f\\\\\\\\Ey/7U\\\\T\\\\a6oa3\\\\46__pR\\\\._XF\\\\_\\\\PY\\\\XE_-7:\\\\iR_RD3Z\\\\\\\\O__\\\\2jY_:\\\\ba\\\\i3O\\\\.g\\\\-q_QXAmf_p_OEvm\\\\/VpGlLQ_G_\\\\Zi0_H./G_\\\\\\\\r__H_m_3m\\\\\\\\me\\\\\\\\wMt_\\\\4r_xhFi\\\\\\\\wgg\\\\_1-NtSC\\\\/S_YSfS0___QEo2\\\\q5D_9\\\\39it_LsodZ\\\\L_\\\\o6\\\\..T\\\\Hq8_nLK"
+                  "string": "https://p:\\\\__I.o_I\\\\4C_:k\\\\70g__8Ifc\\\\gSPk-/_hs25w_3eb4.PY1\\\\ic\\\\K/\\\\/sW-\\\\i8C\\\\p48eVT\\\\AGOds3:u_xn\\\\yX4//Jj5k/i\\\\_:d\\\\-0_L:ds_tf1S_Nt_\\\\rY54_/8\\\\UV\\\\\\\\\\\\_mo__l\\\\b\\\\V5_\\\\nt:_fkuZ_C1_NyQ_\\\\X\\\\\\\\pdzn-__6uzRJ__S_N.Fc__k05_O\\\\3/T/_ExvgGFwt1__:H\\\\cG:_62vk3\\\\\\\\\\\\\\\\CfOJ_K0_I6_/M_I6_062/___/dY_\\\\_rQy_kU\\\\\\\\\\\\y7KX_ZP\\\\35\\\\tx\\\\z/1\\\\1N5\\\\uj\\\\Wu3qh\\\\q/:T\\\\jC_/I\\\\_B:\\\\xK7Q\\\\t2bIVrpW/_:_3RD\\\\qj_Z_6F5x-.VxLkC_J-E\\\\T_o:R6VTDc\\\\fY._\\\\G\\\\\\\\\\\\wx\\\\gf3oiKErt\\\\Wi\\\\m9235no\\\\iN"
                 }
               ]
             }
@@ -73,12 +73,12 @@
               "function_name": "set_price",
               "args": [
                 {
-                  "string": "9h7jm8ltirh7723tk02234qy"
+                  "string": "52784irn9n1n94iq461"
                 },
                 {
                   "i128": {
                     "hi": 0,
-                    "lo": 537346638475
+                    "lo": 817104004321
                   }
                 }
               ]
@@ -99,7 +99,7 @@
               "function_name": "set_listed",
               "args": [
                 {
-                  "string": "9h7jm8ltirh7723tk02234qy"
+                  "string": "52784irn9n1n94iq461"
                 },
                 {
                   "bool": false
@@ -161,7 +161,7 @@
                 "val": {
                   "vec": [
                     {
-                      "string": "9h7jm8ltirh7723tk02234qy"
+                      "string": "52784irn9n1n94iq461"
                     }
                   ]
                 }
@@ -208,7 +208,7 @@
                 },
                 "durability": "persistent",
                 "val": {
-                  "string": "9h7jm8ltirh7723tk02234qy"
+                  "string": "52784irn9n1n94iq461"
                 }
               }
             },
@@ -227,7 +227,7 @@
                   "symbol": "Resource"
                 },
                 {
-                  "string": "9h7jm8ltirh7723tk02234qy"
+                  "string": "52784irn9n1n94iq461"
                 }
               ]
             },
@@ -247,13 +247,27 @@
                       "symbol": "Resource"
                     },
                     {
-                      "string": "9h7jm8ltirh7723tk02234qy"
+                      "string": "52784irn9n1n94iq461"
                     }
                   ]
                 },
                 "durability": "persistent",
                 "val": {
                   "map": [
+                    {
+                      "key": {
+                        "symbol": "content_hash"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "created_at"
+                      },
+                      "val": {
+                        "u32": 0
+                      }
+                    },
                     {
                       "key": {
                         "symbol": "creator"
@@ -287,7 +301,7 @@
                         "symbol": "id"
                       },
                       "val": {
-                        "string": "9h7jm8ltirh7723tk02234qy"
+                        "string": "52784irn9n1n94iq461"
                       }
                     },
                     {
@@ -303,7 +317,7 @@
                         "symbol": "metadata"
                       },
                       "val": {
-                        "string": "https://D1\\\\1YNLsqtkvSA__iB9\\\\Lq_\\\\Bq7f\\\\\\\\Ey/7U\\\\T\\\\a6oa3\\\\46__pR\\\\._XF\\\\_\\\\PY\\\\XE_-7:\\\\iR_RD3Z\\\\\\\\O__\\\\2jY_:\\\\ba\\\\i3O\\\\.g\\\\-q_QXAmf_p_OEvm\\\\/VpGlLQ_G_\\\\Zi0_H./G_\\\\\\\\r__H_m_3m\\\\\\\\me\\\\\\\\wMt_\\\\4r_xhFi\\\\\\\\wgg\\\\_1-NtSC\\\\/S_YSfS0___QEo2\\\\q5D_9\\\\39it_LsodZ\\\\L_\\\\o6\\\\..T\\\\Hq8_nLK"
+                        "string": "https://p:\\\\__I.o_I\\\\4C_:k\\\\70g__8Ifc\\\\gSPk-/_hs25w_3eb4.PY1\\\\ic\\\\K/\\\\/sW-\\\\i8C\\\\p48eVT\\\\AGOds3:u_xn\\\\yX4//Jj5k/i\\\\_:d\\\\-0_L:ds_tf1S_Nt_\\\\rY54_/8\\\\UV\\\\\\\\\\\\_mo__l\\\\b\\\\V5_\\\\nt:_fkuZ_C1_NyQ_\\\\X\\\\\\\\pdzn-__6uzRJ__S_N.Fc__k05_O\\\\3/T/_ExvgGFwt1__:H\\\\cG:_62vk3\\\\\\\\\\\\\\\\CfOJ_K0_I6_/M_I6_062/___/dY_\\\\_rQy_kU\\\\\\\\\\\\y7KX_ZP\\\\35\\\\tx\\\\z/1\\\\1N5\\\\uj\\\\Wu3qh\\\\q/:T\\\\jC_/I\\\\_B:\\\\xK7Q\\\\t2bIVrpW/_:_3RD\\\\qj_Z_6F5x-.VxLkC_J-E\\\\T_o:R6VTDc\\\\fY._\\\\G\\\\\\\\\\\\wx\\\\gf3oiKErt\\\\Wi\\\\m9235no\\\\iN"
                       }
                     },
                     {
@@ -313,8 +327,28 @@
                       "val": {
                         "i128": {
                           "hi": 0,
-                          "lo": 537346638475
+                          "lo": 817104004321
                         }
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "schema_version"
+                      },
+                      "val": {
+                        "u32": 5
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "state"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Delisted"
+                          }
+                        ]
                       }
                     },
                     {
@@ -343,6 +377,14 @@
                             "symbol": "Pending"
                           }
                         ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "version"
+                      },
+                      "val": {
+                        "u32": 4
                       }
                     }
                   ]
