@@ -307,6 +307,80 @@ fn non_settler_cannot_settle_payment() {
 }
 
 #[test]
+fn settle_payment_transitions_receipt_to_settled() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrectrs");
+    let receipt_id = String::from_str(&env, "rcpttrs1");
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &creator,
+        &123_456i128,
+        &String::from_str(&env, "0xtxtrs"),
+    );
+
+    let before = client.get_payment(&receipt_id);
+    assert_eq!(before.state, PaymentState::Escrowed);
+
+    client.settle_payment(&settler, &receipt_id);
+
+    let after = client.get_payment(&receipt_id);
+    assert_eq!(after.state, PaymentState::Settled);
+    assert_eq!(after.receipt_id, before.receipt_id);
+    assert_eq!(after.resource_id, before.resource_id);
+    assert_eq!(after.payer, before.payer);
+    assert_eq!(after.amount, before.amount);
+    assert_eq!(after.tx_hash, before.tx_hash);
+    assert_eq!(after.recorded_at, before.recorded_at);
+    assert_eq!(after.ledger, before.ledger);
+}
+
+#[test]
+fn settle_payment_missing_receipt_fails() {
+    let (env, _creator, _admin, settler, client) = setup_with_settler();
+    let receipt_id = String::from_str(&env, "nosuchrcpt");
+
+    let res = client.try_settle_payment(&settler, &receipt_id);
+    assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn settle_payment_sets_ttl_on_write() {
+    let (env, creator, _admin, settler, client) = setup_with_settler();
+    let id = register_default(&env, &creator, &client, "payrecttlsw");
+    let receipt_id = String::from_str(&env, "rcptttlsw");
+    let payer = Address::generate(&env);
+
+    client.record_payment(
+        &settler,
+        &receipt_id,
+        &id,
+        &payer,
+        &100i128,
+        &String::from_str(&env, "tx"),
+    );
+
+    let decay: u32 = TTL_DAY_IN_LEDGERS + 100;
+    env.ledger().set_sequence_number(env.ledger().sequence() + decay);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
+        TTL_BUMP_AMOUNT - decay,
+        "TTL should have decayed"
+    );
+
+    client.settle_payment(&settler, &receipt_id);
+
+    assert_eq!(
+        payment_receipt_ttl(&env, &client.address, &receipt_id),
+        TTL_BUMP_AMOUNT,
+        "settle_payment must set TTL to BUMP_AMOUNT"
+    );
+}
+
+#[test]
 fn settle_payment_twice_fails() {
     let (env, creator, _admin, settler, client) = setup_with_settler();
     let id = register_default(&env, &creator, &client, "payrectw");
