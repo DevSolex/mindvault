@@ -6773,4 +6773,114 @@ fn an_entry_written_under_a_datakey_is_the_one_the_contract_reads() {
         "the contract reads a different address than DataKey::Resource(id) computes"
     );
 }
+// ─── Documentation drift guards (#643, #640) ─────────────────────────────────
 
+/// The crate's own README, which documents the TTL policy and the version
+/// compatibility rules that the constants below define.
+fn vault_registry_readme() -> std::string::String {
+    std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("contracts/vault-registry/README.md must be readable from the crate")
+}
+
+/// Pull the section between one `## ` heading and the next.
+fn readme_section<'a>(readme: &'a str, heading: &str) -> &'a str {
+    let body = readme
+        .split(heading)
+        .nth(1)
+        .unwrap_or_else(|| panic!("README must have a `{heading}` section"));
+    body.split("\n## ").next().unwrap_or(body)
+}
+
+#[test]
+fn readme_documents_ttl_threshold_constants() {
+    let readme = vault_registry_readme();
+    let section = readme_section(&readme, "## Storage TTL threshold constants");
+
+    // Each constant must appear in the table with its real value, so the doc
+    // cannot drift the way the constants tables in contract/README.md did.
+    for (name, value) in [
+        ("DAY_IN_LEDGERS", TTL_DAY_IN_LEDGERS),
+        ("BUMP_AMOUNT", TTL_BUMP_AMOUNT),
+        ("LIFETIME_THRESHOLD", TTL_LIFETIME_THRESHOLD),
+    ] {
+        assert!(
+            section.contains(&format!("`{name}`")),
+            "the TTL section must document `{name}`"
+        );
+        let formatted = format!("`{}`", group_digits(value));
+        assert!(
+            section.contains(&formatted),
+            "the TTL section documents `{name}` but not its current value {formatted} — \
+             update contracts/vault-registry/README.md to match src/lib.rs"
+        );
+    }
+}
+
+/// Render a number the way the README's tables do: `518_400`.
+fn group_digits(value: u32) -> std::string::String {
+    let digits = value.to_string();
+    let mut out = std::string::String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push('_');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+#[test]
+fn ttl_threshold_leaves_exactly_one_day_of_slack() {
+    // The README explains the no-op window in terms of this identity; if the
+    // constants stop satisfying it, the explanation is wrong.
+    assert_eq!(
+        TTL_BUMP_AMOUNT - TTL_LIFETIME_THRESHOLD,
+        TTL_DAY_IN_LEDGERS,
+        "BUMP_AMOUNT and LIFETIME_THRESHOLD must differ by exactly one day"
+    );
+    assert!(
+        TTL_LIFETIME_THRESHOLD < TTL_BUMP_AMOUNT,
+        "LIFETIME_THRESHOLD must stay below BUMP_AMOUNT, or every read would pay rent"
+    );
+}
+
+#[test]
+fn readme_version_compatibility_documents_current_schema_version() {
+    let readme = vault_registry_readme();
+    let section = readme_section(&readme, "## Contract version compatibility");
+
+    assert!(
+        section.contains("`RESOURCE_SCHEMA_VERSION`"),
+        "the version compatibility section must name RESOURCE_SCHEMA_VERSION"
+    );
+    assert!(
+        section.contains(&format!(
+            "\"resource_schema_version\": {RESOURCE_SCHEMA_VERSION}"
+        )),
+        "the documented contract_version output must show the current \
+         resource_schema_version ({RESOURCE_SCHEMA_VERSION}) — update \
+         contracts/vault-registry/README.md to match src/lib.rs"
+    );
+    assert!(
+        section.contains(&format!("| {RESOURCE_SCHEMA_VERSION} ")),
+        "the schema history table must have a row for the current version \
+         ({RESOURCE_SCHEMA_VERSION})"
+    );
+}
+
+#[test]
+fn readme_version_compatibility_names_the_breaking_changes() {
+    let readme = vault_registry_readme();
+    let section = readme_section(&readme, "## Contract version compatibility");
+
+    // The two upgrade hazards the storage-key migration tests above defend
+    // against must both be written down, or the tests read as arbitrary.
+    assert!(
+        section.contains("DataKey"),
+        "the compatibility section must explain what renaming a DataKey variant costs"
+    );
+    assert!(
+        section.contains("crate_version") && section.contains("resource_schema_version"),
+        "the compatibility section must distinguish the two reported versions"
+    );
+}
