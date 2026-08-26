@@ -125,9 +125,13 @@ describe("checkStatePermissions", () => {
 
   beforeEach(() => {
     mkdirSync(STATE_DIR, { recursive: true });
-    writeFileSync(STATE_FILE, JSON.stringify({ version: 1, activeProfile: "default", profiles: {} }), {
-      mode: 0o600,
-    });
+    writeFileSync(
+      STATE_FILE,
+      JSON.stringify({ version: 1, activeProfile: "default", profiles: {} }),
+      {
+        mode: 0o600,
+      },
+    );
   });
 
   afterEach(() => {
