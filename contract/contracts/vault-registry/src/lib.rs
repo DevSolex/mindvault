@@ -1830,8 +1830,10 @@ impl VaultRegistry {
         let hash = env
             .storage()
             .persistent()
-            .get(&DataKey::PaymentReceipt(receipt_id))
-            .ok_or(Error::NotFound)
+            .get(&key)
+            .ok_or(Error::NotFound)?;
+        Self::bump_persistent(&env, &key);
+        Ok(hash)
     }
 
     // ─── Moderator role management (#389) ────────────────────────────────────
