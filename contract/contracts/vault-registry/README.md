@@ -394,6 +394,21 @@ The generated bindings live in
 Read-only calls are simulated on-chain (free); write calls must be signed and
 submitted with `signAndSend()`.
 
+### Updating Generated Bindings
+
+When the contract interface changes, or when the contract is deployed to a new address, you must update the generated bindings:
+
+- [ ] **Regenerate TypeScript bindings from the new WASM**
+  ```bash
+  # From the root directory:
+  CONTRACT_WASM=contract/target/wasm32v1-none/release/vault_registry.wasm pnpm contract:bindings
+  ```
+- [ ] **Verify bindings against the deployed contract**
+  ```bash
+  pnpm --filter @mindvault/registry-client test
+  ```
+- [ ] **Commit the updated bindings** file (`packages/registry-client/src/generated/index.ts`).
+
 ### Setup
 
 ```typescript
