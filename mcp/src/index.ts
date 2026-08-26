@@ -113,12 +113,18 @@ import {
   mapHttpError,
   mapRegistryError,
   mapTransportError,
+  mappedErrorOf,
   mcpError,
   throwHttpError,
   isTimeoutError,
   type CredentialContext,
   type ErrorSource,
 } from "./errorMapping.js";
+import {
+  mapSponsoredHttpFailure,
+  mapSponsoredTransportFailure,
+  SPONSORED_CREATE_PATH,
+} from "./sponsoredDiagnostics.js";
 import { parseMetadataHash } from "./metadataHash.js";
 import {
   applyCatalogSort,
@@ -991,46 +997,33 @@ export async function txStatus(txHash: string): Promise<string> {
 
 async function setupWallet(profileArg?: string): Promise<string> {
   const target = resolveProfileName(profileArg);
-  const res = await jsonFetch(`${SPONSORED_ACCOUNT_URL}/create`, { method: "POST" });
+  const operation = "mindvault_setup_wallet failed to create wallet";
+
+  // The sponsored-account service is the single dependency of wallet setup, so
+  // both of its failure paths get the same structured diagnostics: a transport
+  // failure (nothing answered) is classified here rather than escaping as the
+  // generic "Sponsored-account request failed" jsonFetch would otherwise throw.
+  let res: Awaited<ReturnType<typeof jsonFetch>>;
+  try {
+    res = await jsonFetch(`${SPONSORED_ACCOUNT_URL}${SPONSORED_CREATE_PATH}`, { method: "POST" });
+  } catch (err) {
+    const mapped = mappedErrorOf(err);
+    if (!mapped) throw err;
+    throw mcpError(
+      mapSponsoredTransportFailure({ operation, serviceUrl: SPONSORED_ACCOUNT_URL, mapped }),
+    );
+  }
+
   if (!res.ok) {
-    const mapped = mapHttpError({
-      operation: "Failed to create wallet",
-      source: "sponsored",
-      status: res.status,
-      data: res.data,
-    });
-
-    const diagnostics = [
-      `Service: ${SPONSORED_ACCOUNT_URL}`,
-      res.status ? `Status: ${res.status}` : null,
-      mapped.category ? `Issue: ${mapped.category}` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-
-    const guidance = [
-      mapped.status === 503
-        ? "The account sponsorship service is unavailable; it may be restarting."
-        : null,
-      mapped.status === 429
-        ? "Rate limit reached on account creation; wait a moment and retry."
-        : null,
-      mapped.status === 400
-        ? "The request was malformed; this may indicate a client-side issue."
-        : null,
-      mapped.status === 500
-        ? "The service encountered an internal error; contact support if it persists."
-        : null,
-      !mapped.status ? "Network connectivity issue; check your connection and retry." : null,
-    ]
-      .filter(Boolean)
-      .join(" ");
-
-    throw mcpError({
-      ...mapped,
-      summary: `${mapped.summary}\n${diagnostics}`,
-      action: guidance || mapped.action,
-    });
+    throw mcpError(
+      mapSponsoredHttpFailure({
+        operation,
+        serviceUrl: SPONSORED_ACCOUNT_URL,
+        status: res.status,
+        data: res.data,
+        headers: res.headers,
+      }),
+    );
   }
   activeProfileName = target;
   activeProfile().wallet = { publicKey: res.data.publicKey, secretKey: res.data.secretKey };

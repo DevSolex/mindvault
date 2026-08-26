@@ -39,6 +39,9 @@ export interface MappedError {
   status?: number;
   /** `<operation>: <detail>` — what failed, in the caller's vocabulary. */
   summary: string;
+  /** Just the detail half of the summary, so a caller can re-compose it under
+   * its own operation label without string-surgery on `summary`. */
+  detail?: string;
   /** One-line, imperative next step for the agent. */
   action: string;
 }
@@ -197,6 +200,7 @@ export function mapHttpError(input: {
       source: input.source,
       category,
       status: input.status,
+      detail,
       summary:
         `${input.operation}: ${detail} ` +
         `(publisher API key for profile "${credential.profile}" was rejected as unknown)`,
@@ -209,6 +213,7 @@ export function mapHttpError(input: {
       source: input.source,
       category,
       status: input.status,
+      detail,
       summary: `${input.operation}: ${detail}`,
       action: forbiddenKeyAction(credential.profile),
     };
@@ -218,6 +223,7 @@ export function mapHttpError(input: {
     source: input.source,
     category,
     status: input.status,
+    detail,
     summary: `${input.operation}: ${detail}`,
     action: ACTION[category],
   };
@@ -239,6 +245,7 @@ export function mapTransportError(input: {
   return {
     source: input.source,
     category,
+    detail,
     summary: `${input.operation}: ${detail}`,
     action: ACTION[category],
   };
@@ -294,9 +301,31 @@ export function formatMappedError(error: MappedError): string {
   return `${error.summary}\n${classification}\nNext: ${error.action}`;
 }
 
+/**
+ * An Error carrying the structured mapping it was rendered from, so a caller
+ * further up can refine the classification instead of re-parsing the message.
+ */
+export interface MappedErrorException extends Error {
+  mapped: MappedError;
+}
+
 /** A mapped error as a throwable, for the tool handlers' existing error path. */
-export function mcpError(error: MappedError): Error {
-  return new Error(formatMappedError(error));
+export function mcpError(error: MappedError): MappedErrorException {
+  const err = new Error(formatMappedError(error)) as MappedErrorException;
+  // Non-enumerable so the mapping never shows up in a JSON dump of the error.
+  Object.defineProperty(err, "mapped", { value: error, enumerable: false });
+  return err;
+}
+
+/**
+ * Recover the structured mapping from an error thrown by `mcpError`, or
+ * `undefined` for anything else. Lets a handler that knows more about the call
+ * than `jsonFetch` did enrich an already-classified failure.
+ */
+export function mappedErrorOf(error: unknown): MappedError | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const mapped = (error as { mapped?: unknown }).mapped;
+  return mapped && typeof mapped === "object" ? (mapped as MappedError) : undefined;
 }
 
 /** Convenience: map a non-ok HTTP response and throw it. */
