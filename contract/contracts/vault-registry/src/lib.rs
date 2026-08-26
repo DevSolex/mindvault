@@ -70,6 +70,7 @@ pub const MAX_TX_HASH_LEN: u32 = 128;
 /// appear as a row in that table. Both directions are enforced by the test
 /// `readme_methods_table_matches_method_schema` in `test.rs`, so any drift
 /// between code, this const, and the README fails a test.
+#[cfg(test)]
 pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     // ── Resource lifecycle ────────────────────────────────────────────────
     ("register", "creator"),
@@ -162,6 +163,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
 /// document exactly these codes. Both directions are enforced by the test
 /// `readme_error_codes_table_matches_error_schema` in `test.rs`, so any drift
 /// between code, this const, and the README fails a test.
+#[cfg(test)]
 pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
     (1, "AlreadyRegistered", "A resource with the given `id` already exists."),
     (2, "NotFound", "No resource (or terms hash or receipt) matches the given key."),
@@ -218,6 +220,7 @@ pub const ERROR_SCHEMA: &[(u32, &str, &str)] = &[
 /// `test.rs` (`event_schema_matches_documented_readme_table` and
 /// `full_workflow_emits_exactly_the_documented_events`) so any drift between
 /// code, this const, and the docs fails a test.
+#[cfg(test)]
 pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("register", "Resource"),
     (

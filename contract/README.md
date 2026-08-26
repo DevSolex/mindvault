@@ -595,15 +595,17 @@ Examples: `1_000_000` = 0.10 USDC, `10_000_000` = 1.00 USDC, `500_000` = 0.05 US
 ### WASM size budget
 
 This contract enforces a strictly tracked optimized WASM size budget in CI
-(`stellar contract build --optimize`). Currently the limit is **36,864 bytes
-(36 KB)**, against a current optimized size of ~33 KB.
+(`stellar contract build --optimize`). Currently the limit is **65,536 bytes
+(64 KB)**, against a current optimized size of ~62 KB.
 
-The budget has been raised twice as the surface grew: from a stale 10 KB
-figure to 28 KB (tags, pagination, admin, terms hashes), and from 28 KB to
-36 KB once `registry_info`, the verifier role, the on-chain verification
-mirror, metadata freeze, and index repair merged. If genuine feature additions
-push past it, raise `MAX_SIZE` in `.github/workflows/contract-ci.yml` and
-explain the growth in your PR description.
+The budget is raised explicitly as the surface grows: from a stale 10 KB figure
+to 28 KB (tags, pagination, admin, terms hashes), from 28 KB to 36 KB once
+`registry_info`, the verifier role, the on-chain verification mirror, metadata
+freeze, and index repair merged, and from 36 KB to 64 KB after resource
+lifecycle/dispute queries, receipt settlement, and pause controls expanded the
+exported contract surface. If genuine feature additions push past it, raise
+`MAX_SIZE` in `.github/workflows/contract-ci.yml` and explain the growth in your
+PR description.
 
 ### Emergency pause
 

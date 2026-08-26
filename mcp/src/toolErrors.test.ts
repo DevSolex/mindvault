@@ -25,6 +25,8 @@ vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
 
 vi.mock("@modelcontextprotocol/sdk/types.js", () => ({
   CallToolRequestSchema: {},
+  ListPromptsRequestSchema: {},
+  GetPromptRequestSchema: {},
   ListToolsRequestSchema: {},
 }));
 

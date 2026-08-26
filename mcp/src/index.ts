@@ -989,6 +989,23 @@ export async function txStatus(txHash: string): Promise<string> {
 
 // ── Tool handlers ─────────────────────────────────────────────────────────────
 
+function hasPublicErrorDetail(data: unknown): boolean {
+  if (typeof data === "string") return data.trim().length > 0;
+  if (!data || typeof data !== "object") return false;
+  const obj = data as Record<string, unknown>;
+  return ["error", "message", "detail", "reason"].some((key) => {
+    const value = obj[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+function sponsoredAccountErrorData(status: number, data: unknown): unknown {
+  if (status >= 500 && !hasPublicErrorDetail(data)) {
+    return { message: "internal service error" };
+  }
+  return data;
+}
+
 async function setupWallet(profileArg?: string): Promise<string> {
   const target = resolveProfileName(profileArg);
   const res = await jsonFetch(`${SPONSORED_ACCOUNT_URL}/create`, { method: "POST" });
@@ -997,7 +1014,7 @@ async function setupWallet(profileArg?: string): Promise<string> {
       operation: "Failed to create wallet",
       source: "sponsored",
       status: res.status,
-      data: res.data,
+      data: sponsoredAccountErrorData(res.status, res.data),
     });
 
     const diagnostics = [
@@ -1105,7 +1122,16 @@ export async function browse(filters: CatalogFilters = {}): Promise<string> {
   const qs = buildCatalogQueryString(filters);
   const url = qs ? `${BASE_URL}/resources?${qs}` : `${BASE_URL}/resources`;
   const res = await jsonFetch(url);
-  if (!res.ok) throw new Error(`Browse failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok) {
+    throw mcpError(
+      mapHttpError({
+        operation: "Browse failed",
+        source: "api",
+        status: res.status,
+        data: res.data,
+      }),
+    );
+  }
   let items: any[] = Array.isArray(res.data) ? res.data : [];
   items = applyCatalogSort(applyClientCatalogFilters(items, filters), filters.sort);
   const body =
@@ -1150,7 +1176,16 @@ export async function search(filtersOrQuery: string | CatalogFilters): Promise<s
   const qs = buildCatalogQueryString(filters);
   const url = qs ? `${BASE_URL}/resources?${qs}` : `${BASE_URL}/resources`;
   const res = await jsonFetch(url);
-  if (!res.ok) throw new Error(`Search failed: ${JSON.stringify(res.data)}`);
+  if (!res.ok) {
+    throw mcpError(
+      mapHttpError({
+        operation: "Search failed",
+        source: "api",
+        status: res.status,
+        data: res.data,
+      }),
+    );
+  }
   let items: any[] = Array.isArray(res.data) ? res.data : [];
 
   // Client-side keyword / tags / listed / skipped for unit-test compatibility
@@ -2459,6 +2494,7 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
 
   const args: ValidatedArgs =
     name in TOOL_ARGUMENT_SPECS && !isDryRunCall ? validateToolArgs(name, rawArgs) : {};
+  const dryRunArgs = isDryRunCall ? (rawRecord as ValidatedArgs) : args;
 
   assertMainnetMutationAllowed(NETWORK, name, rawRecord);
 
@@ -2489,16 +2525,16 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
       );
     case "mindvault_publish":
       return publish({
-        title: requiredString(args, "title"),
-        description: optionalString(args, "description"),
-        price: requiredString(args, "price"),
-        externalUrl: requiredString(args, "externalUrl"),
-        dryRun: flag(args, "dryRun"),
+        title: requiredString(dryRunArgs, "title"),
+        description: optionalString(dryRunArgs, "description"),
+        price: requiredString(dryRunArgs, "price"),
+        externalUrl: requiredString(dryRunArgs, "externalUrl"),
+        dryRun: flag(dryRunArgs, "dryRun"),
       });
     case "mindvault_publish_status":
       return publishStatus(rawRecord);
     case "mindvault_buy":
-      return buy(requiredString(args, "resourceId"), flag(args, "dryRun"));
+      return buy(requiredString(dryRunArgs, "resourceId"), flag(dryRunArgs, "dryRun"));
     case "mindvault_purchase_history":
       return purchaseHistoryTool(rawRecord);
     case "mindvault_export_receipts":
@@ -2525,6 +2561,17 @@ export async function dispatchTool(name: string, rawArgs: unknown): Promise<stri
         optionalInt(args, "start", REGISTRY_LIST_DEFAULT_START),
         optionalInt(args, "limit", REGISTRY_LIST_DEFAULT_LIMIT),
       );
+    case "mindvault_update_metadata":
+      return updateMetadata(requiredString(args, "resourceId"), requiredString(args, "metadata"));
+    case "mindvault_set_price":
+      return setPrice(requiredString(args, "resourceId"), requiredString(args, "price"));
+    case "mindvault_transfer_ownership":
+      return transferOwnership(
+        requiredString(args, "resourceId"),
+        requiredString(args, "newCreator"),
+      );
+    case "mindvault_set_listed":
+      return setListed(requiredString(args, "resourceId"), flag(args, "listed"));
     case "mindvault_tx_status":
       return txStatus(requiredString(args, "txHash"));
     case "mindvault_reset":

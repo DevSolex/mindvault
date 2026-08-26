@@ -11,6 +11,10 @@ let tarball: string;
 
 beforeAll(() => {
   packDir = mkdtempSync(join(tmpdir(), PACK_DIR));
+  execFileSync("pnpm", ["run", "build"], {
+    cwd: join(import.meta.dirname, ".."),
+    stdio: "pipe",
+  });
   execFileSync("npm", ["pack", "--pack-destination", packDir], {
     cwd: join(import.meta.dirname, ".."),
     stdio: "pipe",

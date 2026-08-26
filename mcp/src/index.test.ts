@@ -15,6 +15,8 @@ vi.mock("@modelcontextprotocol/sdk/server/stdio.js", () => ({
 
 vi.mock("@modelcontextprotocol/sdk/types.js", () => ({
   CallToolRequestSchema: {},
+  ListPromptsRequestSchema: {},
+  GetPromptRequestSchema: {},
   ListToolsRequestSchema: {},
 }));
 
@@ -154,7 +156,9 @@ describe("browse", () => {
     await browse();
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining("/resources"),
-      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
     );
   });
 });
@@ -230,7 +234,9 @@ describe("search", () => {
     await search("test");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining("/resources"),
-      expect.objectContaining({ headers: { "Content-Type": "application/json" } }),
+      expect.objectContaining({
+        headers: expect.objectContaining({ "Content-Type": "application/json" }),
+      }),
     );
   });
 
@@ -1338,7 +1344,7 @@ describe("setupWallet – sponsored account failure diagnostics", () => {
       await dispatchTool("mindvault_setup_wallet", {});
     } catch (err: any) {
       const msg = err.message;
-      expect(msg).toContain("setup");
+      expect(msg).toContain("Failed to create wallet");
       expect(msg).toContain("unavailable");
       expect(msg).toMatch(/restarting|wait/i);
     }
