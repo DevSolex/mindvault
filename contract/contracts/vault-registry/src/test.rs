@@ -4829,6 +4829,41 @@ fn set_price_updates_updated_at() {
     assert_eq!(client.get(&id).updated_at, 55);
 }
 
+/// `set_price` no-op guard (#646): calling it with the resource's current
+/// price must not re-save the resource (no `updated_at`/`version` bump) or
+/// emit a `setprice` event.
+#[test]
+fn set_price_noop_skips_save_and_event() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(10);
+    let id = String::from_str(&env, "pricenoop");
+    let price = 1_000_000i128;
+    client.register(
+        &creator,
+        &id,
+        &price,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    assert_eq!(client.get(&id).updated_at, 10);
+
+    env.ledger().set_sequence_number(55);
+    let events_before = env.events().all().len();
+    client.set_price(&id, &price);
+
+    assert_eq!(
+        client.get(&id).updated_at,
+        10,
+        "no-op set_price must not re-save the resource"
+    );
+    assert_eq!(
+        env.events().all().len(),
+        events_before,
+        "no-op set_price must not emit a setprice event"
+    );
+}
+
 /// `update_metadata` updates updated_at to the ledger sequence at call time.
 #[test]
 fn update_metadata_updates_updated_at() {
@@ -4848,6 +4883,35 @@ fn update_metadata_updates_updated_at() {
     env.ledger().set_sequence_number(99);
     client.update_metadata(&id, &String::from_str(&env, "ipfs://new"));
     assert_eq!(client.get(&id).updated_at, 99);
+}
+
+/// `update_metadata` no-op guard (#647): calling it with the resource's
+/// current metadata pointer must not re-save the resource (no
+/// `updated_at`/`version` bump) or emit an `updmeta` event.
+#[test]
+fn update_metadata_noop_skips_save_and_event() {
+    let (env, creator, client) = setup();
+
+    env.ledger().set_sequence_number(7);
+    let id = String::from_str(&env, "metanoop");
+    let metadata = String::from_str(&env, "ipfs://same");
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+    assert_eq!(client.get(&id).updated_at, 7);
+
+    env.ledger().set_sequence_number(99);
+    let events_before = env.events().all().len();
+    client.update_metadata(&id, &metadata);
+
+    assert_eq!(
+        client.get(&id).updated_at,
+        7,
+        "no-op update_metadata must not re-save the resource"
+    );
+    assert_eq!(
+        env.events().all().len(),
+        events_before,
+        "no-op update_metadata must not emit an updmeta event"
+    );
 }
 
 /// `created_at` remains unchanged when metadata is updated.
@@ -6368,6 +6432,107 @@ fn get_flag_reason_hash_missing_fails() {
 
     let res = client.try_get_flag_reason_hash(&id);
     assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+// ── Moderator role event payload tests (#616) ─────────────────────────────
+//
+// The topic-matching test earlier in this file (`event_topics_match_...`)
+// only pins that these events are emitted under the right symbol; it never
+// decodes their payload. These tests assert the actual topic and data
+// contents of every moderator-role and dispute-flag event, so a payload
+// regression (wrong address, stale bool, truncated reason hash) fails here
+// instead of only surfacing off-chain.
+
+#[test]
+fn add_moderator_emits_address_and_true_payload() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+
+    client.add_moderator(&moderator);
+
+    let all = env.events().all();
+    let (_, topics, data) = all.get_unchecked(all.len() - 1);
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, Symbol::new(&env, "addmod"));
+    let topic_moderator: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_moderator, moderator);
+    let flag: bool = bool::try_from_val(&env, &data).unwrap();
+    assert!(flag, "addmod payload must be `true`");
+}
+
+#[test]
+fn remove_moderator_emits_address_and_false_payload() {
+    let (env, _creator, _admin, client) = setup_with_admin();
+    let moderator = Address::generate(&env);
+    client.add_moderator(&moderator);
+
+    client.remove_moderator(&moderator);
+
+    let all = env.events().all();
+    let (_, topics, data) = all.get_unchecked(all.len() - 1);
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, Symbol::new(&env, "rmmod"));
+    let topic_moderator: Address = Address::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_moderator, moderator);
+    let flag: bool = bool::try_from_val(&env, &data).unwrap();
+    assert!(!flag, "rmmod payload must be `false`");
+}
+
+#[test]
+fn flag_resource_emits_full_event_payload() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagpay0");
+
+    client.flag_resource(&id, &moderator, &FlagReason::Malicious);
+
+    let all = env.events().all();
+    let (_, topics, data) = all.get_unchecked(all.len() - 1);
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, Symbol::new(&env, "flag"));
+    let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_id, id);
+    let payload: FlagEvent = FlagEvent::try_from_val(&env, &data).unwrap();
+    assert_eq!(payload.id, id);
+    assert_eq!(payload.moderator, moderator);
+    assert_eq!(payload.reason, FlagReason::Malicious);
+}
+
+#[test]
+fn unflag_resource_emits_id_payload() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagpay1");
+    client.flag_resource(&id, &moderator, &FlagReason::Spam);
+
+    client.unflag_resource(&id, &moderator);
+
+    let all = env.events().all();
+    let (_, topics, data) = all.get_unchecked(all.len() - 1);
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, Symbol::new(&env, "unflag"));
+    let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_id, id);
+    let data_id: String = String::try_from_val(&env, &data).unwrap();
+    assert_eq!(data_id, id);
+}
+
+#[test]
+fn set_flag_reason_hash_emits_full_event_payload() {
+    let (env, creator, _admin, moderator, client) = setup_with_moderator();
+    let id = register_default(&env, &creator, &client, "flagpay2");
+    let reason_hash = String::from_str(&env, "sha256:abc123");
+
+    client.set_flag_reason_hash(&id, &moderator, &reason_hash);
+
+    let all = env.events().all();
+    let (_, topics, data) = all.get_unchecked(all.len() - 1);
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, Symbol::new(&env, "flagrsn"));
+    let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_id, id);
+    let (data_moderator, data_hash): (Address, String) =
+        <(Address, String)>::try_from_val(&env, &data).unwrap();
+    assert_eq!(data_moderator, moderator);
+    assert_eq!(data_hash, reason_hash);
 }
 
 // ── Storage TTL tests for index entries (#371) ────────────────────────────────
