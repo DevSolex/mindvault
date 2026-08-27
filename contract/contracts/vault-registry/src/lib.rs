@@ -164,6 +164,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("get_payment_receipt", "—"),
     ("anchor_purchase_receipt", "verifier"),
     ("attempt_anchor_purchase_receipt", "verifier"),
+    ("override_purchase_receipt_anchor", "verifier"),
     ("get_purchase_receipt", "—"),
     // ── TTL ───────────────────────────────────────────────────────────────
     ("extend_resource_ttl", "creator"),
@@ -2110,6 +2111,34 @@ impl VaultRegistry {
 
         Self::write_anchor(&env, resource_id, buyer, receipt_hash);
         Ok(true)
+    }
+
+    /// Override a purchase receipt anchor for `(resource_id, buyer)`.
+    ///
+    /// This method allows a verifier to forcibly update an existing purchase receipt
+    /// anchor for a given buyer. If no anchor exists, it returns `NotFound`.
+    pub fn override_purchase_receipt_anchor(
+        env: Env,
+        service: Address,
+        resource_id: String,
+        buyer: Address,
+        new_receipt_hash: String,
+    ) -> Result<(), Error> {
+        Self::require_anchor_authority(&env, &service)?;
+        Self::require_not_paused(&env)?;
+        Self::validate_resource_id(&resource_id)?;
+
+        let key = DataKey::PurchaseReceipt(resource_id.clone(), buyer.clone());
+        if !env.storage().persistent().has(&key) {
+            return Err(Error::NotFound);
+        }
+
+        if new_receipt_hash.is_empty() || new_receipt_hash.len() > MAX_TX_HASH_LEN {
+            return Err(Error::InvalidTxHash);
+        }
+
+        Self::write_anchor(&env, resource_id, buyer, new_receipt_hash);
+        Ok(())
     }
 
     /// Fetch a purchase receipt anchor for `(resource_id, buyer)`.
