@@ -3697,7 +3697,7 @@ fn full_workflow_emits_exactly_the_documented_events() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier); // -> "addverif"
     record(&env, &client, &mut observed);
-    client.set_verification_status(&r2, &verifier, &VerificationStatus::Verified); // -> "verify"
+    client.set_verification_status(&r2, &verifier, &VerificationStatus::Verified, &None); // -> "verify"
     record(&env, &client, &mut observed);
     client.set_fee_config(&FeeConfig {
         platform_fee_bps: 100,
@@ -4143,7 +4143,7 @@ fn verifier_can_verify_pending_resource() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
 
-    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
     assert_eq!(client.get(&id).verified, VerificationStatus::Verified);
 }
 
@@ -4154,7 +4154,7 @@ fn set_verification_status_emits_old_and_new_status() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
 
-    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
 
     let all = env.events().all();
     let (_contract, _topics, data) = all.get_unchecked(all.len() - 1);
@@ -4171,7 +4171,7 @@ fn non_verifier_cannot_set_verification_status() {
     let id = register_default(&env, &creator, &client, "vres3");
     let stranger = Address::generate(&env);
 
-    let res = client.try_set_verification_status(&id, &stranger, &VerificationStatus::Verified);
+    let res = client.try_set_verification_status(&id, &stranger, &VerificationStatus::Verified, &None);
     assert_eq!(res, Err(Ok(Error::NotVerifier)));
     assert_eq!(client.get(&id).verified, VerificationStatus::Pending);
 }
@@ -4184,7 +4184,7 @@ fn revoked_verifier_cannot_set_verification_status() {
     client.add_verifier(&verifier);
     client.remove_verifier(&verifier);
 
-    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
     assert_eq!(res, Err(Ok(Error::NotVerifier)));
 }
 
@@ -4196,7 +4196,7 @@ fn verification_self_transition_rejected() {
     client.add_verifier(&verifier);
 
     // Pending -> Pending is a no-op and rejected as invalid.
-    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending, &None);
     assert_eq!(res, Err(Ok(Error::InvalidVerificationTransition)));
 }
 
@@ -4207,8 +4207,8 @@ fn verification_cannot_revert_to_pending() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
 
-    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
-    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Pending, &None);
     assert_eq!(res, Err(Ok(Error::InvalidVerificationTransition)));
 }
 
@@ -4219,11 +4219,11 @@ fn verification_round_trip_verified_rejected_verified() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
 
-    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
-    client.set_verification_status(&id, &verifier, &VerificationStatus::Rejected);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Rejected, &None);
     assert_eq!(client.get(&id).verified, VerificationStatus::Rejected);
 
-    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
     assert_eq!(client.get(&id).verified, VerificationStatus::Verified);
 }
 
@@ -4237,8 +4237,38 @@ fn verification_status_on_missing_resource_fails() {
         &String::from_str(&env, "nosuchresource"),
         &verifier,
         &VerificationStatus::Verified,
+        &None,
     );
     assert_eq!(res, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn verification_status_can_store_and_retrieve_attestation_hash() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "vres8");
+    let verifier = Address::generate(&env);
+    client.add_verifier(&verifier);
+
+    let hash_val = String::from_str(&env, "a1b2c3d4e5f6g7h8i9j0");
+    client.set_verification_status(
+        &id,
+        &verifier,
+        &VerificationStatus::Verified,
+        &Some(hash_val.clone()),
+    );
+    
+    assert_eq!(client.get(&id).verified, VerificationStatus::Verified);
+    let retrieved_hash = client.get_attestation_hash(&id);
+    assert_eq!(retrieved_hash, Some(hash_val));
+
+    // Clearing it
+    client.set_verification_status(
+        &id,
+        &verifier,
+        &VerificationStatus::Rejected,
+        &None,
+    );
+    assert_eq!(client.get_attestation_hash(&id), None);
 }
 
 // ─── Metadata freeze (#438) ────────────────────────────────────────────────
@@ -6150,7 +6180,7 @@ fn pause_blocks_set_verification_status() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
     client.set_paused(&admin, &true);
-    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    let res = client.try_set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
     assert_eq!(res, Err(Ok(Error::ContractPaused)));
     assert_eq!(client.get(&id).verified, VerificationStatus::Pending);
 }
@@ -6763,7 +6793,7 @@ fn set_verification_status_event_topic_holds_full_max_length_id() {
     let verifier = Address::generate(&env);
     client.add_verifier(&verifier);
 
-    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified);
+    client.set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
 
     let topic_id = last_event_id_topic(&env);
     assert_eq!(topic_id, id);

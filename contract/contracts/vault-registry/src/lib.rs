@@ -26,6 +26,7 @@ const LIFETIME_THRESHOLD: u32 = BUMP_AMOUNT - DAY_IN_LEDGERS;
 pub const MAX_METADATA_POINTER_LEN: u32 = 512;
 pub const MAX_TERMS_HASH_LEN: u32 = 64;
 pub const MAX_CONTENT_HASH_LEN: u32 = 128;
+pub const MAX_ATTESTATION_HASH_LEN: u32 = 64;
 /// Max length for a moderator's off-chain dispute reason hash, set via
 /// `set_flag_reason_hash`. Same bound as `MAX_TERMS_HASH_LEN` — both store a
 /// fixed-size digest of arbitrary off-chain content.
@@ -113,6 +114,13 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("list_by_creator", "—"),
     ("list_by_tag", "—"),
     ("list_by_dispute_status", "—"),
+    ("list_payments", "—"),
+    // ── Verification ──────────────────────────────────────────────────────
+    ("add_verifier", "admin"),
+    ("remove_verifier", "admin"),
+    ("is_verifier", "—"),
+    ("set_verification_status", "verifier"),
+    ("get_attestation_hash", "—"),
     // ── Registry introspection ────────────────────────────────────────────
     ("registry_info", "—"),
     ("contract_version", "—"),
@@ -128,11 +136,6 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("accept_admin", "pending admin"),
     ("set_paused", "admin"),
     ("is_paused", "—"),
-    // ── Verifier role ─────────────────────────────────────────────────────
-    ("add_verifier", "admin"),
-    ("remove_verifier", "admin"),
-    ("is_verifier", "—"),
-    ("set_verification_status", "verifier"),
     // ── Settler role ──────────────────────────────────────────────────────
     ("add_settler", "admin"),
     ("remove_settler", "admin"),
@@ -255,7 +258,7 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("freeze", "()"),
     (
         "verify",
-        "(old_status: VerificationStatus, new_status: VerificationStatus)",
+        "(old_status: VerificationStatus, new_status: VerificationStatus, attestation_hash: Option<String>)",
     ),
     ("addverif", "true"),
     ("rmverif", "false"),
@@ -506,6 +509,9 @@ pub enum DataKey {
     /// enum code): this carries a digest of free-form detail a moderator
     /// recorded off-chain, analogous to `CreatorTerms`.
     FlagReasonHash(String),
+    /// Hash of a verifier's off-chain attestation document, provided during a
+    /// status change via `set_verification_status`.
+    AttestationHash(String),
 }
 
 /// Event data emitted when a resource's metadata pointer is updated.
@@ -726,6 +732,8 @@ pub enum Error {
     InvalidReceiptId = 44,
     /// `content_hash` exceeds `MAX_CONTENT_HASH_LEN` (128 bytes).
     ContentHashTooLong = 45,
+    /// `attestation_hash` exceeds `MAX_ATTESTATION_HASH_LEN` (64 bytes).
+    AttestationHashTooLong = 46,
 }
 
 #[contract]
@@ -855,6 +863,7 @@ impl VaultRegistry {
         id: String,
         verifier: Address,
         status: VerificationStatus,
+        attestation_hash: Option<String>,
     ) -> Result<(), Error> {
         verifier.require_auth();
         Self::require_not_paused(&env)?;
@@ -876,11 +885,37 @@ impl VaultRegistry {
             return Err(Error::InvalidVerificationTransition);
         }
 
+        if let Some(hash) = &attestation_hash {
+            if hash.len() > MAX_ATTESTATION_HASH_LEN {
+                return Err(Error::AttestationHashTooLong);
+            }
+        }
+
+        let hash_key = DataKey::AttestationHash(id.clone());
+        if let Some(hash) = attestation_hash.clone() {
+            env.storage().persistent().set(&hash_key, &hash);
+            Self::bump_persistent(&env, &hash_key);
+        } else {
+            env.storage().persistent().remove(&hash_key);
+        }
+
         resource.verified = status;
         Self::save(&env, &mut resource);
         env.events()
-            .publish((symbol_short!("verify"), id), (old_status, status));
+            .publish((symbol_short!("verify"), id), (old_status, status, attestation_hash));
         Ok(())
+    }
+
+    /// Read the off-chain attestation hash for a resource, if one has been recorded
+    /// via `set_verification_status`.
+    pub fn get_attestation_hash(env: Env, id: String) -> Option<String> {
+        Self::validate_resource_id(&id).ok()?;
+        let key = DataKey::AttestationHash(id);
+        let hash: Option<String> = env.storage().persistent().get(&key);
+        if hash.is_some() {
+            Self::bump_persistent(&env, &key);
+        }
+        hash
     }
 
     /// Replace a resource's discovery tags. Only the creator may call this.
