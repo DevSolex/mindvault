@@ -281,21 +281,29 @@ fn set_verification_status_event_topic_holds_full_max_length_id() {
 }
 
 #[derive(Clone, Debug)]
-enum ListedTagOp {
-    Register { id_seed: u32, tag_mask: u8 },
-    SetListed { res_idx: usize, listed: bool },
-    Tombstone { res_idx: usize },
+enum IndexOp {
+    Register {
+        creator_idx: usize,
+        id_seed: u32,
+    },
+    Transfer {
+        res_idx: usize,
+        new_creator_idx: usize,
+    },
+    Tombstone {
+        res_idx: usize,
+    },
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(50))]
     #[test]
-    fn test_listed_and_tag_index_invariants_property(
+    fn test_count_and_creator_index_invariants_property(
         ops in prop::collection::vec(
             prop_oneof![
-                3 => (any::<u32>(), any::<u8>()).prop_map(|(id, tags)| ListedTagOp::Register { id_seed: id, tag_mask: tags }),
-                2 => (any::<usize>(), any::<bool>()).prop_map(|(r, l)| ListedTagOp::SetListed { res_idx: r, listed: l }),
-                1 => any::<usize>().prop_map(|r| ListedTagOp::Tombstone { res_idx: r }),
+                3 => (any::<usize>(), any::<u32>()).prop_map(|(c, id)| IndexOp::Register { creator_idx: c, id_seed: id }),
+                1 => (any::<usize>(), any::<usize>()).prop_map(|(r, c)| IndexOp::Transfer { res_idx: r, new_creator_idx: c }),
+                1 => any::<usize>().prop_map(|r| IndexOp::Tombstone { res_idx: r }),
             ],
             1..30
         )
@@ -304,85 +312,72 @@ proptest! {
         env.mock_all_auths();
         let contract_id = env.register(VaultRegistry, ());
         let client = VaultRegistryClient::new(&env, &contract_id);
-        let creator = Address::generate(&env);
         let admin = Address::generate(&env);
         client.nominate_new_admin(&admin);
 
-        let predefined_tags = [
-            String::from_str(&env, "tagA"),
-            String::from_str(&env, "tagB"),
-            String::from_str(&env, "tagC"),
+        let creators = [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
         ];
 
-        let mut resources = alloc::vec::Vec::new();
+        let mut registered_ids = alloc::vec::Vec::new();
+        let mut tombstoned_ids = alloc::vec::Vec::new();
         let mut id_seq = 0;
 
         for op in ops {
             match op {
-                ListedTagOp::Register { tag_mask, .. } => {
-                    let id_str = alloc::format!("ltidx{:04}", id_seq);
+                IndexOp::Register { creator_idx, .. } => {
+                    let creator = &creators[creator_idx % creators.len()];
+                    let id_str = alloc::format!("idx{:04}", id_seq);
                     id_seq += 1;
                     let id = String::from_str(&env, &id_str);
                     let meta = String::from_str(&env, "ipfs://meta");
-
-                    let mut res_tags = alloc::vec::Vec::new();
-                    let has_tag_a = (tag_mask & 1) != 0;
-                    let has_tag_b = (tag_mask & 2) != 0;
-                    let has_tag_c = (tag_mask & 4) != 0;
-
-                    if has_tag_a { res_tags.push(predefined_tags[0].clone()); }
-                    if has_tag_b { res_tags.push(predefined_tags[1].clone()); }
-                    if has_tag_c { res_tags.push(predefined_tags[2].clone()); }
-
-                    if client.try_register(&creator, &id, &100i128, &meta, &res_tags).is_ok() {
-                        resources.push((id, false, false, has_tag_a, has_tag_b, has_tag_c));
+                    if client.try_register(creator, &id, &100i128, &meta, &empty_tags(&env)).is_ok() {
+                        registered_ids.push(id);
                     }
                 }
-                ListedTagOp::SetListed { res_idx, listed } => {
-                    if !resources.is_empty() {
-                        let idx = res_idx % resources.len();
-                        let (id, _, is_tombstoned, _, _, _) = &resources[idx];
-                        if !is_tombstoned {
-                            let _ = client.try_set_listed(id, &listed);
+                IndexOp::Transfer { res_idx, new_creator_idx } => {
+                    if !registered_ids.is_empty() {
+                        let id = &registered_ids[res_idx % registered_ids.len()];
+                        if !tombstoned_ids.contains(id) {
+                            let new_creator = &creators[new_creator_idx % creators.len()];
+                            let _ = client.try_transfer_ownership(id, new_creator);
                         }
                     }
                 }
-                ListedTagOp::Tombstone { res_idx } => {
-                    if !resources.is_empty() {
-                        let idx = res_idx % resources.len();
-                        let (id, _, is_tombstoned, _, _, _) = &resources[idx];
-                        if !is_tombstoned {
-                            let _ = client.try_tombstone_resource(id, &admin);
+                IndexOp::Tombstone { res_idx } => {
+                    if !registered_ids.is_empty() {
+                        let id = &registered_ids[res_idx % registered_ids.len()];
+                        if !tombstoned_ids.contains(id) {
+                            if client.try_tombstone_resource(id, &admin).is_ok() {
+                                tombstoned_ids.push(id.clone());
+                            }
                         }
                     }
                 }
             }
 
-            for r in &mut resources {
-                let res = client.get(&r.0);
-                r.1 = res.listed;
-                r.2 = res.state == ResourceState::Tombstoned;
+            // Validate count is strictly monotonic
+            assert_eq!(client.count(), registered_ids.len() as u32);
+
+            // Validate creator indexes
+            let mut total_active_in_creator_indexes = 0;
+            for creator in &creators {
+                let listed = client.list_by_creator(creator, &0, &100);
+                let count = client.creator_resource_count(creator);
+                assert_eq!(listed.len() as u32, count, "creator_resource_count must match list_by_creator length");
+                total_active_in_creator_indexes += count;
             }
 
-            let mut expected_listed_count = 0;
-            let mut expected_tag_a_count = 0;
-            let mut expected_tag_b_count = 0;
-            let mut expected_tag_c_count = 0;
-
-            for r in &resources {
-                if !r.2 {
-                    if r.1 { expected_listed_count += 1; }
-                    if r.3 { expected_tag_a_count += 1; }
-                    if r.4 { expected_tag_b_count += 1; }
-                    if r.5 { expected_tag_c_count += 1; }
-                }
-            }
-
-            let actual_listed = client.list_listed(&0, &100);
-            assert_eq!(actual_listed.len() as u32, expected_listed_count, "listed index must match listed properties of active resources");
-            assert_eq!(client.list_by_tag(&predefined_tags[0], &0, &100).len() as u32, expected_tag_a_count, "tagA index mismatch");
-            assert_eq!(client.list_by_tag(&predefined_tags[1], &0, &100).len() as u32, expected_tag_b_count, "tagB index mismatch");
-            assert_eq!(client.list_by_tag(&predefined_tags[2], &0, &100).len() as u32, expected_tag_c_count, "tagC index mismatch");
+            // The sum of all active creator counts plus tombstoned resources must equal the total registered resources
+            assert_eq!(
+                total_active_in_creator_indexes + tombstoned_ids.len() as u32,
+                registered_ids.len() as u32,
+                "active resources + tombstoned resources must equal total registered count"
+            );
         }
     }
 }
