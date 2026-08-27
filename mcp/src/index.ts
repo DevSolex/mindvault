@@ -192,7 +192,7 @@ export function _setMockMode(on: boolean): void {
 // In real mode, defer to the global `fetch` at call time (not a captured
 // reference) so a test-stubbed global is still honoured.
 const httpFetch: typeof fetch = MOCK
-  ? createMockFetch()
+  ? createMockFetch(() => currentWallet()?.publicKey)
   : (input, init) => fetch(input as RequestInfo | URL, init);
 
 // Per-service request deadlines. Every outbound call runs under an
@@ -2050,7 +2050,7 @@ export async function setListed(resourceId: string, listed: boolean): Promise<st
 }
 
 export async function registryLookup(resourceId: string): Promise<string> {
-  if (_isMock()) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID);
+  if (_isMock()) return mockRegistryLookup(resourceId, REGISTRY_CONTRACT_ID, currentWallet()?.publicKey);
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
     rpcUrl: SOROBAN_RPC_URL,
@@ -2132,7 +2132,7 @@ export async function registryLookup(resourceId: string): Promise<string> {
  * Data comes from Soroban, not the MindVault API catalog.
  */
 export async function registryList(start: number, limit: number): Promise<string> {
-  if (_isMock()) return mockRegistryList(start, limit, REGISTRY_CONTRACT_ID);
+  if (_isMock()) return mockRegistryList(start, limit, REGISTRY_CONTRACT_ID, currentWallet()?.publicKey);
 
   const client = createRegistryClient({
     contractId: REGISTRY_CONTRACT_ID,
