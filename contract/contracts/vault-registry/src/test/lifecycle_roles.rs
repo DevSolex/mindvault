@@ -796,6 +796,26 @@ fn repair_index_rerunning_current_list_is_a_safe_noop() {
     assert_eq!(page.get(1).unwrap().id, b);
 }
 
+#[test]
+fn repair_index_emits_reindex_event() {
+    let (env, creator, _admin, client) = setup_with_admin();
+    let a = register_default(&env, &creator, &client, "rres5a");
+    let b = register_default(&env, &creator, &client, "rres5b");
+
+    client.repair_index(&Vec::from_array(&env, [a.clone(), b.clone()]));
+
+    let all = env.events().all();
+    assert_eq!(all.len(), 1, "exactly one event should be emitted");
+    let (_, topics, data) = all.get(0).unwrap();
+    let sym: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(sym, symbol_short!("reindex"));
+    let count: u32 = u32::try_from_val(&env, &data).unwrap();
+    assert_eq!(
+        count, 2u32,
+        "event must report the number of ids in the repaired index"
+    );
+}
+
 // ── Lifecycle transition property tests ──────────────────────────────────────
 //
 // The lifecycle state machine is documented as a table in `contract/README.md`

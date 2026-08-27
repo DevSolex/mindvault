@@ -3,6 +3,12 @@ fn resource_storage_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String)
     env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
 }
 
+/// Live TTL of the persistent entry that records a proposed owner for `id`.
+fn pending_transfer_ttl(env: &Env, contract: &soroban_sdk::Address, id: &String) -> u32 {
+    let key = DataKey::PendingTransfer(id.clone());
+    env.as_contract(contract, || env.storage().persistent().get_ttl(&key))
+}
+
 fn setup<'a>() -> (Env, Address, VaultRegistryClient<'a>) {
     let env = Env::default();
     env.mock_all_auths();
@@ -1162,6 +1168,57 @@ fn transfer_ownership_reextends_resource_ttl() {
 }
 
 #[test]
+fn propose_transfer_extends_pending_transfer_ttl() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlpending");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + DAY_IN_LEDGERS);
+
+    let proposed = Address::generate(&env);
+    client.propose_transfer(&id, &proposed);
+    assert_eq!(
+        pending_transfer_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT
+    );
+}
+
+#[test]
+fn re_proposing_transfer_continues_to_extend_ttl() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "ttlpending2");
+    client.register(
+        &creator,
+        &id,
+        &100i128,
+        &String::from_str(&env, "ipfs://m"),
+        &empty_tags(&env),
+    );
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + DAY_IN_LEDGERS);
+
+    client.propose_transfer(&id, &Address::generate(&env));
+    env.ledger()
+        .set_sequence_number(env.ledger().sequence() + DAY_IN_LEDGERS);
+
+    // Proposing again (e.g. to fix a typo in the recipient) must re-bump the
+    // pending-transfer entry so the recipient still has a full window in
+    // which to accept.
+    let proposed = Address::generate(&env);
+    client.propose_transfer(&id, &proposed);
+    assert_eq!(
+        pending_transfer_ttl(&env, &client.address, &id),
+        TTL_BUMP_AMOUNT
+    );
+}
+
+#[test]
 fn list_limit_capped_at_20() {
     let (env, creator, client) = setup();
     let ids = [
@@ -1388,6 +1445,93 @@ fn invalid_metadata_pointer_rejected() {
         Err(Ok(Error::InvalidMetadataPointer))
     );
     assert!(!client.exists(&id));
+}
+
+#[test]
+fn register_accepts_supported_metadata_schemes() {
+    let (env, creator, client) = setup();
+    // Every scheme the contract recognises must be accepted on registration.
+    let valid = [
+        "ipfs://QmVal",
+        "ar://abc123",
+        "https://example.com/asset",
+        "http://example.com/asset",
+        "0x7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069",
+        "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+        "sha-256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+    ];
+    for (i, m) in valid.iter().enumerate() {
+        let id = String::from_str(&env, &format!("schm{}", i));
+        client.register(
+            &creator,
+            &id,
+            &100i128,
+            &String::from_str(&env, m),
+            &empty_tags(&env),
+        );
+        assert_eq!(client.get(&id).metadata, String::from_str(&env, m));
+    }
+}
+
+#[test]
+fn register_rejects_unknown_metadata_schemes() {
+    let (env, creator, client) = setup();
+    // Unsupported schemes must be rejected even when they look URI-like.
+    let invalid = [
+        "ftp://example.com/file",
+        "file:///etc/passwd",
+        "data:text/plain,hello",
+        "git://example.com/repo",
+        "beanstalk://example.com",
+    ];
+    for (i, m) in invalid.iter().enumerate() {
+        let id = String::from_str(&env, &format!("badschm{}", i));
+        assert_eq!(
+            client.try_register(
+                &creator,
+                &id,
+                &100i128,
+                &String::from_str(&env, m),
+                &empty_tags(&env)
+            ),
+            Err(Ok(Error::InvalidMetadataPointer))
+        );
+        assert!(!client.exists(&id));
+    }
+}
+
+#[test]
+fn metadata_scheme_matching_is_case_sensitive_and_requires_delimiter() {
+    let (env, creator, client) = setup();
+
+    // Scheme matching is byte-exact and lowercase-only, so an uppercase
+    // variant of a known scheme is not recognised.
+    let id = String::from_str(&env, "uppersl");
+    assert_eq!(
+        client.try_register(
+            &creator,
+            &id,
+            &100i128,
+            &String::from_str(&env, "IPFS://QmVal"),
+            &empty_tags(&env)
+        ),
+        Err(Ok(Error::InvalidMetadataPointer))
+    );
+    assert!(!client.exists(&id));
+
+    // A bare scheme with no '://' delimiter is not a recognised pointer.
+    let id2 = String::from_str(&env, "noschema");
+    assert_eq!(
+        client.try_register(
+            &creator,
+            &id2,
+            &100i128,
+            &String::from_str(&env, "ipfs"),
+            &empty_tags(&env)
+        ),
+        Err(Ok(Error::InvalidMetadataPointer))
+    );
+    assert!(!client.exists(&id2));
 }
 
 #[test]

@@ -24,6 +24,26 @@ see [`contract/README.md`](../../README.md).
 **Metadata pointer prefixes accepted:** `ipfs://`, `ar://`, `https://`,
 `http://`, `sha256:`, `sha-256:`, `0x`.
 
+### Canonical tag normalization
+
+Tags are the registry's discovery labels. They are normalized to a canonical
+form before they are stored or used to build the tag index, so clients never
+need to worry about case or surrounding whitespace:
+
+- **Lowercased to ASCII.** `"Dataset"`, `"dataset"` and `"DATASET"` are all the
+  same tag; lookup via `list_by_tag` is case-insensitive.
+- **ASCII whitespace is trimmed** from both ends. A tag like `" finance "` is
+  stored and indexed as `"finance"`.
+- **At most 8 tags** per resource (`MAX_TAGS`).
+- **Each tag is 1–32 bytes** (`MAX_TAG_LEN`). Empty tags are rejected.
+- **Duplicates are rejected in normalized form.** Two distinct inputs that
+  normalize to the same value (for example `"ML"` and `"ml"`) would index a
+  resource twice under one tag, so `register`/`set_tags` reject them with
+  `InvalidTag` rather than allowing a self-duplicate index entry.
+
+When you read a resource back, `resource.tags` already holds the normalized
+values, so comparing them against your input string is safe.
+
 ---
 
 ## Storage TTL threshold constants
