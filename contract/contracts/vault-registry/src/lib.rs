@@ -781,6 +781,10 @@ impl VaultRegistry {
     ///
     /// Emits a `setprice` event whose data is a [`PriceUpdated`] value
     /// containing `id`, `old_price`, `new_price`, and `updater`.
+    ///
+    /// No-op guard: if `new_price` is identical to the resource's current
+    /// price, the call succeeds without touching storage or emitting a
+    /// `setprice` event.
     pub fn set_price(env: Env, id: String, new_price: i128) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
@@ -788,6 +792,11 @@ impl VaultRegistry {
         let mut resource = Self::load(&env, &id)?;
         resource.creator.require_auth();
         Self::ensure_mutable(&resource)?;
+
+        if resource.price == new_price {
+            return Ok(());
+        }
+
         let old_price = resource.price;
         let updater = resource.creator.clone();
         resource.price = new_price;
@@ -810,6 +819,10 @@ impl VaultRegistry {
     /// metadata pointer (`old_metadata`), and the new one (`new_metadata`).
     /// Off-chain indexers can use these fields to build an audit trail without
     /// querying historical ledger state.
+    ///
+    /// No-op guard: if `metadata` is identical to the resource's current
+    /// metadata pointer, the call succeeds without touching storage or
+    /// emitting an `updmeta` event.
     pub fn update_metadata(env: Env, id: String, metadata: String) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
         Self::validate_resource_id(&id)?;
@@ -820,6 +833,11 @@ impl VaultRegistry {
             return Err(Error::MetadataFrozen);
         }
         Self::validate_metadata_pointer(&metadata)?;
+
+        if resource.metadata == metadata {
+            return Ok(());
+        }
+
         let old_metadata = resource.metadata.clone();
         resource.metadata = metadata.clone();
         Self::save(&env, &mut resource);
