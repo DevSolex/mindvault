@@ -7770,6 +7770,8 @@ fn readme_version_compatibility_names_the_breaking_changes() {
     assert!(
         section.contains("crate_version") && section.contains("resource_schema_version"),
         "the compatibility section must distinguish the two reported versions"
+    );
+}
 // ── Reporting anchor failures as events ──────────────────────────────────────
 //
 // `anchor_purchase_receipt` reverts on a rejected anchor, and a Soroban error
