@@ -7066,6 +7066,7 @@ fn listed_count_increments_when_dispute_resolved_to_listed() {
     assert_eq!(client.listed_count(), 0);
     client.resolve_dispute(&"res1", &_admin, &ResourceState::Listed);
     assert_eq!(client.listed_count(), 1);
+}
 // ── Duplicate receipt buyer normalization (#683) ──────────────────────────────
 //
 // The duplicate-receipt guard is keyed on the exact `(resource_id, buyer)`
