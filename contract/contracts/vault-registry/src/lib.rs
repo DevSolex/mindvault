@@ -735,6 +735,8 @@ pub enum Error {
     ContentHashTooLong = 45,
     /// `attestation_hash` exceeds `MAX_ATTESTATION_HASH_LEN` (64 bytes).
     AttestationHashTooLong = 46,
+    /// Payment receipt amount does not match the resource's current price.
+    PaymentAmountMismatch = 47,
 }
 
 #[contract]
@@ -1924,7 +1926,9 @@ impl VaultRegistry {
     ///   error `ReceiptAlreadyExists`.
     /// - `resource_id` must refer to an existing registered resource
     ///   (`NotFound` otherwise).
-    /// - `amount` must be `> 0` (`InvalidPrice` otherwise).
+    /// - `amount` must be `> 0` (`InvalidPaymentAmount` otherwise).
+    /// - `amount` must match the resource's current price
+    ///   (`PaymentAmountMismatch` otherwise).
     /// - `tx_hash` must be non-empty and at most 128 bytes (`InvalidTxHash`).
     ///
     /// Emits a `payment` event whose data is the full [`PaymentReceipt`] so
@@ -1952,12 +1956,11 @@ impl VaultRegistry {
         Self::validate_tx_hash(&tx_hash)?;
 
         // The referenced resource must exist.
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Resource(resource_id.clone()))
-        {
-            return Err(Error::NotFound);
+        let resource = Self::load(&env, &resource_id)?;
+
+        // Consistency guard: payment amount must match the resource's current price.
+        if amount != resource.price {
+            return Err(Error::PaymentAmountMismatch);
         }
 
         let receipt_key = DataKey::PaymentReceipt(receipt_id.clone());
