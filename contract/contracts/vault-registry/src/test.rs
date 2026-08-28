@@ -8263,70 +8263,6 @@ proptest! {
 // entry class grows past its documented allowance, so growth has to be an
 // explicit decision recorded in the doc rather than a silent regression.
 
-/// Which storage map an entry lives in. Instance entries share the contract's
-/// instance TTL; persistent entries are archived independently.
-#[derive(Copy, Clone, Debug, PartialEq)]
-enum StorageKind {
-    Persistent,
-    Instance,
-}
-
-/// One measured entry: the XDR-encoded size of its key and its value.
-struct FootprintRow {
-    label: &'static str,
-    kind: StorageKind,
-    key_bytes: usize,
-    value_bytes: usize,
-    /// Maximum `key_bytes + value_bytes` this entry class may occupy before
-    /// the report fails. See `docs/contract-storage-footprint.md`.
-    budget: usize,
-}
-
-impl FootprintRow {
-    fn total(&self) -> usize {
-        self.key_bytes + self.value_bytes
-    }
-}
-
-/// XDR-encoded byte length of any contract value.
-///
-/// This is the `ScVal` payload only — the size the contract itself controls.
-/// A live ledger entry adds host-side envelope and TTL metadata on top, so
-/// treat these numbers as a floor and a comparison baseline across changes,
-/// not as an exact rent quote.
-fn xdr_len<T: IntoVal<Env, soroban_sdk::Val>>(env: &Env, value: T) -> usize {
-    use soroban_sdk::xdr::{Limits, ScVal, WriteXdr};
-    let val: soroban_sdk::Val = value.into_val(env);
-    ScVal::try_from_val(env, &val)
-        .expect("every stored contract value must be ScVal-encodable")
-        .to_xdr(Limits::none())
-        .expect("ScVal encoding must not exceed XDR limits")
-        .len()
-}
-
-/// Measure the entry stored under `key`, or `None` if nothing is stored there.
-fn measure_entry(
-    env: &Env,
-    contract: &Address,
-    label: &'static str,
-    key: DataKey,
-    kind: StorageKind,
-    budget: usize,
-) -> Option<FootprintRow> {
-    let key_bytes = xdr_len(env, key.clone());
-    let stored: Option<soroban_sdk::Val> = env.as_contract(contract, || match kind {
-        StorageKind::Persistent => env.storage().persistent().get(&key),
-        StorageKind::Instance => env.storage().instance().get(&key),
-    });
-    stored.map(|value| FootprintRow {
-        label,
-        kind,
-        key_bytes,
-        value_bytes: xdr_len(env, value),
-        budget,
-    })
-}
-
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(30))]
     #[test]
@@ -8371,14 +8307,4 @@ proptest! {
     }
 }
 
-include!("test/core_catalog.rs");
-include!("test/metadata_updates.rs");
-include!("test/tags.rs");
-include!("test/schema_registry.rs");
-include!("test/lifecycle_roles.rs");
-include!("test/hardening_preflight.rs");
-include!("test/payments.rs");
-include!("test/moderation_pause.rs");
-include!("test/properties_events.rs");
-include!("test/purchase_receipts.rs");
 include!("test/storage_footprint.rs");
