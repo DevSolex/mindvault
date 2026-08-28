@@ -114,6 +114,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("list_by_creator", "—"),
     ("list_by_tag", "—"),
     ("list_by_dispute_status", "—"),
+    ("list_by_verification_status", "—"),
     ("list_payments", "—"),
     // ── Verification ──────────────────────────────────────────────────────
     ("add_verifier", "admin"),
@@ -1395,6 +1396,45 @@ impl VaultRegistry {
             i += 1;
         }
         result
+    }
+
+    /// Paginated list of resources filtered by verification status.
+    ///
+    /// Returns resources whose `verified` field matches `status`.
+    /// `cursor` is a global catalog index (same semantics as `list_page`).
+    /// `limit` is capped at 20.
+    /// Returns a `CatalogPage` with `items` (matching resources) and
+    /// `next_cursor` (next catalog position, or `None` at end-of-list).
+    pub fn list_by_verification_status(
+        env: Env,
+        status: VerificationStatus,
+        cursor: u32,
+        limit: u32,
+    ) -> CatalogPage {
+        let total: u32 = env.storage().instance().get(&DataKey::Count).unwrap_or(0);
+        let page_size = limit.min(LIST_PAGE_CAP);
+        let mut items: Vec<Resource> = Vec::new(&env);
+        let mut i = cursor;
+        while i < total && items.len() < page_size {
+            let idx_key = DataKey::Index(i);
+            if let Some(id) = env.storage().persistent().get::<DataKey, String>(&idx_key) {
+                Self::bump_persistent(&env, &idx_key);
+                let res_key = DataKey::Resource(id);
+                if let Some(resource) = env
+                    .storage()
+                    .persistent()
+                    .get::<DataKey, Resource>(&res_key)
+                {
+                    Self::bump_persistent(&env, &res_key);
+                    if resource.verified == status {
+                        items.push_back(resource);
+                    }
+                }
+            }
+            i += 1;
+        }
+        let next_cursor = if i < total { Some(i) } else { None };
+        CatalogPage { items, next_cursor }
     }
 
     /// Rebuild the tag index from an authoritative, admin-supplied ordered
