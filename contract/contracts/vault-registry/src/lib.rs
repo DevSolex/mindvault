@@ -100,6 +100,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("cancel_transfer", "creator"),
     // ── Read-only queries ─────────────────────────────────────────────────
     ("get", "—"),
+    ("get_resource_state", "—"),
     ("get_many", "—"),
     ("exists", "—"),
     ("exists_many", "—"),
@@ -256,6 +257,7 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("setadmin", "new_admin: Address"),
     ("nomadmin", "new_admin: Address"),
     ("accadmin", "new_admin: Address"),
+    ("netinit", "network_id: BytesN<32>"),
     ("freeze", "()"),
     (
         "verify",
@@ -1491,6 +1493,12 @@ impl VaultRegistry {
         Self::load(&env, &id)
     }
 
+    /// Read the full state of a single resource. Errors with `NotFound` if absent.
+    pub fn get_resource_state(env: Env, id: String) -> Result<Resource, Error> {
+        Self::validate_resource_id(&id)?;
+        Self::load(&env, &id)
+    }
+
     /// Read several resources in one invocation, preserving input order.
     /// Missing resources are represented by `None`; valid resources are
     /// returned as `Some(Resource)`. The batch is capped to bound execution
@@ -1583,6 +1591,10 @@ impl VaultRegistry {
             .instance()
             .set(&DataKey::NetworkId, &network_id);
         Self::bump_instance(&env);
+        env.events().publish(
+            (symbol_short!("netinit"),),
+            network_id,
+        );
         Ok(())
     }
 

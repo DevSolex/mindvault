@@ -369,6 +369,21 @@ fn get_missing_fails() {
 }
 
 #[test]
+fn test_get_resource_state() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "stateres");
+    let metadata = String::from_str(&env, "ipfs://meta");
+
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+
+    let r = client.get_resource_state(&id);
+    assert_eq!(r.id, id);
+    assert_eq!(r.creator, creator);
+    assert_eq!(r.price, 100i128);
+    assert_eq!(r.metadata, metadata);
+}
+
+#[test]
 fn get_many_preserves_order_and_missing_slots() {
     let (env, creator, client) = setup();
     let id_a = String::from_str(&env, "batcha");
@@ -3379,6 +3394,18 @@ fn initialize_network_records_and_exposes_current_ledger_id() {
 
     client.initialize_network(&expected);
     assert_eq!(client.network_id(), expected);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("netinit"),).into_val(&env),
+                expected.into_val(&env),
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -8277,6 +8304,50 @@ fn measure_entry(
         value_bytes: xdr_len(env, value),
         budget,
     })
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(30))]
+    #[test]
+    fn test_duplicate_resource_id_property(
+        ids in prop::collection::vec(r"[a-z0-9]{1,24}", 1..=20),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+        let meta = String::from_str(&env, "ipfs://fuzztest");
+
+        let mut registered = alloc::vec::Vec::new();
+        let mut expected_count = 0;
+
+        for id_str in ids {
+            let is_reserved = id_str == "admin"
+                || id_str == "null"
+                || id_str == "registry"
+                || id_str == "api"
+                || id_str == "index"
+                || id_str == "root"
+                || id_str == "system";
+            if is_reserved {
+                continue;
+            }
+
+            let id = String::from_str(&env, &id_str);
+            let already_registered = registered.contains(&id_str);
+
+            let res = client.try_register(&creator, &id, &100i128, &meta, &empty_tags(&env));
+            if already_registered {
+                assert_eq!(res, Err(Ok(Error::AlreadyRegistered)));
+            } else {
+                assert!(res.is_ok());
+                registered.push(id_str);
+                expected_count += 1;
+            }
+            assert_eq!(client.count(), expected_count);
+        }
+    }
 }
 
 include!("test/core_catalog.rs");
