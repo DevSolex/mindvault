@@ -7042,7 +7042,13 @@ fn listed_count_noop_when_already_in_target_state() {
 #[test]
 fn listed_count_decrements_on_freeze() {
     let (env, creator, client) = setup();
-    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    client.register(
+        &creator,
+        &"res1",
+        &100i128,
+        &String::from_str(&env, "ipfs://a"),
+        &empty_tags(&env),
+    );
     assert_eq!(client.listed_count(), 1);
     client.freeze_resource(&"res1");
     assert_eq!(client.listed_count(), 0);
@@ -7051,7 +7057,13 @@ fn listed_count_decrements_on_freeze() {
 #[test]
 fn listed_count_decrements_on_tombstone() {
     let (env, creator, _admin, client) = setup_with_admin();
-    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    client.register(
+        &creator,
+        &"res1",
+        &100i128,
+        &String::from_str(&env, "ipfs://a"),
+        &empty_tags(&env),
+    );
     assert_eq!(client.listed_count(), 1);
     client.tombstone_resource(&"res1", &_admin);
     assert_eq!(client.listed_count(), 0);
@@ -7060,7 +7072,13 @@ fn listed_count_decrements_on_tombstone() {
 #[test]
 fn listed_count_increments_when_dispute_resolved_to_listed() {
     let (env, creator, _admin, client) = setup_with_admin();
-    client.register(&creator, &"res1", &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
+    client.register(
+        &creator,
+        &"res1",
+        &100i128,
+        &String::from_str(&env, "ipfs://a"),
+        &empty_tags(&env),
+    );
     assert_eq!(client.listed_count(), 1);
     client.open_dispute(&"res1", &_admin);
     assert_eq!(client.listed_count(), 0);
