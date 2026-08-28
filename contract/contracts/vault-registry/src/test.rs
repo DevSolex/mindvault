@@ -3937,6 +3937,40 @@ fn admin_can_dispute_resolve_and_tombstone_resource() {
 }
 
 #[test]
+fn admin_can_emergency_delist_disputed_resource() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "emerdelist");
+
+    client.open_dispute(&id, &admin);
+    client.emergency_delist(&id, &admin);
+
+    let resource = client.get(&id);
+    assert_eq!(resource.state, ResourceState::Delisted);
+    assert!(!resource.listed);
+    assert_eq!(client.listed_count(), 0);
+}
+
+#[test]
+fn emergency_delist_requires_current_admin_and_disputed_state() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "emerdelist2");
+    let stranger = Address::generate(&env);
+
+    assert_eq!(
+        client.try_emergency_delist(&id, &stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_emergency_delist(&id, &admin),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
+
+    client.open_dispute(&id, &admin);
+    client.emergency_delist(&id, &admin);
+    assert_eq!(client.get(&id).state, ResourceState::Delisted);
+}
+
+#[test]
 fn tombstoned_resource_is_not_discoverable_by_tag_but_stays_auditable() {
     let (env, creator, admin, client) = setup_with_admin();
     let id = String::from_str(&env, "lifecyc5");
