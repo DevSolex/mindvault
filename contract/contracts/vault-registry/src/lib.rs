@@ -92,6 +92,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("freeze_resource", "creator"),
     ("open_dispute", "admin"),
     ("resolve_dispute", "admin"),
+    ("emergency_delist", "admin"),
     ("tombstone_resource", "admin"),
     // ── Ownership transfer ────────────────────────────────────────────────
     ("transfer_ownership", "creator"),
@@ -1170,6 +1171,20 @@ impl VaultRegistry {
             return Err(Error::InvalidLifecycleTransition);
         }
         Self::transition_state(&env, &mut resource, state);
+        Ok(())
+    }
+
+    /// Emergency-delist a disputed resource. Only the current admin may call
+    /// this, and only while the resource is in the `Disputed` state.
+    pub fn emergency_delist(env: Env, id: String, admin: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if resource.state != ResourceState::Disputed {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, ResourceState::Delisted);
         Ok(())
     }
 
@@ -2996,8 +3011,5 @@ pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;
 pub(crate) const TTL_BUMP_AMOUNT: u32 = BUMP_AMOUNT;
 #[cfg(test)]
 pub(crate) const TTL_LIFETIME_THRESHOLD: u32 = LIFETIME_THRESHOLD;
-
-#[cfg(test)]
-pub(crate) const TTL_DAY_IN_LEDGERS: u32 = DAY_IN_LEDGERS;
 
 mod test;
