@@ -144,6 +144,7 @@ naming the field that changed:
 | -------------- | --------------------------------------------------------- |
 | 2              | Added `tags` — discovery labels, normalized to lowercase. |
 | 4              | Added `dispute_flag` — moderator dispute state.           |
+| 6              | Current value of `RESOURCE_SCHEMA_VERSION`.               |
 | 6              | Added `metadata_frozen_at`; current value of `RESOURCE_SCHEMA_VERSION`.      |
 
 ### What is and is not a breaking change

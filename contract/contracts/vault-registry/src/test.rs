@@ -3825,6 +3825,91 @@ fn full_workflow_emits_exactly_the_documented_events() {
     );
 }
 
+// ── Fee configuration and basis-point calculation ───────────────────────────
+
+fn fee_amount(amount: i128, fee_bps: u32) -> i128 {
+    amount * i128::from(fee_bps) / i128::from(FEE_BPS_DENOM)
+}
+
+#[test]
+fn fee_amount_calculation_handles_zero_and_standard_rates() {
+    assert_eq!(fee_amount(1_000_000, 0), 0);
+    assert_eq!(fee_amount(1_000_000, 250), 25_000);
+    assert_eq!(fee_amount(1_000_000, 1_000), 100_000);
+}
+
+#[test]
+fn fee_amount_calculation_truncates_fractional_stroops() {
+    assert_eq!(fee_amount(101, 100), 1);
+    assert_eq!(fee_amount(99, 100), 0);
+}
+
+#[test]
+fn fee_amount_calculation_handles_maximum_rate_and_large_amount() {
+    assert_eq!(fee_amount(1_000_000, MAX_FEE_BPS), 500_000);
+    assert_eq!(
+        fee_amount(MAX_PRICE, MAX_FEE_BPS),
+        500_000_000_000_000_000
+    );
+}
+
+#[test]
+fn fee_config_accepts_zero_and_exact_combined_limit() {
+    let (env, _creator, admin, client) = setup_with_admin();
+
+    client.set_fee_config(&FeeConfig {
+        platform_fee_bps: 0,
+        royalty_bps: 0,
+        fee_recipient: None,
+    });
+    assert_eq!(client.get_fee_config().unwrap().platform_fee_bps, 0);
+
+    client.set_fee_config(&FeeConfig {
+        platform_fee_bps: MAX_FEE_BPS / 2,
+        royalty_bps: MAX_FEE_BPS - (MAX_FEE_BPS / 2),
+        fee_recipient: Some(admin),
+    });
+    let config = client.get_fee_config().unwrap();
+    assert_eq!(config.platform_fee_bps + config.royalty_bps, MAX_FEE_BPS);
+    let _ = env;
+}
+
+#[test]
+fn fee_config_rejects_each_rate_above_maximum() {
+    let (_env, _creator, _admin, client) = setup_with_admin();
+
+    assert_eq!(
+        client.try_set_fee_config(&FeeConfig {
+            platform_fee_bps: MAX_FEE_BPS + 1,
+            royalty_bps: 0,
+            fee_recipient: None,
+        }),
+        Err(Ok(Error::FeeBpsTooHigh))
+    );
+    assert_eq!(
+        client.try_set_fee_config(&FeeConfig {
+            platform_fee_bps: 0,
+            royalty_bps: MAX_FEE_BPS + 1,
+            fee_recipient: None,
+        }),
+        Err(Ok(Error::FeeBpsTooHigh))
+    );
+}
+
+#[test]
+fn fee_config_rejects_combined_rates_above_maximum() {
+    let (_env, _creator, _admin, client) = setup_with_admin();
+
+    assert_eq!(
+        client.try_set_fee_config(&FeeConfig {
+            platform_fee_bps: MAX_FEE_BPS / 2 + 1,
+            royalty_bps: MAX_FEE_BPS / 2,
+            fee_recipient: None,
+        }),
+        Err(Ok(Error::TotalFeeTooHigh))
+    );
+}
+
 // ─── Test helpers for the role / verification / freeze / repair suites ────
 
 /// Like `setup`, but also installs `admin` as the contract admin via the
@@ -4218,6 +4303,7 @@ fn set_verification_status_emits_old_and_new_status() {
     client.set_verification_status(&id, &verifier, &VerificationStatus::Verified, &None);
 
     let all = env.events().all();
+    let (_contract, _topics, data) = all.get_unchecked(all.len() - 1);
     let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
     assert_eq!(topics.len(), 2);
     let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
@@ -7617,6 +7703,7 @@ fn address_keyed_variants_do_not_collide_for_one_address() {
 }
 
 #[test]
+fn receipt_and_payment_index_keys_remain_distinct() {
 fn receipt_and_payment_index_keys_stay_distinct() {
     let (env, _creator, client) = setup();
     let receipt_a = String::from_str(&env, "receipta");
@@ -7626,6 +7713,13 @@ fn receipt_and_payment_index_keys_stay_distinct() {
     let party_a = Address::generate(&env);
     let party_b = Address::generate(&env);
 
+    // PaymentReceipt is keyed by receipt id only. PaymentIndex separately
+    // scopes lookup by (resource, payer), and both wire shapes must remain
+    // distinct from purchase receipt anchors.
+    env.as_contract(&client.address, || {
+        let keys = [
+            DataKey::PaymentReceipt(String::from_str(&env, "receipt-a")),
+            DataKey::PaymentReceipt(String::from_str(&env, "receipt-b")),
     // PaymentReceipt is keyed by receipt_id alone. PaymentIndex is the
     // resource/counterparty index and must vary in both of its arguments.
     env.as_contract(&client.address, || {
@@ -7645,6 +7739,8 @@ fn receipt_and_payment_index_keys_stay_distinct() {
             assert_eq!(
                 env.storage().persistent().get::<DataKey, u32>(key),
                 Some(marker as u32),
+                "receipt/payment index key {marker} collided — distinct current \
+                 key variants and fields must remain independently addressable"
                 "receipt/payment key {marker} collided — distinct keys must not \
                  share a storage address"
             );
