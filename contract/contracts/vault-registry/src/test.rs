@@ -369,6 +369,21 @@ fn get_missing_fails() {
 }
 
 #[test]
+fn test_get_resource_state() {
+    let (env, creator, client) = setup();
+    let id = String::from_str(&env, "stateres");
+    let metadata = String::from_str(&env, "ipfs://meta");
+
+    client.register(&creator, &id, &100i128, &metadata, &empty_tags(&env));
+
+    let r = client.get_resource_state(&id);
+    assert_eq!(r.id, id);
+    assert_eq!(r.creator, creator);
+    assert_eq!(r.price, 100i128);
+    assert_eq!(r.metadata, metadata);
+}
+
+#[test]
 fn get_many_preserves_order_and_missing_slots() {
     let (env, creator, client) = setup();
     let id_a = String::from_str(&env, "batcha");
@@ -3379,6 +3394,18 @@ fn initialize_network_records_and_exposes_current_ledger_id() {
 
     client.initialize_network(&expected);
     assert_eq!(client.network_id(), expected);
+
+    assert_eq!(
+        env.events().all(),
+        soroban_sdk::vec![
+            &env,
+            (
+                client.address.clone(),
+                (symbol_short!("netinit"),).into_val(&env),
+                expected.into_val(&env),
+            ),
+        ]
+    );
 }
 
 #[test]
@@ -4022,6 +4049,40 @@ fn admin_can_dispute_resolve_and_tombstone_resource() {
 }
 
 #[test]
+fn admin_can_emergency_delist_disputed_resource() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "emerdelist");
+
+    client.open_dispute(&id, &admin);
+    client.emergency_delist(&id, &admin);
+
+    let resource = client.get(&id);
+    assert_eq!(resource.state, ResourceState::Delisted);
+    assert!(!resource.listed);
+    assert_eq!(client.listed_count(), 0);
+}
+
+#[test]
+fn emergency_delist_requires_current_admin_and_disputed_state() {
+    let (env, creator, admin, client) = setup_with_admin();
+    let id = register_default(&env, &creator, &client, "emerdelist2");
+    let stranger = Address::generate(&env);
+
+    assert_eq!(
+        client.try_emergency_delist(&id, &stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(
+        client.try_emergency_delist(&id, &admin),
+        Err(Ok(Error::InvalidLifecycleTransition))
+    );
+
+    client.open_dispute(&id, &admin);
+    client.emergency_delist(&id, &admin);
+    assert_eq!(client.get(&id).state, ResourceState::Delisted);
+}
+
+#[test]
 fn tombstoned_resource_is_not_discoverable_by_tag_but_stays_auditable() {
     let (env, creator, admin, client) = setup_with_admin();
     let id = String::from_str(&env, "lifecyc5");
@@ -4243,11 +4304,19 @@ fn set_verification_status_emits_old_and_new_status() {
 
     let all = env.events().all();
     let (_contract, _topics, data) = all.get_unchecked(all.len() - 1);
+    let (_contract, topics, data) = all.get_unchecked(all.len() - 1);
+    assert_eq!(topics.len(), 2);
+    let topic: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    assert_eq!(topic, symbol_short!("verify"));
+    let topic_id: String = String::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    assert_eq!(topic_id, id);
+
     let decoded: (VerificationStatus, VerificationStatus, Option<String>) =
         <(VerificationStatus, VerificationStatus, Option<String>)>::try_from_val(&env, &data)
             .expect("failed to decode verification event");
     assert_eq!(decoded.0, VerificationStatus::Pending);
     assert_eq!(decoded.1, VerificationStatus::Verified);
+    assert_eq!(decoded.2, None);
 }
 
 #[test]
@@ -7100,6 +7169,13 @@ fn listed_count_noop_when_already_in_target_state() {
 #[test]
 fn listed_count_decrements_on_freeze() {
     let (env, creator, client) = setup();
+    client.register(
+        &creator,
+        &"res1",
+        &100i128,
+        &String::from_str(&env, "ipfs://a"),
+        &empty_tags(&env),
+    );
     client.register(&creator, &String::from_str(&env, "res1"), &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
     assert_eq!(client.listed_count(), 1);
     client.freeze_resource(&String::from_str(&env, "res1"));
@@ -7109,6 +7185,13 @@ fn listed_count_decrements_on_freeze() {
 #[test]
 fn listed_count_decrements_on_tombstone() {
     let (env, creator, _admin, client) = setup_with_admin();
+    client.register(
+        &creator,
+        &"res1",
+        &100i128,
+        &String::from_str(&env, "ipfs://a"),
+        &empty_tags(&env),
+    );
     client.register(&creator, &String::from_str(&env, "res1"), &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
     assert_eq!(client.listed_count(), 1);
     client.tombstone_resource(&String::from_str(&env, "res1"), &_admin);
@@ -7118,6 +7201,13 @@ fn listed_count_decrements_on_tombstone() {
 #[test]
 fn listed_count_increments_when_dispute_resolved_to_listed() {
     let (env, creator, _admin, client) = setup_with_admin();
+    client.register(
+        &creator,
+        &"res1",
+        &100i128,
+        &String::from_str(&env, "ipfs://a"),
+        &empty_tags(&env),
+    );
     client.register(&creator, &String::from_str(&env, "res1"), &100i128, &String::from_str(&env, "ipfs://a"), &empty_tags(&env));
     assert_eq!(client.listed_count(), 1);
     client.open_dispute(&String::from_str(&env, "res1"), &_admin);
@@ -7125,6 +7215,7 @@ fn listed_count_increments_when_dispute_resolved_to_listed() {
     client.resolve_dispute(&String::from_str(&env, "res1"), &_admin, &ResourceState::Listed);
     assert_eq!(client.listed_count(), 1);
 }
+
 // ── Duplicate receipt buyer normalization (#683) ──────────────────────────────
 //
 // The duplicate-receipt guard is keyed on the exact `(resource_id, buyer)`
@@ -7613,7 +7704,10 @@ fn address_keyed_variants_do_not_collide_for_one_address() {
 
 #[test]
 fn receipt_and_payment_index_keys_remain_distinct() {
+fn receipt_and_payment_index_keys_stay_distinct() {
     let (env, _creator, client) = setup();
+    let receipt_a = String::from_str(&env, "receipta");
+    let receipt_b = String::from_str(&env, "receiptb");
     let res_a = String::from_str(&env, "resa");
     let res_b = String::from_str(&env, "resb");
     let party_a = Address::generate(&env);
@@ -7626,6 +7720,12 @@ fn receipt_and_payment_index_keys_remain_distinct() {
         let keys = [
             DataKey::PaymentReceipt(String::from_str(&env, "receipt-a")),
             DataKey::PaymentReceipt(String::from_str(&env, "receipt-b")),
+    // PaymentReceipt is keyed by receipt_id alone. PaymentIndex is the
+    // resource/counterparty index and must vary in both of its arguments.
+    env.as_contract(&client.address, || {
+        let keys = [
+            DataKey::PaymentReceipt(receipt_a.clone()),
+            DataKey::PaymentReceipt(receipt_b.clone()),
             DataKey::PaymentIndex(res_a.clone(), party_a.clone()),
             DataKey::PaymentIndex(res_a.clone(), party_b.clone()),
             DataKey::PaymentIndex(res_b.clone(), party_a.clone()),
@@ -7641,6 +7741,8 @@ fn receipt_and_payment_index_keys_remain_distinct() {
                 Some(marker as u32),
                 "receipt/payment index key {marker} collided — distinct current \
                  key variants and fields must remain independently addressable"
+                "receipt/payment key {marker} collided — distinct keys must not \
+                 share a storage address"
             );
         }
     });
@@ -7847,6 +7949,7 @@ fn readme_version_compatibility_names_the_breaking_changes() {
         "the compatibility section must distinguish the two reported versions"
     );
 }
+
 // ── Reporting anchor failures as events ──────────────────────────────────────
 //
 // `anchor_purchase_receipt` reverts on a rejected anchor, and a Soroban error
@@ -8298,6 +8401,69 @@ proptest! {
         prop_assert_eq!(after.id, before.id);
         prop_assert_eq!(after.creator, before.creator);
         prop_assert_eq!(after.metadata, before.metadata);
+    }
+}
+
+// ── Contract storage footprint report ────────────────────────────────────────
+//
+// Soroban charges rent per ledger entry and archives entries whose TTL runs
+// out, so the *shape* of what this contract writes is an operational cost, not
+// just an implementation detail. Nothing in the test suite measured it: a
+// change that widened `Resource` by a field, or added a second index entry per
+// write, showed up only as a WASM size delta (which it does not affect at all)
+// or on a rent bill.
+//
+// `storage_footprint_report` builds one registry in a representative state,
+// measures every entry class it writes, and prints the table published in
+// `docs/contract-storage-footprint.md`. Run it with:
+//
+//     cargo test storage_footprint_report -- --nocapture
+//
+// The budgets below are the enforcement half: they fail the suite when an
+// entry class grows past its documented allowance, so growth has to be an
+// explicit decision recorded in the doc rather than a silent regression.
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(30))]
+    #[test]
+    fn test_duplicate_resource_id_property(
+        ids in prop::collection::vec(r"[a-z0-9]{1,24}", 1..=20),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(VaultRegistry, ());
+        let client = VaultRegistryClient::new(&env, &contract_id);
+        let creator = Address::generate(&env);
+        let meta = String::from_str(&env, "ipfs://fuzztest");
+
+        let mut registered = alloc::vec::Vec::new();
+        let mut expected_count = 0;
+
+        for id_str in ids {
+            let is_reserved = id_str == "admin"
+                || id_str == "null"
+                || id_str == "registry"
+                || id_str == "api"
+                || id_str == "index"
+                || id_str == "root"
+                || id_str == "system";
+            if is_reserved {
+                continue;
+            }
+
+            let id = String::from_str(&env, &id_str);
+            let already_registered = registered.contains(&id_str);
+
+            let res = client.try_register(&creator, &id, &100i128, &meta, &empty_tags(&env));
+            if already_registered {
+                assert_eq!(res, Err(Ok(Error::AlreadyRegistered)));
+            } else {
+                assert!(res.is_ok());
+                registered.push(id_str);
+                expected_count += 1;
+            }
+            assert_eq!(client.count(), expected_count);
+        }
     }
 }
 

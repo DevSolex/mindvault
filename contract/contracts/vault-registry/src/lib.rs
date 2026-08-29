@@ -92,6 +92,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("freeze_resource", "creator"),
     ("open_dispute", "admin"),
     ("resolve_dispute", "admin"),
+    ("emergency_delist", "admin"),
     ("tombstone_resource", "admin"),
     // ── Ownership transfer ────────────────────────────────────────────────
     ("transfer_ownership", "creator"),
@@ -100,6 +101,7 @@ pub const METHOD_SCHEMA: &[(&str, &str)] = &[
     ("cancel_transfer", "creator"),
     // ── Read-only queries ─────────────────────────────────────────────────
     ("get", "—"),
+    ("get_resource_state", "—"),
     ("get_many", "—"),
     ("exists", "—"),
     ("exists_many", "—"),
@@ -256,6 +258,7 @@ pub const EVENT_SCHEMA: &[(&str, &str)] = &[
     ("setadmin", "new_admin: Address"),
     ("nomadmin", "new_admin: Address"),
     ("accadmin", "new_admin: Address"),
+    ("netinit", "network_id: BytesN<32>"),
     ("freeze", "()"),
     (
         "verify",
@@ -735,6 +738,8 @@ pub enum Error {
     ContentHashTooLong = 45,
     /// `attestation_hash` exceeds `MAX_ATTESTATION_HASH_LEN` (64 bytes).
     AttestationHashTooLong = 46,
+    /// Payment receipt amount does not match the resource's current price.
+    PaymentAmountMismatch = 47,
 }
 
 #[contract]
@@ -1171,6 +1176,20 @@ impl VaultRegistry {
         Ok(())
     }
 
+    /// Emergency-delist a disputed resource. Only the current admin may call
+    /// this, and only while the resource is in the `Disputed` state.
+    pub fn emergency_delist(env: Env, id: String, admin: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        Self::validate_resource_id(&id)?;
+        Self::require_current_admin(&env, &admin)?;
+        let mut resource = Self::load(&env, &id)?;
+        if resource.state != ResourceState::Disputed {
+            return Err(Error::InvalidLifecycleTransition);
+        }
+        Self::transition_state(&env, &mut resource, ResourceState::Delisted);
+        Ok(())
+    }
+
     /// Permanently retire a resource. Only an admin may tombstone it; the
     /// tombstoned state has no outgoing transitions.
     ///
@@ -1491,6 +1510,12 @@ impl VaultRegistry {
         Self::load(&env, &id)
     }
 
+    /// Read the full state of a single resource. Errors with `NotFound` if absent.
+    pub fn get_resource_state(env: Env, id: String) -> Result<Resource, Error> {
+        Self::validate_resource_id(&id)?;
+        Self::load(&env, &id)
+    }
+
     /// Read several resources in one invocation, preserving input order.
     /// Missing resources are represented by `None`; valid resources are
     /// returned as `Some(Resource)`. The batch is capped to bound execution
@@ -1583,6 +1608,10 @@ impl VaultRegistry {
             .instance()
             .set(&DataKey::NetworkId, &network_id);
         Self::bump_instance(&env);
+        env.events().publish(
+            (symbol_short!("netinit"),),
+            network_id,
+        );
         Ok(())
     }
 
@@ -1924,7 +1953,9 @@ impl VaultRegistry {
     ///   error `ReceiptAlreadyExists`.
     /// - `resource_id` must refer to an existing registered resource
     ///   (`NotFound` otherwise).
-    /// - `amount` must be `> 0` (`InvalidPrice` otherwise).
+    /// - `amount` must be `> 0` (`InvalidPaymentAmount` otherwise).
+    /// - `amount` must match the resource's current price
+    ///   (`PaymentAmountMismatch` otherwise).
     /// - `tx_hash` must be non-empty and at most 128 bytes (`InvalidTxHash`).
     ///
     /// Emits a `payment` event whose data is the full [`PaymentReceipt`] so
@@ -1952,12 +1983,11 @@ impl VaultRegistry {
         Self::validate_tx_hash(&tx_hash)?;
 
         // The referenced resource must exist.
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Resource(resource_id.clone()))
-        {
-            return Err(Error::NotFound);
+        let resource = Self::load(&env, &resource_id)?;
+
+        // Consistency guard: payment amount must match the resource's current price.
+        if amount != resource.price {
+            return Err(Error::PaymentAmountMismatch);
         }
 
         let receipt_key = DataKey::PaymentReceipt(receipt_id.clone());
